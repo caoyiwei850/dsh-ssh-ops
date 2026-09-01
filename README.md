@@ -10,7 +10,7 @@
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
 ![version](https://img.shields.io/badge/version-0.2.19-blue)
 
-> **本仓库是 DSH Desktop 桌面版 fork（v0.2.19）**：在上游基础上新增桌面版界面适配、多终端标签页、`ssh_write` 输入后回车执行等增强。安装与使用见 **[INSTALL.md](./INSTALL.md)**（面向 DSH Desktop、AI 可执行的安装说明）。上游原版见 [caoyiwei850/dsh-ssh-ops](https://github.com/caoyiwei850/dsh-ssh-ops)。
+> **v0.2.19 新增**：DSH Desktop 桌面版界面适配、多终端标签页、`ssh_write` 输入后自动回车（`press_enter`）。桌面版安装说明见 **[INSTALL.md](./INSTALL.md)**。
 
 ## 示例
 
@@ -61,7 +61,7 @@ Agent 命中上述黑名单时不会被静默拒绝：插件会创建一条一�
 ### 从 GitHub 安装（推荐）
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.2.18
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.2.19
 ```
 
 安装后重启 DSH Web：
@@ -74,14 +74,14 @@ dsh web
 
 ### 从发布压缩包安装
 
-从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.2.18) 下载 `dsh-ssh-ops-0.2.18.tgz` 后：
+从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.2.19) 下载 `dsh-ssh-ops-0.2.19.tgz` 后：
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.2.18.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.2.19.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.2.18.zip` 适用于离线审阅或二次开发；解压后可在目录中执行 `npm install && npm run build`。
+`dsh-ssh-ops-0.2.19.zip` 适用于离线审阅或二次开发；解压后可在目录中执行 `npm install && npm run build`。
 
 ## 使用方式
 
@@ -108,7 +108,7 @@ dsh web
 | `ssh_connect` | 建立 SSH 连接（密码或私钥）并设为当前服务器 |
 | `ssh_exec` | 在当前服务器执行 Agent 命令，回传退出码/输出/耗时/超时/截断/脱敏状态 |
 | `ssh_read` | 按需读取右侧终端缓冲输出（不静默塞入对话） |
-| `ssh_write` | 向当前终端写入交互输入（如 `y\n` 回答提示） |
+| `ssh_write` | 向指定终端写入交互输入；`press_enter`（默认 true）自动补回车提交（可传 `connection_id` 指定目标服务器的终端） |
 | `ssh_disconnect` | 断开当前连接及其 shell 会话 |
 
 #### SFTP（6）
@@ -167,8 +167,8 @@ npm run pack:release
 
 生成物位于 `release/`：
 
-- `dsh-ssh-ops-0.2.18.tgz`：可直接被 DSH 安装。
-- `dsh-ssh-ops-0.2.18.zip`：完整离线源码包。
+- `dsh-ssh-ops-0.2.19.tgz`：可直接被 DSH 安装。
+- `dsh-ssh-ops-0.2.19.zip`：完整离线源码包。
 
 ## 许可
 

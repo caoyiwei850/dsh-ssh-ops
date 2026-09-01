@@ -8,7 +8,7 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.2.18-blue)
+![version](https://img.shields.io/badge/version-0.2.19-blue)
 
 ## Screenshots
 
@@ -59,7 +59,7 @@ The same model covers `sftp_delete` (the agent no longer deletes directly; inste
 ### From GitHub (recommended)
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.2.18
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.2.19
 ```
 
 Then restart DSH Web:
@@ -72,14 +72,14 @@ Open any session, click the top **SSH** tab, and use the right-side panel to con
 
 ### From a release archive
 
-Download `dsh-ssh-ops-0.2.18.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.2.18), then:
+Download `dsh-ssh-ops-0.2.19.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.2.19), then:
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.2.18.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.2.19.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.2.18.zip` is for offline review or further development; extract it and run `npm install && npm run build` in the directory.
+`dsh-ssh-ops-0.2.19.zip` is for offline review or further development; extract it and run `npm install && npm run build` in the directory.
 
 ## Usage
 
@@ -106,7 +106,7 @@ There are 29 agent tools. Omitting `connection_id` / `db_connection_id` targets 
 | `ssh_connect` | Connect over SSH (password or private key) and make it the current server |
 | `ssh_exec` | Run a command on the current server; returns exit code/output/duration/timeout/truncation/redacted state |
 | `ssh_read` | Read buffered output from the right-side terminal on demand (never silently injected) |
-| `ssh_write` | Send interactive input to the current terminal (e.g. `y\n` to answer a prompt) |
+| `ssh_write` | Send interactive input to a terminal; `press_enter` (default true) appends Enter so prompts are submitted like a real keypress (use `connection_id` to target a specific server's terminal) |
 | `ssh_disconnect` | Close the current connection and its shell sessions |
 
 #### SFTP (6)
@@ -165,8 +165,8 @@ Pushing a `vX.Y.Z` tag that matches `package.json.version` runs tests, builds th
 
 Artifacts are written to `release/`:
 
-- `dsh-ssh-ops-0.2.18.tgz`: installable directly by DSH.
-- `dsh-ssh-ops-0.2.18.zip`: full offline source archive.
+- `dsh-ssh-ops-0.2.19.tgz`: installable directly by DSH.
+- `dsh-ssh-ops-0.2.19.zip`: full offline source archive.
 
 ## License
 

@@ -52,6 +52,9 @@
     "assets",
     "scripts",
     "cordis.patch.yml",
+    "INSTALL.md",
+    "test-sshd.mjs",
+    "test-client.mjs",
     "LICENSE"
   ],
   "dsh": {
