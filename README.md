@@ -8,9 +8,9 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.2.19-blue)
+![version](https://img.shields.io/badge/version-0.2.20-blue)
 
-> **v0.2.19 新增**：DSH Desktop 桌面版界面适配、多终端标签页、`ssh_write` 输入后自动回车（`press_enter`）。桌面版安装说明见 **[INSTALL.md](./INSTALL.md)**。
+> **v0.2.20 新增**：SSH 面板独立的「快捷命令」页签，内置常用运维模板并支持按名称/命令内容搜索；用页签内紧凑的「＋ 自定义」管理全局/分组/单服务器命令。点击仅填入终端，不自动执行。桌面版安装说明见 **[INSTALL.md](./INSTALL.md)**。
 
 ## 示例
 
@@ -61,7 +61,7 @@ Agent 命中上述黑名单时不会被静默拒绝：插件会创建一条一�
 ### 从 GitHub 安装（推荐）
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.2.19
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.2.20
 ```
 
 安装后重启 DSH Web：
@@ -74,14 +74,14 @@ dsh web
 
 ### 从发布压缩包安装
 
-从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.2.19) 下载 `dsh-ssh-ops-0.2.19.tgz` 后：
+从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.2.20) 下载 `dsh-ssh-ops-0.2.20.tgz` 后：
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.2.19.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.2.20.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.2.19.zip` 适用于离线审阅或二次开发；解压后可在目录中执行 `npm install && npm run build`。
+`dsh-ssh-ops-0.2.20.zip` 适用于离线审阅或二次开发；解压后可在目录中执行 `npm install && npm run build`。
 
 ## 使用方式
 
@@ -167,8 +167,8 @@ npm run pack:release
 
 生成物位于 `release/`：
 
-- `dsh-ssh-ops-0.2.19.tgz`：可直接被 DSH 安装。
-- `dsh-ssh-ops-0.2.19.zip`：完整离线源码包。
+- `dsh-ssh-ops-0.2.20.tgz`：可直接被 DSH 安装。
+- `dsh-ssh-ops-0.2.20.zip`：完整离线源码包。
 
 ## 许可
 

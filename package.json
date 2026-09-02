@@ -1,7 +1,7 @@
 {
   "name": "dsh-ssh-ops",
   "description": "SSH ops and database tools for DSH Web UI: connect to remote servers via SSH terminal/SFTP/tunnels, and connect to MySQL/PostgreSQL/Redis/MongoDB databases. Host half manages sessions with ssh2; client half renders the terminal and database panel.",
-  "version": "0.2.19",
+  "version": "0.2.20",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -94,7 +94,7 @@
     "build:host": "node scripts/build-host.mjs",
     "build:client": "node scripts/build-client.mjs",
     "build": "npm run gen:xterm-css && npm run build:host && npm run build:client",
-    "test": "node test/safety.mjs && node test/db-safety.mjs && node test/db-ops.mjs && node test/hostkey.mjs && node test/batch.mjs && node test/scp.mjs && node test/ops-preset.mjs && node test/client.mjs",
+    "test": "node test/safety.mjs && node test/db-safety.mjs && node test/db-ops.mjs && node test/hostkey.mjs && node test/batch.mjs && node test/scp.mjs && node test/ops-preset.mjs && node test/command-snippets.mjs && node test/ssh-panel-command-picker.mjs && node test/client.mjs",
     "install:dev": "node scripts/install-dev.mjs",
     "pack:release": "npm run build && node scripts/package-release.mjs"
   }

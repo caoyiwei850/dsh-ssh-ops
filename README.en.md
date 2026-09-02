@@ -8,7 +8,9 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.2.19-blue)
+![version](https://img.shields.io/badge/version-0.2.20-blue)
+
+> **New in v0.2.20**: a dedicated **Command Library** tab in the SSH panel, with searchable built-in operations commands and a compact in-tab **+ Custom** editor for global, group, or per-server commands. Choosing a command only fills the terminal input; it never runs automatically.
 
 ## Screenshots
 
@@ -28,6 +30,7 @@ Drive the connected server directly from the main conversation, with a real inte
 
 - Open a resizable xterm.js SSH terminal on the right of a session. When **DSH-better-sidebar** is also enabled, the terminal docks to the left of the sidebar instead of covering the file sidebar or the top-right controls.
 - Manage any number of servers and groups under **Settings → Plugins → SSH Resources**; the top **SSH** toggle only shows or hides the right-side terminal.
+- **Command library**: the SSH panel has a dedicated Command Library tab with system inspection, service, Docker, logs, networking, storage, scheduler, and Ubuntu/RHEL/CentOS install/update templates. Search matches command names and contents. Custom commands are managed inside this tab; they are stored only in browser local storage and must never contain passwords, tokens, or other secrets.
 - Server name, address, port, username, auth type, and group are stored in DSH local storage; there is no count limit.
 - Passwords, PEM private keys, and passphrases are stored **only** in DSH's official local credentials store `~/.dsh/.credentials.yaml` (owner-only permissions). Browser storage, agent context, tool results, and resource lists never read or display secrets.
 - The main conversation auto-detects the currently-connected server on the right; the agent never has to ask the user for an internal connection id.
@@ -59,7 +62,7 @@ The same model covers `sftp_delete` (the agent no longer deletes directly; inste
 ### From GitHub (recommended)
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.2.19
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.2.20
 ```
 
 Then restart DSH Web:
@@ -72,14 +75,14 @@ Open any session, click the top **SSH** tab, and use the right-side panel to con
 
 ### From a release archive
 
-Download `dsh-ssh-ops-0.2.19.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.2.19), then:
+Download `dsh-ssh-ops-0.2.20.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.2.20), then:
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.2.19.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.2.20.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.2.19.zip` is for offline review or further development; extract it and run `npm install && npm run build` in the directory.
+`dsh-ssh-ops-0.2.20.zip` is for offline review or further development; extract it and run `npm install && npm run build` in the directory.
 
 ## Usage
 
@@ -165,8 +168,8 @@ Pushing a `vX.Y.Z` tag that matches `package.json.version` runs tests, builds th
 
 Artifacts are written to `release/`:
 
-- `dsh-ssh-ops-0.2.19.tgz`: installable directly by DSH.
-- `dsh-ssh-ops-0.2.19.zip`: full offline source archive.
+- `dsh-ssh-ops-0.2.20.tgz`: installable directly by DSH.
+- `dsh-ssh-ops-0.2.20.zip`: full offline source archive.
 
 ## License
 

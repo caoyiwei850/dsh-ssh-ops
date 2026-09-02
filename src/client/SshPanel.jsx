@@ -12,6 +12,7 @@ import { SshFiles } from "./SshFiles.jsx";
 import { SshTunnels } from "./SshTunnels.jsx";
 import { SshDatabase } from "./SshDatabase.jsx";
 import { privateKeyProblem } from "./pemkey.js";
+import { availableCommandSnippets, loadCommandSnippets, matchingCommandSnippets, saveCommandSnippets, searchCommandSnippets } from "./command-snippets.js";
 
 const { useEffect, useRef, useState, Component } = React;
 
@@ -834,11 +835,18 @@ export function SshPanel({ api, credentials, locale }) {
   const [pendingConfirmations, setPendingConfirmations] = useState([]);
   const [pendingBusy, setPendingBusy] = useState(null);
   const [pendingModalOpen, setPendingModalOpen] = useState(false);
+  const [commandSnippets, setCommandSnippets] = useState(loadCommandSnippets);
+  const [profiles, setProfiles] = useState([]);
+  const [groups, setGroups] = useState([]);
+  const [snippetQuery, setSnippetQuery] = useState("");
+  const [snippetEditorOpen, setSnippetEditorOpen] = useState(false);
+  const [snippetForm, setSnippetForm] = useState({ name: "", command: "", scope: "global", scopeId: "" });
   // Confirmation ids this panel session has already surfaced. Only a brand-new
   // id re-opens the interruptive popup, so deferring one is not undone by the
   // next poll tick.
   const seenPendingIdsRef = useRef(null);
   const panelRef = useRef(null);
+  const snippetSearchRef = useRef(null);
   const t = zhDict;
 
   useEffect(() => {
@@ -846,6 +854,20 @@ export function SshPanel({ api, credentials, locale }) {
     refreshConnections(api);
     const timer = setInterval(() => refreshConnections(api), 5000);
     return () => clearInterval(timer);
+  }, [ui.open, api]);
+
+  useEffect(() => {
+    const sync = () => setCommandSnippets(loadCommandSnippets());
+    window.addEventListener("dsh-ssh-ops-command-snippets", sync);
+    return () => window.removeEventListener("dsh-ssh-ops-command-snippets", sync);
+  }, []);
+
+  useEffect(() => {
+    if (!ui.open) return;
+    Promise.all([api.profileList(), api.groupList()]).then(([profileValue, groupValue]) => {
+      setProfiles(profileValue.profiles ?? []);
+      setGroups(groupValue.groups ?? []);
+    }).catch(() => {});
   }, [ui.open, api]);
 
   // Keep the drawer's top edge aligned with the sidebar "New session" button so
@@ -972,9 +994,19 @@ export function SshPanel({ api, credentials, locale }) {
     return () => window.removeEventListener("resize", onWindowResize);
   }, []);
 
-  if (!ui.open) return null;
-
   const active = ui.connections.find((c) => c.connectionId === ui.activeConnectionId);
+  const visibleCommandSnippets = searchCommandSnippets(
+    matchingCommandSnippets(availableCommandSnippets(commandSnippets), active, profiles),
+    snippetQuery
+  );
+
+  useEffect(() => {
+    if (!ui.open || tab !== "snippets") return;
+    const frame = requestAnimationFrame(() => snippetSearchRef.current?.focus());
+    return () => cancelAnimationFrame(frame);
+  }, [ui.open, tab]);
+
+  if (!ui.open) return null;
 
   const openSession = async () => {
     if (!active) return;
@@ -988,6 +1020,41 @@ export function SshPanel({ api, credentials, locale }) {
     } finally {
       sshUiSetBusy(false);
     }
+  };
+
+  const fillSnippet = async (command) => {
+    const sessionId = active?.sessions?.[0];
+    if (!command || !sessionId) return sshUiSetError("请先打开当前服务器的终端，再填入快捷命令");
+    try {
+      await api.write(sessionId, command);
+      setSnippetQuery("");
+      setTab("terminal");
+    } catch (error) {
+      sshUiSetError(`填入快捷命令失败：${error?.message ?? String(error)}`);
+    }
+  };
+
+  const saveSnippet = () => {
+    const name = snippetForm.name.trim();
+    const command = snippetForm.command.trim();
+    if (!name || !command) return sshUiSetError("请填写快捷命令的名称和命令内容");
+    if (snippetForm.scope !== "global" && !snippetForm.scopeId) return sshUiSetError("请选择命令适用的分组或服务器");
+    const next = [...commandSnippets, {
+      id: crypto.randomUUID(), name, command, scope: snippetForm.scope,
+      scopeId: snippetForm.scope === "global" ? null : snippetForm.scopeId
+    }];
+    saveCommandSnippets(next);
+    setCommandSnippets(next);
+    setSnippetForm({ name: "", command: "", scope: "global", scopeId: "" });
+    setSnippetEditorOpen(false);
+    sshUiSetError(null);
+  };
+
+  const removeSnippet = (item) => {
+    if (!window.confirm(`删除自定义快捷命令“${item.name}”？`)) return;
+    const next = commandSnippets.filter((entry) => entry.id !== item.id);
+    saveCommandSnippets(next);
+    setCommandSnippets(next);
   };
 
   /** Disconnect one server from its tab's × button. */
@@ -1123,12 +1190,18 @@ export function SshPanel({ api, credentials, locale }) {
         {[
           ["terminal", t.tabTerminal],
           ["files", t.tabFiles],
-          ["tunnels", t.tabTunnels]
+          ["tunnels", t.tabTunnels],
+          ["snippets", "快捷命令"]
         ].map(([key, label]) => (
           <button
             key={key}
-            onClick={() => setTab(key)}
-            disabled={!active && key !== "terminal"}
+            onClick={() => {
+              if (key === "snippets" && tab === "snippets") {
+                setSnippetQuery("");
+                setTab("terminal");
+              } else setTab(key);
+            }}
+            disabled={!active && key !== "terminal" && key !== "snippets"}
             style={{
               ...panelStyles.tab,
               ...(tab === key ? panelStyles.tabActive : {})
@@ -1216,6 +1289,48 @@ export function SshPanel({ api, credentials, locale }) {
         <TabErrorBoundary key="database">
           <div style={{ ...panelStyles.tabPane, display: tab === "database" ? "flex" : "none" }}>
             <SshDatabase api={api} />
+          </div>
+        </TabErrorBoundary>
+        <TabErrorBoundary key="snippets">
+          <div style={{ ...panelStyles.tabPane, display: tab === "snippets" ? "flex" : "none" }}>
+            <div style={panelStyles.snippetPage}>
+              <div style={panelStyles.snippetPageHeading}>快捷命令</div>
+              <div style={panelStyles.snippetToolbar}>
+                <div style={panelStyles.snippetHint}>点击仅填入终端输入行，按 Enter 后才执行。</div>
+                <button type="button" onClick={() => setSnippetEditorOpen((open) => !open)} style={panelStyles.snippetAdd}>{snippetEditorOpen ? "收起" : "＋ 自定义"}</button>
+              </div>
+              {snippetEditorOpen && <div style={panelStyles.snippetEditor}>
+                <input value={snippetForm.name} onChange={(event) => setSnippetForm({ ...snippetForm, name: event.target.value })} placeholder="名称" style={panelStyles.snippetEditorName} />
+                <input value={snippetForm.command} onChange={(event) => setSnippetForm({ ...snippetForm, command: event.target.value })} placeholder="命令，例如：systemctl status nginx" style={panelStyles.snippetEditorCommand} />
+                <select value={snippetForm.scope} onChange={(event) => setSnippetForm({ ...snippetForm, scope: event.target.value, scopeId: "" })} style={panelStyles.snippetEditorScope}>
+                  <option value="global">所有服务器</option><option value="group">指定分组</option><option value="profile">指定服务器</option>
+                </select>
+                {snippetForm.scope === "group" && <select value={snippetForm.scopeId} onChange={(event) => setSnippetForm({ ...snippetForm, scopeId: event.target.value })} style={panelStyles.snippetEditorScope}><option value="">选择分组</option>{groups.map((group) => <option key={group.groupId} value={group.groupId}>{group.name}</option>)}</select>}
+                {snippetForm.scope === "profile" && <select value={snippetForm.scopeId} onChange={(event) => setSnippetForm({ ...snippetForm, scopeId: event.target.value })} style={panelStyles.snippetEditorScope}><option value="">选择服务器</option>{profiles.map((profile) => <option key={profile.profileId} value={profile.profileId}>{profile.name || profile.host}</option>)}</select>}
+                <button type="button" onClick={saveSnippet} style={panelStyles.snippetSave}>保存</button>
+              </div>}
+              <input
+                ref={snippetSearchRef}
+                value={snippetQuery}
+                onChange={(event) => setSnippetQuery(event.target.value)}
+                placeholder="搜索名称或命令，例如：nginx、日志、docker…"
+                style={panelStyles.snippetSearch}
+              />
+              {!active && <div style={panelStyles.snippetEmpty}>请先连接服务器；你仍可浏览和搜索内置命令。</div>}
+              <div style={panelStyles.snippetList}>
+                {visibleCommandSnippets.map((item) => (
+                  <div key={item.id} style={panelStyles.snippetCard}>
+                    <button type="button" onClick={() => fillSnippet(item.command)} disabled={!active} style={panelStyles.snippetCardMain}>
+                      <strong>{item.name}{!item.builtIn && <small style={panelStyles.snippetCustomBadge}>自定义</small>}</strong><code>{item.command}</code>
+                    </button>
+                    {!item.builtIn && <button type="button" onClick={() => removeSnippet(item)} title={`删除 ${item.name}`} aria-label={`删除 ${item.name}`} style={panelStyles.snippetDelete}>×</button>}
+                  </div>
+                ))}
+                {visibleCommandSnippets.length === 0 && (
+                  <div style={panelStyles.snippetEmpty}>没有匹配的快捷命令。点击右上角“＋ 自定义”即可添加。</div>
+                )}
+              </div>
+            </div>
           </div>
         </TabErrorBoundary>
       </div>
@@ -1408,6 +1523,23 @@ const panelStyles = {
     lineHeight: 1,
     flex: "none"
   },
+  snippetPage: { display: "flex", flex: 1, minHeight: 0, flexDirection: "column", gap: 10, padding: 8, overflow: "hidden" },
+  snippetPageHeading: { fontSize: 14, fontWeight: 650 },
+  snippetToolbar: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 },
+  snippetHint: { fontSize: 12, color: "#8b93a1" },
+  snippetAdd: { padding: "4px 7px", background: "transparent", color: "#b9c7e8", border: "1px solid #3a414b", borderRadius: 5, fontSize: 12, cursor: "pointer", flex: "none" },
+  snippetEditor: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6, padding: 7, background: "#161b21", border: "1px solid #2d3540", borderRadius: 7 },
+  snippetEditorName: { width: 100, minWidth: 0, padding: "6px 7px", background: "#101418", color: "#d7dbe2", border: "1px solid #3a414b", borderRadius: 5, fontSize: 12 },
+  snippetEditorCommand: { flex: "1 1 180px", minWidth: 0, padding: "6px 7px", background: "#101418", color: "#d7dbe2", border: "1px solid #3a414b", borderRadius: 5, fontSize: 12 },
+  snippetEditorScope: { maxWidth: 130, minWidth: 0, padding: "6px", background: "#101418", color: "#d7dbe2", border: "1px solid #3a414b", borderRadius: 5, fontSize: 12 },
+  snippetSave: { padding: "6px 8px", background: "#2d6cdf", color: "#fff", border: 0, borderRadius: 5, fontSize: 12, cursor: "pointer" },
+  snippetSearch: { width: "100%", boxSizing: "border-box", padding: "8px 9px", background: "#101418", color: "#d7dbe2", border: "1px solid #3a414b", borderRadius: 6, fontSize: 13 },
+  snippetList: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 8, overflowY: "auto", paddingRight: 2 },
+  snippetCard: { display: "flex", minWidth: 0, background: "#161b21", color: "#d7dbe2", border: "1px solid #2d3540", borderRadius: 7, fontSize: 12 },
+  snippetCardMain: { display: "flex", flex: 1, minWidth: 0, flexDirection: "column", gap: 5, padding: "9px 10px", background: "transparent", color: "#d7dbe2", border: 0, textAlign: "left", cursor: "pointer", fontSize: 12 },
+  snippetCustomBadge: { marginLeft: 6, color: "#8b93a1", fontWeight: 400 },
+  snippetDelete: { alignSelf: "flex-start", padding: "6px 8px", background: "transparent", color: "#8b93a1", border: 0, fontSize: 16, cursor: "pointer" },
+  snippetEmpty: { padding: 12, color: "#8b93a1", fontSize: 12, textAlign: "center" },
   connEmpty: { fontSize: 12, color: "#8b93a1", flex: "none", alignSelf: "center" },
   error: {
     padding: "6px 12px",
