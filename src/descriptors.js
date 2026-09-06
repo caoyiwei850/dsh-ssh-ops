@@ -9,12 +9,15 @@ import * as S from "./schemas.js";
 const PACKAGE = "dsh-ssh-ops";
 const NS = "sshOps";
 
-function def(method, requestSchema, requestType, resultSchema, resultType) {
+function def(method, requestSchema, requestType, resultSchema, resultType, options = {}) {
   return {
     id: `${PACKAGE}#${NS}/${method}`,
     service: NS,
     namespace: NS,
     method,
+    // Stream methods ride the Gateway-owned WebSocket mux and deliver every
+    // yielded item through the same strict result codec as unary results.
+    ...(options.stream ? { mode: "stream", cancellation: { parameter: "signal" } } : {}),
     invocation: { kind: "direct" },
     parameters: [
       {
@@ -51,6 +54,7 @@ export const DESCRIPTORS = [
   def("pendingConfirmationApprove", S.pendingConfirmationActionRequestSchema, "PendingConfirmationActionRequest", S.pendingConfirmationApproveResultSchema, "PendingConfirmationApproveResult"),
   def("pendingConfirmationCancel", S.pendingConfirmationActionRequestSchema, "PendingConfirmationActionRequest", S.pendingConfirmationCancelResultSchema, "PendingConfirmationCancelResult"),
   def("read", S.readRequestSchema, "SshReadRequest", S.readResultSchema, "SshReadResult"),
+  def("terminalStream", S.terminalStreamRequestSchema, "SshTerminalStreamRequest", S.readResultSchema, "SshReadResult", { stream: true }),
   def("resize", S.resizeRequestSchema, "SshResizeRequest", S.resizeResultSchema, "SshResizeResult"),
   def("closeSession", S.closeSessionRequestSchema, "SshCloseSessionRequest", S.closeSessionResultSchema, "SshCloseSessionResult"),
   def("disconnect", S.disconnectRequestSchema, "SshDisconnectRequest", S.disconnectResultSchema, "SshDisconnectResult"),

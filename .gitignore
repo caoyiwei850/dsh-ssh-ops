@@ -6,6 +6,9 @@ npm-debug.log*
 # Generated per-machine host key for the local test server (test-sshd.mjs).
 test-sshd-hostkey.pem
 # Manual integration test needs a live SSH server with credentials; not for CI.
-test/db-integration.mjs
+test/manual/
 .mimosa
 .zcode/
+.DS_Store
+__pycache__/
+package-lock.json.bak-*

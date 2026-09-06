@@ -7,6 +7,7 @@
  * A user who deliberately types a high-risk command into the right-side SSH
  * terminal is not intercepted by this agent-command guard.
  */
+import { policyBlockedReason } from "./policy-messages.js";
 
 const IRREVERSIBLE_BLOCKS = [
   [/(?:^|\s)(?:rm|unlink|shred|rmdir)\b/i, "删除文件或目录"],
@@ -26,7 +27,7 @@ function blocked(category) {
     // Short reason: surfaced on the ssh_write path (Enter was blocked) and as
     // the card title on ssh_exec/sftp_delete. Kept terse so the key advice
     // (don't retry, don't bypass, a human confirms) is visible at a glance.
-    reason: `安全策略已阻止：${category}。请勿重试/绕行，由操作者在右侧终端确认执行。`
+    reason: policyBlockedReason(category)
   };
 }
 

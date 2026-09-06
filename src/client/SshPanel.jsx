@@ -201,33 +201,84 @@ function XtermView({ api, sessionId, connectionId }) {
     };
     term.onData(onData);
 
-    const loop = async () => {
+    const controller = new AbortController();
+    const NO_SESSION_NOTICE = `\r\n\x1b[31m[终端会话已失效：DSH 服务已重启或该连接已关闭。请到 设置 → 插件 → SSH 资源 重新连接]\x1b[0m\r\n`;
+    const EXIT_NOTICE = `\r\n\x1b[90m[session exited]\x1b[0m\r\n`;
+    const showItem = ({ data, exit }) => {
+      if (data) term.write(data);
+      if (exit !== null) {
+        setClosed(true);
+        term.write(EXIT_NOTICE);
+        return true;
+      }
+      return false;
+    };
+
+    const backoff = async (steps) => {
+      await new Promise((resolve) => setTimeout(resolve, Math.min(4000, 500 * 2 ** steps)));
+    };
+
+    // Preferred path: host push over the Gateway WebSocket mux (typert
+    // mode:'stream'). The keepalive heartbeat resets the error backoff, so a
+    // quiet-but-alive terminal never degrades into retries.
+    const streamLoop = async () => {
       let errorBackoff = 0;
       while (alive) {
+        const stream = await api.streamTerminal(sessionId, controller.signal);
+        if (!stream) return false;
         try {
-          const { data, exit } = await api.read(sessionId, 300);
-          if (!alive) return;
-          if (data) term.write(data);
-          errorBackoff = 0;
-          if (exit !== null) {
-            setClosed(true);
-            if (alive) term.write(`\r\n\x1b[90m[session exited]\x1b[0m\r\n`);
-            return;
+          for await (const item of stream) {
+            if (!alive) return true;
+            errorBackoff = 0;
+            if (showItem(item)) return true;
           }
+          // Generator ended without an exit item: the mux dropped the stream
+          // (host reload, network blip). Back off, then resubscribe — output
+          // written meanwhile is buffered host-side and delivered on attach.
         } catch (error) {
-          if (!alive) return;
+          if (!alive) return true;
           if (error?.code === "no-session") {
             // The host restarted or the connection was closed server-side.
             // Without this notice the pane freezes on stale output and it
             // looks like agent commands stopped being echoed.
             setClosed(true);
-            term.write(`\r\n\x1b[31m[终端会话已失效：DSH 服务已重启或该连接已关闭。请到 设置 → 插件 → SSH 资源 重新连接]\x1b[0m\r\n`);
+            term.write(NO_SESSION_NOTICE);
+            return true;
+          }
+        }
+        if (!alive) return true;
+        await backoff(errorBackoff++);
+      }
+      return true;
+    };
+
+    // Fallback path: the original 300ms long-poll, kept for hosts/carriers
+    // without the stream mux.
+    const pollLoop = async () => {
+      let errorBackoff = 0;
+      while (alive) {
+        try {
+          const { data, exit } = await api.read(sessionId, 300);
+          if (!alive) return;
+          errorBackoff = 0;
+          if (showItem({ data, exit })) return;
+        } catch (error) {
+          if (!alive) return;
+          if (error?.code === "no-session") {
+            setClosed(true);
+            term.write(NO_SESSION_NOTICE);
             return;
           }
           // Back off so a dead transport cannot become a tight retry loop.
-          await new Promise((resolve) => setTimeout(resolve, Math.min(4000, 500 * 2 ** errorBackoff++)));
+          await backoff(errorBackoff++);
         }
       }
+    };
+
+    const loop = async () => {
+      const handled = await streamLoop();
+      if (handled || !alive) return;
+      await pollLoop();
     };
     loop();
 
@@ -243,6 +294,7 @@ function XtermView({ api, sessionId, connectionId }) {
 
     return () => {
       alive = false;
+      controller.abort();
       pendingInput = "";
       resizeObserver?.disconnect();
       term.dispose();

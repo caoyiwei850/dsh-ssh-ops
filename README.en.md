@@ -8,7 +8,7 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.2.20-blue)
+![version](https://img.shields.io/badge/version-0.2.21-blue)
 
 > **New in v0.2.20**: a dedicated **Command Library** tab in the SSH panel, with searchable built-in operations commands and a compact in-tab **+ Custom** editor for global, group, or per-server commands. Choosing a command only fills the terminal input; it never runs automatically.
 
@@ -62,7 +62,7 @@ The same model covers `sftp_delete` (the agent no longer deletes directly; inste
 ### From GitHub (recommended)
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.2.20
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.2.21
 ```
 
 Then restart DSH Web:
@@ -75,14 +75,14 @@ Open any session, click the top **SSH** tab, and use the right-side panel to con
 
 ### From a release archive
 
-Download `dsh-ssh-ops-0.2.20.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.2.20), then:
+Download `dsh-ssh-ops-0.2.21.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.2.21), then:
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.2.20.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.2.21.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.2.20.zip` is for offline review or further development; extract it and run `npm install && npm run build` in the directory.
+`dsh-ssh-ops-0.2.21.zip` is for offline review or further development; extract it and run `npm install && npm run build` in the directory.
 
 ## Usage
 
@@ -168,8 +168,8 @@ Pushing a `vX.Y.Z` tag that matches `package.json.version` runs tests, builds th
 
 Artifacts are written to `release/`:
 
-- `dsh-ssh-ops-0.2.20.tgz`: installable directly by DSH.
-- `dsh-ssh-ops-0.2.20.zip`: full offline source archive.
+- `dsh-ssh-ops-0.2.21.tgz`: installable directly by DSH.
+- `dsh-ssh-ops-0.2.21.zip`: full offline source archive.
 
 ## License
 

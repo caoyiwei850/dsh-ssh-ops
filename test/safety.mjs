@@ -54,6 +54,19 @@ assert.equal(
   "agent terminal output must use CRLF so xterm restarts at column zero"
 );
 
+// ── connect retry classification: code-first, auth never retried ──
+{
+  const { isTransientConnectError } = await import("../src/net-errors.js");
+  assert.equal(isTransientConnectError({ code: "ECONNRESET", message: "read ECONNRESET" }), true);
+  assert.equal(isTransientConnectError({ code: "ETIMEDOUT", message: "connect ETIMEDOUT" }), true);
+  assert.equal(isTransientConnectError({ code: "ECONNREFUSED", message: "connect ECONNREFUSED" }), true, "scanner-induced refusals stay retryable");
+  assert.equal(isTransientConnectError({ code: "ENOTFOUND", message: "getaddrinfo ENOTFOUND host" }), false, "bad DNS names are permanent");
+  assert.equal(isTransientConnectError({ code: "EACCES", message: "permission denied" }), false);
+  assert.equal(isTransientConnectError({ message: "All configured authentication methods failed" }), false, "auth failures are never retried");
+  assert.equal(isTransientConnectError({ message: "Handshake failed: no matching key exchange method" }), true, "protocol-level message fallback");
+  assert.equal(isTransientConnectError({ message: "Keepalive timeout" }), true);
+}
+
 const service = Object.create(SshOpsService.prototype);
 service.config = { maxBufferBytes: 1024, maxCaptureBytes: 512, maxCommandOutputBytes: 128 };
 service.wakeWaiters = () => {};

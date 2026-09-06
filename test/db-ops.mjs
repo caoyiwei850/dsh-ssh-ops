@@ -229,7 +229,7 @@ console.log("db-ops identifier/preview builders: all cases passed");
   assert.deepEqual(queries.at(-1), ["ROLLBACK", undefined]);
 
   // Explicit disconnect rolls back open transactions before ending the pool.
-  const begun3 = await manager.dbTxBegin({ dbConnectionId: "db-tx" });
+  const _begun3 = await manager.dbTxBegin({ dbConnectionId: "db-tx" });
   assert.equal(manager.dbTransactions.size, 1);
   await manager.disconnect({ dbConnectionId: "db-tx" });
   assert.equal(manager.dbTransactions.size, 0, "disconnect disposes open transactions");

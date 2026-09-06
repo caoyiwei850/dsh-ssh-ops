@@ -151,6 +151,35 @@ export class SshApi {
     return { data: value.data ? decodeBase64(value.data) : "", exit: value.exit };
   }
 
+  /**
+   * Subscribe to terminal output push (typert mode:'stream' over the
+   * Gateway's WebSocket mux). Returns an async generator of already-decoded
+   * { data, exit } items, or null when the stream path is unavailable (older
+   * host, mux offline) so the caller falls back to read() polling.
+   */
+  async streamTerminal(sessionId, signal) {
+    const namespace = this.getNamespace();
+    const fn = namespace?.terminalStream;
+    if (typeof fn !== "function") return null;
+    let stream;
+    try {
+      stream = signal !== undefined ? await fn({ sessionId }, signal) : await fn({ sessionId });
+    } catch {
+      return null;
+    }
+    if (stream === null || stream === undefined || typeof stream[Symbol.asyncIterator] !== "function") return null;
+    return {
+      async *[Symbol.asyncIterator]() {
+        for await (const item of stream) {
+          if (!item || item.ok !== true) {
+            throw new SshApiError(item?.error?.code ?? "rpc-failed", item?.error?.message ?? "terminal stream failed");
+          }
+          yield { data: item.value.data ? decodeBase64(item.value.data) : "", exit: item.value.exit };
+        }
+      }
+    };
+  }
+
   resize(sessionId, cols, rows) {
     return this.call("resize", { sessionId, cols, rows });
   }

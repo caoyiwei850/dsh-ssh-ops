@@ -11,12 +11,15 @@ import { Service } from "@deepseek-ai/cordis";
 import { credentialRef } from "@deepseek-ai/dsh-credentials";
 import { defineDomain, domainTable } from "@deepseek-ai/dsh-storage-domain";
 import { TypertRemoteService } from "@deepseek-ai/dsh-typert-protocol";
-import { defineTool } from "@deepseek-ai/dsh-tools";
 import { z } from "zod";
-import { assessShellCommand, isPrefillable, shellQuote } from "./safety.js";
+import { assessShellCommand, isPrefillable } from "./safety.js";
 import { scpCommand, scpDownload, scpUpload } from "./scp.js";
 import { redactForModel } from "./redact.js";
-import { DbOpsManager, pickSshConnectionId } from "./db-ops.js";
+import { isTransientConnectError } from "./net-errors.js";
+import { processTerminalInput } from "./terminal-input.js";
+import { fail } from "./envelope.js";
+import { POLICY_NOTICE_PREFIX, DANGEROUS_DEFAULT_REASON } from "./policy-messages.js";
+import { DbOpsManager } from "./db-ops.js";
 import {
   KnownHosts,
   decideHostKey,
@@ -24,6 +27,11 @@ import {
   blobAlgorithm,
   DEFAULT_HOST_KEY_MODE
 } from "./hostkey.js";
+import { registerSshSessionTools } from "./tools/ssh-session.js";
+import { registerSftpTools } from "./tools/sftp.js";
+import { registerTunnelTools } from "./tools/tunnel.js";
+import { registerBatchTools } from "./tools/batch.js";
+import { registerDbTools } from "./tools/db.js";
 
 const MAX_BUFFER_BYTES = 2 * 1024 * 1024;
 const MAX_COMMAND_OUTPUT_BYTES = 64 * 1024;
@@ -41,6 +49,19 @@ const CONNECT_RETRIES = 3;
 const RECONNECT_BASE_DELAY_MS = 1000;
 const RECONNECT_MAX_DELAY_MS = 30000;
 const RECONNECT_WAIT_MS = 30000;
+// Stream push keepalive: when the terminal is idle the generator still yields
+// an empty item at this cadence, so the client can tell a live-but-quiet
+// terminal from a dead WebSocket mux.
+const STREAM_HEARTBEAT_MS = 15000;
+// batchRun opens a full SSH connect + exec per target; an unbounded Promise.all
+// would storm every selected server (and any rate-limited network path between)
+// at once. Worker-pool the targets instead.
+const BATCH_MAX_CONCURRENCY = 4;
+// Upper bound for one SFTP/SCP read (agent tools may lower it via max_bytes).
+const MAX_FILE_READ_BYTES = 4 * 1024 * 1024;
+// Late readers can still see the exit status of the N most recently exited
+// sessions (session tombstones).
+const MAX_EXIT_TOMBSTONES = 64;
 
 const profileRecordSchema = z.object({
   name: z.string(),
@@ -108,10 +129,6 @@ const knownHostDomainSpec = defineDomain({
     known_hosts: domainTable(knownHostRecordSchema)
   }
 });
-
-function fail(code, message) {
-  return { code, message };
-}
 
 function profileCredentialRefs(profileId) {
   const stem = profileId.replaceAll("-", "").toUpperCase();
@@ -203,6 +220,7 @@ export default class SshOpsService extends TypertRemoteService {
       maxBufferBytes: MAX_BUFFER_BYTES,
       maxCommandOutputBytes: MAX_COMMAND_OUTPUT_BYTES,
       maxCaptureBytes: MAX_CAPTURE_BYTES,
+      streamHeartbeatMs: STREAM_HEARTBEAT_MS,
       ...config
     };
     // Tear down all connections when the plugin fiber unloads.
@@ -460,10 +478,7 @@ export default class SshOpsService extends TypertRemoteService {
         // Tear down hops on failure so the retry starts fresh.
         for (const hop of record.hops) { try { hop.end(); } catch {} }
         record.hops = [];
-        const message = String(error?.message ?? error);
-        const transient = /reset|timeout|timed out|kex|handshake|socket|ECONN|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|EAI_AGAIN/i.test(message)
-          && !/authenticat|permission|denied/i.test(message);
-        if (!transient || attempt >= retries) break;
+        if (!isTransientConnectError(error) || attempt >= retries) break;
         await this.sleep(Math.min(2000, 500 * 2 ** attempt));
       }
     }
@@ -562,7 +577,7 @@ export default class SshOpsService extends TypertRemoteService {
    * schedule a transparent reconnect so later operations self-heal instead of
    * forcing a brand-new session every time.
    */
-  handleTransportLoss(record, client, error) {
+  handleTransportLoss(record, client, _error) {
     if (record.closing || record.client !== client || record.dead) return;
     record.dead = true;
     record.sftp = null;
@@ -923,6 +938,7 @@ export default class SshOpsService extends TypertRemoteService {
       captureBuffer: "",
       lastPrompt: null,
       waiters: [],
+      streamListeners: new Set(),
       exited: null,
       stream: null,
       // The PTY receives keystrokes one at a time. Track the current command
@@ -1052,6 +1068,64 @@ export default class SshOpsService extends TypertRemoteService {
     });
   }
 
+  /**
+   * Stream-push terminal output (typert mode:'stream', WebSocket mux carrier).
+   * Each yielded item reuses the read() envelope so the client render path is
+   * identical to polling; items are validated by the gateway against the
+   * descriptor's strict result codec. Ends when the session exits or the
+   * caller's AbortSignal fires — the client falls back to 300ms polling if the
+   * stream can't be opened or breaks.
+   */
+  async *terminalStream(request, signal) {
+    const session = this.sessions.get(request.sessionId);
+    if (session === void 0) {
+      yield { ok: false, error: fail("no-session", `session "${request.sessionId}" does not exist`) };
+      return;
+    }
+    const listener = { chunks: [], wake: null, timer: null };
+    if (session.streamListeners === undefined) session.streamListeners = new Set();
+    session.streamListeners.add(listener);
+    // Take over the pending poll buffer so output that arrived between PTY
+    // creation and this subscription is not lost (the poller is idle while
+    // the stream is open, so the buffer belongs to us now).
+    if (session.buffer !== "") {
+      listener.chunks.push(session.buffer);
+      session.buffer = "";
+    }
+    const abort = () => listener.wake?.();
+    signal?.addEventListener("abort", abort);
+    try {
+      let heartbeatFired = false;
+      while (true) {
+        const data = listener.chunks.join("");
+        listener.chunks = [];
+        const exit = session.exited;
+        // Yield on real output, on exit, or on the idle keepalive heartbeat.
+        if (data !== "" || exit !== null || heartbeatFired) {
+          yield { ok: true, value: { data: encodeData(data), exit } };
+        }
+        heartbeatFired = false;
+        if (exit !== null) return;
+        // Sleep until output arrives, the caller aborts, or the keepalive
+        // heartbeat fires — whichever comes first.
+        await new Promise((resolve) => {
+          listener.wake = resolve;
+          listener.timer = setTimeout(() => {
+            heartbeatFired = true;
+            resolve();
+          }, this.config.streamHeartbeatMs);
+        });
+        listener.wake = null;
+        clearTimeout(listener.timer);
+        listener.timer = null;
+        if (signal?.aborted) return;
+      }
+    } finally {
+      session.streamListeners.delete(listener);
+      signal?.removeEventListener("abort", abort);
+    }
+  }
+
   pendingConfirmationList() {
     return {
       ok: true,
@@ -1090,15 +1164,25 @@ export default class SshOpsService extends TypertRemoteService {
     if (!task) return { ok: false, error: fail("batch-missing", `批量任务 "${request.batchId}" 不存在或已执行`) };
     if (request.profileIds.length === 0) return { ok: false, error: fail("batch-no-targets", "未选择任何服务器") };
     this.batchTasks.delete(request.batchId);
-    const results = await Promise.all(request.profileIds.map(async (profileId) => {
-      try {
-        const r = await this.runCommandOnProfile(profileId, task.command, task.timeoutMs);
-        if (!r.ok) return { profileId, name: "", host: "", ok: false, exitCode: null, stdout: "", stderr: "", error: r.error.message };
-        return { profileId, name: r.value.name, host: r.value.host, ok: true, exitCode: r.value.exitCode, stdout: r.value.stdout, stderr: r.value.stderr, error: null };
-      } catch (error) {
-        return { profileId, name: "", host: "", ok: false, exitCode: null, stdout: "", stderr: "", error: error.message };
+    // Fixed worker pool over the target list; results keep the requested order
+    // via index-addressed slots.
+    const targets = request.profileIds;
+    const results = new Array(targets.length);
+    let next = 0;
+    const worker = async () => {
+      while (next < targets.length) {
+        const index = next++;
+        const profileId = targets[index];
+        try {
+          const r = await this.runCommandOnProfile(profileId, task.command, task.timeoutMs);
+          if (!r.ok) results[index] = { profileId, name: "", host: "", ok: false, exitCode: null, stdout: "", stderr: "", error: r.error.message };
+          else results[index] = { profileId, name: r.value.name, host: r.value.host, ok: true, exitCode: r.value.exitCode, stdout: r.value.stdout, stderr: r.value.stderr, error: null };
+        } catch (error) {
+          results[index] = { profileId, name: "", host: "", ok: false, exitCode: null, stdout: "", stderr: "", error: error.message };
+        }
       }
-    }));
+    };
+    await Promise.all(Array.from({ length: Math.min(BATCH_MAX_CONCURRENCY, targets.length) }, () => worker()));
     return { ok: true, value: { results } };
   }
 
@@ -1442,48 +1526,54 @@ export default class SshOpsService extends TypertRemoteService {
    * terminal mirror: used by the batch channel, where the operator already
    * confirmed the command against a chosen server list. Returns raw output.
    */
+  /**
+   * Open one non-interactive exec channel and collect stdout/stderr until the
+   * channel closes or the timeout fires (then the channel is closed and the
+   * timeout flag set). Shared by the batch channel (raw) and the agent
+   * ssh_exec path (mirrored into the panel terminal).
+   */
+  async collectExecOutput(client, command, timeoutMs) {
+    const stream = await new Promise((resolve, reject) => {
+      client.exec(command, { pty: false }, (error, s) => {
+        if (error) reject(error);
+        else resolve(s);
+      });
+    });
+    const state = { exitCode: null, stdout: "", stderr: "", truncated: false, timedOut: false };
+    const timer = setTimeout(() => {
+      state.timedOut = true;
+      try { stream.close(); } catch {}
+    }, timeoutMs);
+    await new Promise((resolve) => {
+      stream.on("data", (chunk) => {
+        const result = appendCapped(state.stdout, chunk.toString("utf8"), this.config.maxCommandOutputBytes);
+        state.stdout = result.text;
+        state.truncated ||= result.truncated;
+      });
+      stream.stderr.on("data", (chunk) => {
+        const result = appendCapped(state.stderr, chunk.toString("utf8"), this.config.maxCommandOutputBytes);
+        state.stderr = result.text;
+        state.truncated ||= result.truncated;
+      });
+      stream.on("close", (code) => {
+        clearTimeout(timer);
+        state.exitCode = typeof code === "number" ? code : null;
+        resolve();
+      });
+      stream.on("error", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+    return state;
+  }
+
   async execRawOnClient(client, command, timeoutMs = 30000) {
-    let stdout = "";
-    let stderr = "";
-    let exitCode = null;
-    let truncated = false;
-    let timedOut = false;
     try {
-      const stream = await new Promise((resolve, reject) => {
-        client.exec(command, { pty: false }, (error, s) => {
-          if (error) reject(error);
-          else resolve(s);
-        });
-      });
-      const timer = setTimeout(() => {
-        timedOut = true;
-        try { stream.close(); } catch {}
-      }, timeoutMs);
-      await new Promise((resolve) => {
-        stream.on("data", (chunk) => {
-          const result = appendCapped(stdout, chunk.toString("utf8"), this.config.maxCommandOutputBytes);
-          stdout = result.text;
-          truncated ||= result.truncated;
-        });
-        stream.stderr.on("data", (chunk) => {
-          const result = appendCapped(stderr, chunk.toString("utf8"), this.config.maxCommandOutputBytes);
-          stderr = result.text;
-          truncated ||= result.truncated;
-        });
-        stream.on("close", (code) => {
-          clearTimeout(timer);
-          exitCode = typeof code === "number" ? code : null;
-          resolve();
-        });
-        stream.on("error", () => {
-          clearTimeout(timer);
-          resolve();
-        });
-      });
+      return { ok: true, value: await this.collectExecOutput(client, command, timeoutMs) };
     } catch (error) {
       return { ok: false, error: fail("exec-failed", error.message) };
     }
-    return { ok: true, value: { exitCode, stdout, stderr, truncated, timedOut } };
   }
 
   async execOnConnection(connectionId, command, timeoutMs = 30000, retried = false) {
@@ -1497,43 +1587,9 @@ export default class SshOpsService extends TypertRemoteService {
     const commandId = randomUUID();
     const startedAt = new Date().toISOString();
     const startedAtMs = Date.now();
-    let stdout = "";
-    let stderr = "";
-    let exitCode = null;
-    let truncated = false;
-    let timedOut = false;
+    let state;
     try {
-      const stream = await new Promise((resolve, reject) => {
-        conn.client.exec(command, { pty: false }, (error, s) => {
-          if (error) reject(error);
-          else resolve(s);
-        });
-      });
-      const timer = setTimeout(() => {
-        timedOut = true;
-        try { stream.close(); } catch {}
-      }, timeoutMs);
-      await new Promise((resolve) => {
-        stream.on("data", (chunk) => {
-          const result = appendCapped(stdout, chunk.toString("utf8"), this.config.maxCommandOutputBytes);
-          stdout = result.text;
-          truncated ||= result.truncated;
-        });
-        stream.stderr.on("data", (chunk) => {
-          const result = appendCapped(stderr, chunk.toString("utf8"), this.config.maxCommandOutputBytes);
-          stderr = result.text;
-          truncated ||= result.truncated;
-        });
-        stream.on("close", (code, signal) => {
-          clearTimeout(timer);
-          exitCode = typeof code === "number" ? code : null;
-          resolve();
-        });
-        stream.on("error", () => {
-          clearTimeout(timer);
-          resolve();
-        });
-      });
+      state = await this.collectExecOutput(conn.client, command, timeoutMs);
     } catch (error) {
       // The transport may have died between the liveness check and the exec.
       // Wait for the self-healing reconnect and retry once transparently.
@@ -1542,6 +1598,7 @@ export default class SshOpsService extends TypertRemoteService {
       }
       return { ok: false, error: fail("exec-failed", error.message) };
     }
+    const { stdout, stderr } = state;
     // Mirror the command and output into every live shell session of this
     // connection so the panel displays agent-driven commands too.
     const display = normalizeTerminalEol(`$ ${command}\n${stdout}${stderr.length > 0 ? stderr : ""}`)
@@ -1558,7 +1615,7 @@ export default class SshOpsService extends TypertRemoteService {
     return {
       ok: true,
       value: {
-        exitCode,
+        exitCode: state.exitCode,
         stdout,
         stderr,
         display,
@@ -1566,8 +1623,8 @@ export default class SshOpsService extends TypertRemoteService {
         startedAt,
         finishedAt: new Date().toISOString(),
         durationMs: Date.now() - startedAtMs,
-        truncated,
-        timedOut
+        truncated: state.truncated,
+        timedOut: state.timedOut
       }
     };
   }
@@ -1579,7 +1636,7 @@ export default class SshOpsService extends TypertRemoteService {
    * command contains control characters that would be unsafe to send to a PTY).
    * The operator — never the agent — is the one who presses Enter.
    */
-  prefillBlockedCommand(connectionId, command, reason = "危险操作") {
+  prefillBlockedCommand(connectionId, command, reason = DANGEROUS_DEFAULT_REASON) {
     // Agent tools commonly omit connection_id to mean the selected right-side
     // server. Resolve it here so safety confirmations follow exactly the same
     // current-connection semantics as ssh_exec and the other SFTP tools.
@@ -1666,7 +1723,7 @@ export default class SshOpsService extends TypertRemoteService {
 
   /** Add a local policy notice to the same buffer rendered by the terminal. */
   appendTerminalNotice(session, message) {
-    this.appendSessionOutput(session, `\r\n\x1b[33m[DSH SSH 安全策略] ${message}\x1b[0m\r\n`);
+    this.appendSessionOutput(session, `\r\n\x1b[33m${POLICY_NOTICE_PREFIX} ${message}\x1b[0m\r\n`);
   }
 
   /**
@@ -1675,54 +1732,8 @@ export default class SshOpsService extends TypertRemoteService {
    * execute it. History navigation and tab completion fail closed as well.
    */
   prepareTerminalInput(session, text) {
-    let forwarded = "";
-    let blockedReason = null;
-    for (const char of text) {
-      if (char === "\r" || char === "\n") {
-        const decision = session.inputKnown
-          ? assessShellCommand(session.inputLine)
-          : { ok: false, reason: "安全策略已阻止：无法验证历史命令或自动补全后的内容。请手动输入只读诊断命令。" };
-        if (decision.ok) {
-          forwarded += char;
-        } else {
-          // The already-echoed command remains in the remote line editor until
-          // Ctrl-U clears it; crucially, Enter itself never reaches the shell.
-          forwarded += "\x15";
-          blockedReason ??= decision.reason;
-          this.appendTerminalNotice(session, decision.reason);
-        }
-        session.inputLine = "";
-        session.inputKnown = true;
-        continue;
-      }
-      if (char === "\x03") {
-        session.inputLine = "";
-        session.inputKnown = true;
-        forwarded += char;
-        continue;
-      }
-      if (char === "\b" || char === "\x7f") {
-        if (session.inputKnown) session.inputLine = session.inputLine.slice(0, -1);
-        forwarded += char;
-        continue;
-      }
-      if (char === "\x1b" || char === "\t") {
-        // Escape sequences (history/navigation) and completion can change the
-        // remote line without a trustworthy local representation.
-        session.inputKnown = false;
-        forwarded += char;
-        continue;
-      }
-      if (char.codePointAt(0) < 32) {
-        forwarded += char;
-        continue;
-      }
-      if (session.inputKnown) {
-        session.inputLine += char;
-        if (session.inputLine.length > 8192) session.inputKnown = false;
-      }
-      forwarded += char;
-    }
+    const { forwarded, blockedReason } = processTerminalInput(session, text, (line) => assessShellCommand(line));
+    if (blockedReason !== null) this.appendTerminalNotice(session, blockedReason);
     return { forwarded, blockedReason };
   }
 
@@ -1739,21 +1750,7 @@ export default class SshOpsService extends TypertRemoteService {
     if (typeof text !== "string") return;
     if (session.inputLine === undefined) session.inputLine = "";
     if (session.inputKnown === undefined) session.inputKnown = true;
-    for (const char of text) {
-      if (char === "\r" || char === "\n" || char === "\x03") {
-        session.inputLine = "";
-        session.inputKnown = true;
-      } else if (char === "\b" || char === "\x7f") {
-        if (session.inputKnown) session.inputLine = session.inputLine.slice(0, -1);
-      } else if (char === "\x1b" || char === "\t") {
-        session.inputKnown = false;
-      } else if (char.codePointAt(0) < 32) {
-        // Other control chars: leave mirror as-is.
-      } else if (session.inputKnown) {
-        session.inputLine += char;
-        if (session.inputLine.length > 8192) session.inputKnown = false;
-      }
-    }
+    processTerminalInput(session, text, null);
   }
 
   /** Current buffered text of a connection's first live shell session. */
@@ -1890,7 +1887,7 @@ export default class SshOpsService extends TypertRemoteService {
     if (!selected.ok) return selected;
     const sftp = await this.requireSftp(selected.connection);
     if (!sftp.ok) return sftp;
-    const maxBytes = request.maxBytes ?? 4 * 1024 * 1024;
+    const maxBytes = request.maxBytes ?? MAX_FILE_READ_BYTES;
     const chunks = [];
     let total = 0;
     try {
@@ -1957,7 +1954,7 @@ export default class SshOpsService extends TypertRemoteService {
   async scpReadFile(request) {
     const selected = this.resolveConnection(request.connectionId);
     if (!selected.ok) return selected;
-    const maxBytes = request.maxBytes ?? 4 * 1024 * 1024;
+    const maxBytes = request.maxBytes ?? MAX_FILE_READ_BYTES;
     let stream;
     try {
       stream = await this.openScpChannel(selected.connection, scpCommand("f", request.path));
@@ -2229,7 +2226,7 @@ export default class SshOpsService extends TypertRemoteService {
    * at connect time).
    */
   async sshConfigImport() {
-    const { readFileSync, existsSync } = await import("node:fs");
+    const { readFile, existsSync } = await import("node:fs");
     const { join } = await import("node:path");
     const os = await import("node:os");
     const configPath = join(os.default.homedir(), ".ssh", "config");
@@ -2238,7 +2235,7 @@ export default class SshOpsService extends TypertRemoteService {
     }
     let content;
     try {
-      content = readFileSync(configPath, "utf8");
+      content = await readFile(configPath, "utf8");
     } catch (error) {
       return { ok: false, error: fail("ssh-config-read-failed", error.message) };
     }
@@ -2368,6 +2365,7 @@ export default class SshOpsService extends TypertRemoteService {
       if (prompt !== null) session.lastPrompt = prompt;
     }
     this.wakeWaiters(session, null);
+    this.notifyStreamListeners(session, text);
   }
 
   fallbackPrompt(connection) {
@@ -2377,1013 +2375,14 @@ export default class SshOpsService extends TypertRemoteService {
   // ── Agent tools ────────────────────────────────────────────────────────────
 
   registerTools(ctx) {
-    // defineTool invokes execute as a bare function; bind the service via closure.
-    const service = this;
-    ctx.tools.register(defineTool({
-      name: "ssh_list",
-      description: "List currently open SSH connections and identify the active server. This reports only live connection metadata (name, host, port, username and active state); it never lists saved SSH resources or credentials. Use it only when the user asks which server is connected. For normal server work, ssh_exec/ssh_read/ssh_write already target the active connection automatically.",
-      parameters: {},
-      output: {
-        schema: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            activeConnectionId: { oneOf: [{ type: "string" }, { type: "null" }], required: true },
-            connections: {
-              type: "array",
-              required: true,
-              items: {
-                type: "object",
-                additionalProperties: false,
-                properties: {
-                  connectionId: { type: "string", required: true },
-                  name: { type: "string" },
-                  host: { type: "string", required: true },
-                  port: { type: "integer", required: true },
-                  username: { type: "string", required: true },
-                  connected: { type: "boolean", required: true },
-                  sessions: { type: "array", required: true, items: { type: "string" } }
-                }
-              }
-            }
-          }
-        },
-        render(_args, value) {
-          if (value.connections.length === 0) return [{ type: "text", text: "No SSH connection is currently open." }];
-          const lines = value.connections.map((connection) => `${connection.connectionId === value.activeConnectionId ? "* " : "- "}${connection.name ?? connection.host}: ${connection.username}@${connection.host}:${connection.port}${connection.sessions.length ? " (terminal open)" : ""}`);
-          return [{ type: "text", text: lines.join("\n") }];
-        }
-      },
-      async execute() {
-        const result = await service.list();
-        if (!result.ok) throw new Error(`ssh_list failed: ${result.error.message}`);
-        return result.value;
-      }
-    }));
-
-    ctx.tools.register(defineTool({
-      name: "ssh_connect",
-      description: "Connect to a remote server over SSH, open it in the right-side terminal, and make it the current connection for later SSH tools. Subsequent ssh_exec, ssh_read, ssh_write, and ssh_disconnect calls automatically use this connection unless a connection_id is explicitly supplied.",
-      parameters: {
-        host: { type: "string", required: true, description: "Remote hostname or IP address." },
-        port: { type: "integer", description: "SSH port, defaults to 22." },
-        username: { type: "string", required: true, description: "SSH username." },
-        auth: {
-          type: "object",
-          required: true,
-          additionalProperties: false,
-          description: "Authentication. Either {kind: 'password', password} or {kind: 'key', privateKey, passphrase?}.",
-          properties: {
-            kind: { type: "string", enum: ["password", "key"], required: true },
-            password: { type: "string" },
-            privateKey: { type: "string" },
-            passphrase: { type: "string" }
-          }
-        },
-        name: { type: "string", description: "Optional display name for this connection." }
-      },
-      output: {
-        schema: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            connectionId: { type: "string", required: true },
-            name: { type: "string" },
-            host: { type: "string", required: true },
-            port: { type: "integer", required: true },
-            username: { type: "string", required: true }
-          }
-        },
-        render(args, value) {
-          const conn = value ?? {};
-          return [{ type: "text", text: `Connected ${args.username}@${args.host} (id: ${conn.connectionId ?? "?"})` }];
-        }
-      },
-      async execute(args) {
-        const result = await service.connect({
-          host: args.host,
-          port: args.port,
-          username: args.username,
-          auth: args.auth,
-          name: args.name
-        });
-        if (!result.ok) throw new Error(`ssh_connect failed: ${result.error.message}`);
-        return result.value;
-      }
-    }));
-
-    ctx.tools.register(defineTool({
-      name: "ssh_exec",
-      description: "Run a normal SSH command on the server currently open in the right-side SSH terminal and return its output. Omit connection_id when the user means the current server; do not call ssh_list first. SSL configuration, package changes, service reloads, and config edits are allowed and remain subject to DSH permissions. Explicitly destructive or irreversible operations are not run: a confirmation popup appears in the right-side SSH panel, where only the operator can execute or cancel them. The command and output are also shown in the terminal panel.",
-      parameters: {
-        connection_id: { type: "string", description: "Optional. Omit to target the current right-side SSH connection." },
-        command: { type: "string", required: true, description: "The shell command to execute." },
-        timeout_ms: { type: "integer", description: "Timeout in milliseconds, defaults to 30000." }
-      },
-      output: {
-        schema: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            connectionId: { type: "string", required: true },
-            host: { type: "string", required: true },
-            exitCode: { oneOf: [{ type: "integer" }, { type: "null" }], required: true },
-            stdout: { type: "string", required: true },
-            stderr: { type: "string", required: true },
-            commandId: { type: "string", required: true },
-            startedAt: { type: "string", required: true },
-            finishedAt: { type: "string", required: true },
-            durationMs: { type: "integer", required: true },
-            truncated: { type: "boolean", required: true },
-            timedOut: { type: "boolean", required: true },
-            redacted: { type: "boolean", required: true },
-            blocked: { type: "boolean" },
-            reason: { type: "string" },
-            command: { type: "string" },
-            prefilled: { type: "boolean" },
-            queued: { type: "boolean" }
-          }
-        },
-        render(args, value) {
-          if (value.blocked) {
-            const where = value.queued
-              ? "命令未执行；右侧 SSH 终端面板已弹出确认卡片，等待操作员点击“执行”或“撤销”："
-              : "命令未执行，无法预填，请粘贴到右侧终端执行：";
-            return [{ type: "text", text: `⚠️ 已拦截：${value.reason ?? ""}\n${where}\n\`\`\`bash\n${value.command ?? ""}\n\`\`\`\n请勿重试/绕行，由人工确认执行。` }];
-          }
-          const out = value.stdout ?? "";
-          const err = value.stderr ?? "";
-          let body = out;
-          if (err.length > 0) {
-            if (body.length > 0 && !body.endsWith("\n")) body += "\n";
-            body += `[stderr]\n${err}`;
-          }
-          if (body.length === 0) body = "(no output)";
-          if (value.exitCode !== null && value.exitCode !== 0) body += `\n[exit code: ${value.exitCode}]`;
-          if (value.timedOut) body += "\n[command timed out]";
-          if (value.truncated) body += "\n[output truncated for safe model context]";
-          if (value.redacted) body += "\n[sensitive values redacted]";
-          return [{ type: "text", text: body }];
-        }
-      },
-      async execute(args) {
-        const result = await service.executeCommand({
-          connectionId: args.connection_id,
-          command: args.command,
-          timeoutMs: args.timeout_ms ?? 30000
-        });
-        if (!result.ok) throw new Error(`ssh_exec failed: ${result.error.message}`);
-        return result.value;
-      }
-    }));
-
-    ctx.tools.register(defineTool({
-      name: "ssh_read",
-      description: "Read buffered output from the current right-side SSH terminal. Omit connection_id for the current server; do not call ssh_list first. Useful after ssh_write or when the user typed something in the panel.",
-      parameters: {
-        connection_id: { type: "string", description: "Optional. Omit to target the current right-side SSH connection." }
-      },
-      output: {
-        schema: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            connectionId: { type: "string", required: true },
-            host: { type: "string", required: true },
-            data: { type: "string", required: true },
-            hasSession: { type: "boolean", required: true },
-            truncated: { type: "boolean", required: true },
-            redacted: { type: "boolean", required: true }
-          }
-        },
-        render(args, value) {
-          const body = !value.hasSession
-            ? "(no open shell session on this connection)"
-            : value.data || "(no output yet)";
-          const notes = [
-            value.truncated ? "[terminal capture truncated]" : "",
-            value.redacted ? "[sensitive values redacted]" : ""
-          ].filter(Boolean);
-          return [{ type: "text", text: notes.length > 0 ? `${body}\n${notes.join("\n")}` : body }];
-        }
-      },
-      async execute(args) {
-        const result = service.readCurrentConnection({ connectionId: args.connection_id });
-        if (!result.ok) throw new Error(`ssh_read failed: ${result.error.message}`);
-        return result.value;
-      }
-    }));
-
-    ctx.tools.register(defineTool({
-      name: "ssh_write",
-      description: "Send input into a right-side SSH terminal and, by default, press Enter afterwards so the input is submitted like a human typing Enter (a carriage return \\r is appended unless the input already ends with a newline). Omit connection_id to target the current/active terminal; provide connection_id to target a specific server's terminal. If the target connection has no open terminal, one is opened automatically so the input is never silently dropped. Normal operations are permitted through DSH permissions; explicitly destructive or irreversible commands are stopped before agent execution. Ctrl-C remains available to cancel an in-progress command.",
-      parameters: {
-        connection_id: { type: "string", description: "Optional. Omit to target the current/active terminal; specify to target that server's terminal (e.g. from ssh_connect/ssh_list)." },
-        input: { type: "string", required: true, description: "The input to send, e.g. 'y' to answer a prompt, or 'ls -la' to run a command." },
-        press_enter: { type: "boolean", description: "Whether to append a carriage return (Enter) after the input so the command or prompt answer is submitted. Defaults to true; set false to send raw input without submitting." }
-      },
-      output: {
-        schema: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            written: { type: "integer", required: true }
-          }
-        },
-        render(args, value) {
-          return [{ type: "text", text: `Sent ${value.written} bytes to the terminal session.` }];
-        }
-      },
-      async execute(args) {
-        let input = typeof args.input === "string" ? args.input : String(args.input ?? "");
-        // The physical Enter key emits a carriage return (\\r). Send that —
-        // not a bare \\n — so the input also submits to programs that put the
-        // terminal in raw mode (password prompts, [Y/n] confirmations).
-        if (args.press_enter !== false && !/[\r\n]$/.test(input)) input += "\r";
-        // The input must land in a live terminal session. If the target
-        // connection has none open, open one first so "write + enter" actually
-        // executes instead of silently writing 0 bytes.
-        const ensure = await service.ensureSessionForWrite(args.connection_id);
-        if (!ensure.ok) throw new Error(`ssh_write failed: ${ensure.error.message}`);
-        const result = service.writeCurrentConnection({ connectionId: ensure.connectionId, input });
-        if (!result.ok) throw new Error(`ssh_write failed: ${result.error.message}`);
-        return result.value;
-      }
-    }));
-
-    ctx.tools.register(defineTool({
-      name: "ssh_disconnect",
-      description: "Close the current SSH connection and any open shell sessions on it. Omit connection_id for the current right-side SSH server.",
-      parameters: {
-        connection_id: { type: "string", description: "Optional. Omit to target the current right-side SSH connection." }
-      },
-      output: {
-        schema: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            disconnected: { type: "boolean", required: true }
-          }
-        },
-        render(args, value) {
-          return [{ type: "text", text: value.disconnected ? "Disconnected." : "Connection not found." }];
-        }
-      },
-      async execute(args) {
-        const result = await service.disconnectCurrentConnection({ connectionId: args.connection_id });
-        if (!result.ok) throw new Error(`ssh_disconnect failed: ${result.error.message}`);
-        return result.value;
-      }
-    }));
-
-    ctx.tools.register(defineTool({
-      name: "sftp_list",
-      description: "List the entries of a remote directory over SFTP on a connected server (the one open in the right-side SSH terminal unless connection_id is given). Returns file/directory entries with sizes and mtimes.",
-      parameters: {
-        connection_id: { type: "string", description: "Connection id from ssh_connect; omit to use the current server." },
-        path: { type: "string", required: true, description: "Remote directory path, e.g. /etc or /var/log." }
-      },
-      output: {
-        schema: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            path: { type: "string", required: true },
-            entries: { type: "array", required: true, items: { type: "object", additionalProperties: false, properties: {
-              name: { type: "string", required: true },
-              isDirectory: { type: "boolean", required: true },
-              size: { type: "number", required: true },
-              mtime: { type: "number", required: true },
-              mode: { type: "number", required: true }
-            } } }
-          }
-        },
-        render(args, value) {
-          if (!value.entries.length) return [{ type: "text", text: `(empty directory ${value.path})` }];
-          const lines = value.entries.map((e) => `${e.isDirectory ? "d" : "-"} ${e.isDirectory ? "" : String(e.size).padStart(10)}  ${new Date(e.mtime).toISOString().slice(0, 16).replace("T", " ")}  ${e.name}`);
-          return [{ type: "text", text: `Directory ${value.path} (${value.entries.length} entries):\n` + lines.join("\n") }];
-        }
-      },
-      async execute(args) {
-        const result = await service.sftpList({ connectionId: args.connection_id, path: args.path });
-        if (!result.ok) throw new Error(`sftp_list failed: ${result.error.message}`);
-        return result.value;
-      }
-    }));
-
-    ctx.tools.register(defineTool({
-      name: "sftp_read",
-      description: "Read a remote file's contents over SFTP (base64-decoded to text). Useful for inspecting config files, logs, or small artifacts on a connected server. Omit connection_id for the current server.",
-      parameters: {
-        connection_id: { type: "string", description: "Connection id from ssh_connect; omit to use the current server." },
-        path: { type: "string", required: true, description: "Remote file path." },
-        max_bytes: { type: "integer", description: "Maximum bytes to read, defaults to 4 MiB." }
-      },
-      output: {
-        schema: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            path: { type: "string", required: true },
-            data: { type: "string", required: true },
-            truncated: { type: "boolean", required: true },
-            bytes: { type: "number", required: true }
-          }
-        },
-        render(args, value) {
-          const body = value.data || "(empty file)";
-          return [{ type: "text", text: value.truncated ? `${body}\n[output truncated at ${value.bytes} bytes]` : body }];
-        }
-      },
-      async execute(args) {
-        const result = await service.sftpReadFile({ connectionId: args.connection_id, path: args.path, maxBytes: args.max_bytes });
-        if (!result.ok) throw new Error(`sftp_read failed: ${result.error.message}`);
-        return result.value;
-      }
-    }));
-
-    ctx.tools.register(defineTool({
-      name: "sftp_write",
-      description: "Write text content to a remote file over SFTP (creates or overwrites). Omit connection_id for the current server.",
-      parameters: {
-        connection_id: { type: "string", description: "Connection id from ssh_connect; omit to use the current server." },
-        path: { type: "string", required: true, description: "Remote file path to write." },
-        content: { type: "string", required: true, description: "File content to write." }
-      },
-      output: {
-        schema: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            path: { type: "string", required: true },
-            bytes: { type: "number", required: true }
-          }
-        },
-        render(args, value) {
-          return [{ type: "text", text: `Wrote ${value.bytes} bytes to ${value.path}` }];
-        }
-      },
-      async execute(args) {
-        const result = await service.sftpWriteFile({ connectionId: args.connection_id, path: args.path, data: Buffer.from(args.content, "utf8").toString("base64") });
-        if (!result.ok) throw new Error(`sftp_write failed: ${result.error.message}`);
-        return result.value;
-      }
-    }));
-
-    ctx.tools.register(defineTool({
-      name: "sftp_mkdir",
-      description: "Create a remote directory over SFTP. Omit connection_id for the current server.",
-      parameters: {
-        connection_id: { type: "string", description: "Connection id from ssh_connect; omit to use the current server." },
-        path: { type: "string", required: true, description: "Remote directory path to create." }
-      },
-      output: {
-        schema: { type: "object", additionalProperties: false, properties: { path: { type: "string", required: true } } },
-        render(args, value) { return [{ type: "text", text: `Created directory ${value.path}` }]; }
-      },
-      async execute(args) {
-        const result = await service.sftpMkdir({ connectionId: args.connection_id, path: args.path });
-        if (!result.ok) throw new Error(`sftp_mkdir failed: ${result.error.message}`);
-        return result.value;
-      }
-    }));
-
-    ctx.tools.register(defineTool({
-      name: "sftp_delete",
-      description: "Delete a remote file or empty directory over SFTP. Omit connection_id for the current server. Deleting is irreversible and is never executed by the agent directly: the equivalent `rm -rf <path>` triggers a confirmation popup in the right-side SSH panel (or returns a copyable command when no terminal is open) for the operator to execute or cancel.",
-      parameters: {
-        connection_id: { type: "string", description: "Connection id from ssh_connect; omit to use the current server." },
-        path: { type: "string", required: true, description: "Remote path to delete." }
-      },
-      output: {
-        schema: { type: "object", additionalProperties: false, properties: { path: { type: "string", required: true }, isDirectory: { type: "boolean" }, blocked: { type: "boolean" }, reason: { type: "string" }, command: { type: "string" }, prefilled: { type: "boolean" }, queued: { type: "boolean" } } },
-        render(args, value) {
-          if (value.blocked) {
-            const where = value.queued
-              ? "命令未执行；右侧 SSH 终端面板已弹出确认卡片，等待操作员点击“执行”或“撤销”："
-              : "命令未执行，无法预填，请粘贴到右侧终端执行：";
-            return [{ type: "text", text: `⚠️ 已拦截：${value.reason ?? ""}\n${where}\n\`\`\`bash\n${value.command ?? ""}\n\`\`\`\n请勿重试/绕行，由人工确认执行。` }];
-          }
-          return [{ type: "text", text: `Deleted ${value.path}` }];
-        }
-      },
-      async execute(args) {
-        const command = `rm -rf ${shellQuote(args.path)}`;
-        const pending = service.prefillBlockedCommand(args.connection_id, command, "删除文件或目录（SFTP）");
-        return { path: args.path, blocked: true, reason: "删除文件或目录（SFTP）", command, prefilled: pending.prefilled, queued: pending.queued };
-      }
-    }));
-
-    ctx.tools.register(defineTool({
-      name: "sftp_rename",
-      description: "Rename or move a remote file/directory over SFTP. Omit connection_id for the current server.",
-      parameters: {
-        connection_id: { type: "string", description: "Connection id from ssh_connect; omit to use the current server." },
-        from: { type: "string", required: true, description: "Current remote path." },
-        to: { type: "string", required: true, description: "New remote path." }
-      },
-      output: {
-        schema: { type: "object", additionalProperties: false, properties: { from: { type: "string", required: true }, to: { type: "string", required: true } } },
-        render(args, value) { return [{ type: "text", text: `Renamed ${value.from} -> ${value.to}` }]; }
-      },
-      async execute(args) {
-        const result = await service.sftpRename({ connectionId: args.connection_id, from: args.from, to: args.to });
-        if (!result.ok) throw new Error(`sftp_rename failed: ${result.error.message}`);
-        return result.value;
-      }
-    }));
-
-    ctx.tools.register(defineTool({
-      name: "tunnel_start",
-      description: "Start a port forward through a connected server. kind='local' (default): the DSH host listens on bind_addr:bind_port and forwards to remote_host:remote_port on the server — use to reach services only the server can see. kind='remote': the server listens on remote_host:remote_port and forwards back to target_host:target_port on this machine. Returns a tunnel_id for tunnel_stop.",
-      parameters: {
-        connection_id: { type: "string", description: "Connection id from ssh_connect; omit to use the current server." },
-        kind: { type: "string", enum: ["local", "remote"], description: "Forward direction: 'local' (default) or 'remote'." },
-        bind_addr: { type: "string", description: "Local bind address (local kind), defaults to 127.0.0.1." },
-        bind_port: { type: "integer", description: "Local bind port (local kind); 0 picks a free port." },
-        remote_host: { type: "string", required: true, description: "The remote host to reach (local kind) or to listen on (remote kind)." },
-        remote_port: { type: "integer", required: true, description: "The remote port to reach (local kind) or to listen on (remote kind)." },
-        target_host: { type: "string", description: "Local target host for remote kind, defaults to 127.0.0.1." },
-        target_port: { type: "integer", description: "Local target port for remote kind (required when kind='remote')." }
-      },
-      output: {
-        schema: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            tunnelId: { type: "string", required: true },
-            kind: { type: "string", required: true },
-            bindAddr: { type: "string", required: true },
-            bindPort: { type: "number", required: true },
-            remoteHost: { type: "string", required: true },
-            remotePort: { type: "number", required: true },
-            targetHost: { type: "string" },
-            targetPort: { type: "number" }
-          }
-        },
-        render(args, value) {
-          return [{ type: "text", text: value.kind === "local"
-            ? `Tunnel started: ${value.bindAddr}:${value.bindPort} -> ${value.remoteHost}:${value.remotePort} (id: ${value.tunnelId})`
-            : `Remote forward started: ${value.remoteHost}:${value.remotePort} -> ${value.bindAddr}:${value.bindPort} (id: ${value.tunnelId})` }];
-        }
-      },
-      async execute(args) {
-        const result = args.kind === "remote"
-          ? await service.tunnelStartRemote({ connectionId: args.connection_id, bindAddr: args.bind_addr, bindPort: args.bind_port, remoteHost: args.remote_host, remotePort: args.remote_port, targetHost: args.target_host ?? "127.0.0.1", targetPort: args.target_port })
-          : await service.tunnelStartLocal({ connectionId: args.connection_id, bindAddr: args.bind_addr, bindPort: args.bind_port, remoteHost: args.remote_host, remotePort: args.remote_port });
-        if (!result.ok) throw new Error(`tunnel_start failed: ${result.error.message}`);
-        return result.value;
-      }
-    }));
-
-    ctx.tools.register(defineTool({
-      name: "tunnel_list",
-      description: "List active port forwards on a connected server. Omit connection_id for the current server.",
-      parameters: {
-        connection_id: { type: "string", description: "Connection id from ssh_connect; omit to use the current server." }
-      },
-      output: {
-        schema: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            tunnels: { type: "array", required: true, items: { type: "object", additionalProperties: false, properties: {
-              tunnelId: { type: "string", required: true },
-              kind: { type: "string", required: true },
-              bindAddr: { type: "string", required: true },
-              bindPort: { type: "number", required: true },
-              remoteHost: { type: "string" },
-              remotePort: { type: "number" },
-              targetHost: { type: "string" },
-              targetPort: { type: "number" },
-              active: { type: "boolean", required: true }
-            } } }
-          }
-        },
-        render(args, value) {
-          if (!value.tunnels.length) return [{ type: "text", text: "(no active tunnels)" }];
-          return [{ type: "text", text: value.tunnels.map((t) => `${t.kind}: ${t.bindAddr}:${t.bindPort} -> ${t.remoteHost}:${t.remotePort} (${t.tunnelId})`).join("\n") }];
-        }
-      },
-      async execute(args) {
-        const result = await service.tunnelList({ connectionId: args.connection_id });
-        if (!result.ok) throw new Error(`tunnel_list failed: ${result.error.message}`);
-        return result.value;
-      }
-    }));
-
-    ctx.tools.register(defineTool({
-      name: "tunnel_stop",
-      description: "Stop an active port forward by tunnel_id (see tunnel_list / tunnel_start).",
-      parameters: {
-        connection_id: { type: "string", description: "Connection id from ssh_connect; omit to use the current server." },
-        tunnel_id: { type: "string", required: true, description: "The tunnel id returned by tunnel_start." }
-      },
-      output: {
-        schema: { type: "object", additionalProperties: false, properties: { tunnelId: { type: "string", required: true }, stopped: { type: "boolean", required: true } } },
-        render(args, value) { return [{ type: "text", text: `Stopped tunnel ${value.tunnelId}` }]; }
-      },
-      async execute(args) {
-        const result = await service.tunnelStop({ connectionId: args.connection_id, tunnelId: args.tunnel_id });
-        if (!result.ok) throw new Error(`tunnel_stop failed: ${result.error.message}`);
-        return result.value;
-      }
-    }));
-
-    ctx.tools.register(defineTool({
-      name: "ssh_batch",
-      description: "Run one command on MULTIPLE servers chosen from the SAVED server resources (not the currently connected one). The operator picks the target servers in the right-side SSH panel and confirms — this tool only creates the batch task and returns immediately; it does NOT execute. Dangerous commands are blocked from agent execution and shown for operator confirmation. Use when the user asks to run the same command on several/multiple servers.",
-      parameters: {
-        command: { type: "string", required: true, description: "The shell command to run on each selected server." },
-        timeout_ms: { type: "integer", description: "Per-server timeout in milliseconds, defaults to 30000." }
-      },
-      output: {
-        schema: { type: "object", additionalProperties: false, properties: {
-          batchId: { type: "string", required: true },
-          command: { type: "string", required: true },
-          dangerous: { type: "boolean", required: true },
-          reason: { oneOf: [{ type: "string" }, { type: "null" }], required: true }
-        } },
-        render(_args, value) {
-          return [{ type: "text", text: value.dangerous
-            ? `已创建批量任务（危险命令，等待操作者在面板确认）：${value.command}`
-            : `已创建批量任务，请在右侧 SSH 面板勾选服务器后执行：${value.command}（任务 ${value.batchId}）` }];
-        }
-      },
-      async execute(args) {
-        const result = await service.batchPlan({ command: args.command, timeoutMs: args.timeout_ms });
-        if (!result.ok) throw new Error(`ssh_batch failed: ${result.error.message}`);
-        return { batchId: result.value.task.batchId, command: result.value.task.command, dangerous: result.value.task.dangerous, reason: result.value.task.reason };
-      }
-    }));
-
-    // ssh_cluster (run on every open connection) was removed on purpose: it
-    // executed with no operator confirmation, so a casually phrased request
-    // could hit every connected server at once (observed: one named server
-    // requested, every open connection upgraded). Multi-server work goes
-    // through ssh_batch, where the operator ticks targets in the panel.
-
-    ctx.tools.register(defineTool({
-      name: "db_connect",
-      description: "Connect to a database (MySQL, PostgreSQL, Redis, or MongoDB) so the agent can query or run commands in later db_query/db_execute/db_run calls. When an SSH server is connected, a loopback host (127.0.0.1/localhost) is automatically tunneled through the current server (via_ssh=auto), so 'connect to the database on the server' works without an internal connection id; pass via_ssh='no' to force a local connection, or ssh_connection_id to pick a specific server. For cloud-managed databases requiring TLS, set ssl to 'verify' (public-CA certs) or 'preferred' (self-signed certs). Returns a db_connection_id.",
-      parameters: {
-        type: { type: "string", enum: ["mysql", "postgresql", "redis", "mongodb"], required: true, description: "Database type." },
-        host: { type: "string", required: true, description: "Database host. When reached via SSH, this is the address as seen from the SSH server (127.0.0.1 if the DB runs on that server)." },
-        port: { type: "integer", required: true, description: "Database port (e.g. 3306 MySQL, 5432 PostgreSQL, 6379 Redis, 27017 MongoDB)." },
-        database: { type: "string", description: "Database/schema name (MySQL/PostgreSQL/MongoDB) or numeric DB index (Redis)." },
-        username: { type: "string", description: "Database username (not needed for Redis)." },
-        password: { type: "string", description: "Database password." },
-        ssl: { type: "string", enum: ["disabled", "preferred", "verify"], description: "TLS mode: 'disabled' (default) plain TCP; 'preferred' encrypt without cert verification (self-signed cloud DBs); 'verify' encrypt and verify CA (public-CA cloud DBs)." },
-        ssh_connection_id: { type: "string", description: "Optional. An existing SSH connection id to tunnel through, reaching databases on private networks. Takes precedence over via_ssh." },
-        via_ssh: { type: "string", enum: ["auto", "yes", "no"], description: "Tunnel routing when ssh_connection_id is omitted: 'auto' (default) tunnels loopback hosts (127.0.0.1/localhost) through the current SSH server; 'yes' always tunnels through the current server; 'no' always connects directly." },
-        name: { type: "string", description: "Optional display name." }
-      },
-      output: {
-        schema: {
-          type: "object", additionalProperties: false,
-          properties: {
-            dbConnectionId: { type: "string", required: true },
-            name: { type: "string", required: true },
-            type: { type: "string", required: true }
-          }
-        },
-        render(args, value) {
-          return [{ type: "text", text: `Connected ${value.type} ${args.host}:${args.port} (id: ${value.dbConnectionId})` }];
-        }
-      },
-      async execute(args) {
-        const routed = pickSshConnectionId({
-          sshConnectionId: args.ssh_connection_id,
-          viaSsh: args.via_ssh,
-          host: args.host,
-          resolveActive: () => service.resolveConnection(undefined)
-        });
-        if (routed.error) throw new Error(`db_connect failed: ${routed.error.message}`);
-        const result = await service.dbConnect({
-          type: args.type, host: args.host, port: args.port, database: args.database,
-          username: args.username, password: args.password, ssl: args.ssl,
-          sshConnectionId: routed.sshConnectionId, name: args.name
-        });
-        if (!result.ok) throw new Error(`db_connect failed: ${result.error.message}`);
-        return result.value;
-      }
-    }));
-
-    ctx.tools.register(defineTool({
-      name: "db_list_connections",
-      description: "List currently open database connections (db_connection_id, type, host, port). Use it only when the user asks which databases are connected.",
-      parameters: {},
-      output: {
-        schema: {
-          type: "object", additionalProperties: false,
-          properties: {
-            connections: { type: "array", required: true, items: {
-              type: "object", additionalProperties: false,
-              properties: {
-                dbConnectionId: { type: "string", required: true },
-                name: { type: "string", required: true },
-                type: { type: "string", required: true },
-                host: { type: "string", required: true },
-                port: { type: "integer", required: true },
-                database: { oneOf: [{ type: "string" }, { type: "null" }], required: true },
-                ssl: { type: "string", required: true },
-                sshConnectionId: { oneOf: [{ type: "string" }, { type: "null" }], required: true },
-                createdAt: { type: "string", required: true }
-              }
-            }}
-          }
-        },
-        render(_args, value) {
-          if (!value.connections.length) return [{ type: "text", text: "No database connection is currently open." }];
-          return [{ type: "text", text: value.connections.map((c) => `- ${c.name} (${c.type}): ${c.host}:${c.port}${c.sshConnectionId ? " via SSH" : ""} (id: ${c.dbConnectionId})`).join("\n") }];
-        }
-      },
-      async execute() {
-        const result = await service.dbListConnections({});
-        if (!result.ok) throw new Error(`db_list_connections failed: ${result.error.message}`);
-        return result.value;
-      }
-    }));
-
-    ctx.tools.register(defineTool({
-      name: "db_query",
-      description: "Run a read-only SQL query on a connected MySQL or PostgreSQL database and return columns and rows. Read-only is LEXICALLY ENFORCED: only SELECT/SHOW/DESCRIBE/EXPLAIN/WITH(read-only) statements pass; write verbs, SELECT INTO, FOR UPDATE locking reads and data-modifying CTEs are rejected (use db_execute for writes, db_tx_* for verified change workflows). For Redis or MongoDB, use db_run instead. Results stream and are capped at 200 rows; queries time out after 30s.",
-      parameters: {
-        db_connection_id: { type: "string", required: true, description: "A db_connection_id from db_connect." },
-        sql: { type: "string", required: true, description: "SELECT statement. MySQL uses ? placeholders, PostgreSQL uses $1 placeholders." },
-        params: { type: "array", description: "Optional parameter values for placeholders." }
-      },
-      output: {
-        schema: {
-          type: "object", additionalProperties: false,
-          properties: {
-            columns: { type: "array", required: true, items: { type: "string" } },
-            rows: { type: "array", required: true, items: { type: "object", additionalProperties: true } },
-            rowCount: { type: "integer", required: true },
-            truncated: { type: "boolean", required: true }
-          }
-        },
-        render(args, value) {
-          const header = value.columns.join("\t");
-          const body = value.rows.map((r) => value.columns.map((c) => r[c] ?? "").join("\t")).join("\n");
-          let text = header.length > 0 ? `${header}\n${body}` : "(empty)";
-          if (value.truncated) text += "\n[truncated to 200 rows]";
-          return [{ type: "text", text }];
-        }
-      },
-      async execute(args) {
-        const result = await service.dbQuery({ dbConnectionId: args.db_connection_id, sql: args.sql, params: args.params });
-        if (!result.ok) throw new Error(`db_query failed: ${result.error.message}`);
-        return result.value;
-      }
-    }));
-
-    ctx.tools.register(defineTool({
-      name: "db_execute",
-      description: "Run a write SQL statement (INSERT/UPDATE/DELETE/CREATE/ALTER) on a connected MySQL or PostgreSQL database. Destructive statements (DROP/TRUNCATE/SHUTDOWN, detected by leading statement verb so keywords inside string literals or comments are not false-positives) are not executed by the agent: the SQL is returned as a copyable card to paste into the database panel's SQL editor and run manually. For Redis or MongoDB, use db_run instead.",
-      parameters: {
-        db_connection_id: { type: "string", required: true },
-        sql: { type: "string", required: true, description: "Write statement. MySQL uses ? placeholders, PostgreSQL uses $1 placeholders." },
-        params: { type: "array", description: "Optional parameter values." }
-      },
-      output: {
-        schema: {
-          type: "object", additionalProperties: false,
-          properties: {
-            affectedRows: { type: "integer", required: true },
-            insertId: { oneOf: [{ type: "integer" }, { type: "string" }] },
-            truncated: { type: "boolean", required: true },
-            blocked: { type: "boolean" },
-            reason: { type: "string" },
-            sql: { type: "string" }
-          }
-        },
-        render(_args, value) {
-          if (value.blocked) {
-            return [{ type: "text", text: `⚠️ 已拦截：${value.reason ?? ""}\nSQL 未执行，请在数据库面板 SQL 编辑器粘贴执行：\n\`\`\`sql\n${value.sql ?? ""}\n\`\`\`\n请勿重试/绕行，由人工执行。` }];
-          }
-          let text = `Affected ${value.affectedRows} row(s).`;
-          if (value.insertId !== undefined) text += ` Insert id: ${value.insertId}.`;
-          return [{ type: "text", text }];
-        }
-      },
-      async execute(args) {
-        const result = await service.dbExecute({ dbConnectionId: args.db_connection_id, sql: args.sql, params: args.params });
-        if (!result.ok) {
-          if (result.error.code === "unsafe-sql") {
-            return { affectedRows: 0, truncated: false, blocked: true, reason: result.error.message, sql: args.sql };
-          }
-          throw new Error(`db_execute failed: ${result.error.message}`);
-        }
-        return result.value;
-      }
-    }));
-
-    ctx.tools.register(defineTool({
-      name: "db_list_tables",
-      description: "List tables in the current schema of a connected MySQL or PostgreSQL database. For MongoDB, use db_run with operation 'countDocuments' on a collection instead.",
-      parameters: {
-        db_connection_id: { type: "string", required: true }
-      },
-      output: {
-        schema: { type: "object", additionalProperties: false, properties: { tables: { type: "array", required: true, items: { type: "string" } } } },
-        render(_args, value) {
-          return [{ type: "text", text: value.tables.length ? value.tables.join("\n") : "(no tables)" }];
-        }
-      },
-      async execute(args) {
-        const result = await service.dbListTables({ dbConnectionId: args.db_connection_id });
-        if (!result.ok) throw new Error(`db_list_tables failed: ${result.error.message}`);
-        return result.value;
-      }
-    }));
-
-    ctx.tools.register(defineTool({
-      name: "db_describe_table",
-      description: "Full structural introspection of a table in a connected MySQL or PostgreSQL database: columns (name, type, nullable, default), indexes, foreign keys, row-count/data-size estimates from planner statistics, and the MySQL SHOW CREATE TABLE DDL.",
-      parameters: {
-        db_connection_id: { type: "string", required: true },
-        table: { type: "string", required: true, description: "Table name." }
-      },
-      output: {
-        schema: {
-          type: "object", additionalProperties: false,
-          properties: {
-            table: { type: "string", required: true },
-            columns: { type: "array", required: true, items: {
-              type: "object", additionalProperties: false,
-              properties: {
-                name: { type: "string", required: true },
-                type: { type: "string", required: true },
-                nullable: { type: "boolean", required: true },
-                key: { type: "string" },
-                default: { oneOf: [{ type: "string" }, { type: "null" }, { type: "number" }] },
-                extra: { oneOf: [{ type: "string" }, { type: "null" }] }
-              }
-            }},
-            indexes: { type: "array", required: true, items: {
-              type: "object", additionalProperties: false,
-              properties: {
-                name: { type: "string", required: true },
-                unique: { type: "boolean", required: true },
-                columns: { type: "array", required: true, items: { type: "string" } },
-                definition: { oneOf: [{ type: "string" }, { type: "null" }], required: true }
-              }
-            }},
-            foreignKeys: { type: "array", required: true, items: {
-              type: "object", additionalProperties: false,
-              properties: {
-                name: { type: "string", required: true },
-                column: { type: "string", required: true },
-                foreignTable: { type: "string", required: true },
-                foreignColumn: { type: "string", required: true }
-              }
-            }},
-            ddl: { oneOf: [{ type: "string" }, { type: "null" }], required: true },
-            stats: {
-              oneOf: [
-                { type: "object", additionalProperties: false, properties: {
-                  estimatedRows: { oneOf: [{ type: "integer" }, { type: "null" }], required: true },
-                  dataBytes: { oneOf: [{ type: "integer" }, { type: "null" }], required: true },
-                  indexBytes: { oneOf: [{ type: "integer" }, { type: "null" }], required: true }
-                } },
-                { type: "null" }
-              ],
-              required: true
-            }
-          }
-        },
-        render(args, value) {
-          const lines = [`${args.table}:`];
-          lines.push(value.columns.map((c) => `${c.name}\t${c.type}\t${c.nullable ? "NULL" : "NOT NULL"}${c.default !== undefined && c.default !== null ? `\tDEFAULT ${c.default}` : ""}`).join("\n"));
-          if (value.indexes?.length) {
-            lines.push("", "indexes:");
-            for (const idx of value.indexes) {
-              const cols = idx.columns?.length ? ` (${idx.columns.join(", ")})` : "";
-              const def = idx.definition ? ` — ${idx.definition}` : "";
-              lines.push(`  ${idx.name}${idx.unique ? " UNIQUE" : ""}${cols}${def}`);
-            }
-          }
-          if (value.foreignKeys?.length) {
-            lines.push("", "foreign keys:");
-            for (const fk of value.foreignKeys) lines.push(`  ${fk.column} → ${fk.foreignTable}.${fk.foreignColumn} (${fk.name})`);
-          }
-          if (value.stats) {
-            const bits = [];
-            if (value.stats.estimatedRows != null) bits.push(`~${value.stats.estimatedRows} rows`);
-            if (value.stats.dataBytes != null) bits.push(`data ${(value.stats.dataBytes / 1048576).toFixed(2)}MB`);
-            if (value.stats.indexBytes != null) bits.push(`index ${(value.stats.indexBytes / 1048576).toFixed(2)}MB`);
-            if (bits.length) lines.push("", `stats: ${bits.join(", ")}`);
-          }
-          if (value.ddl) lines.push("", "DDL:", value.ddl);
-          return [{ type: "text", text: lines.join("\n") }];
-        }
-      },
-      async execute(args) {
-        const result = await service.dbDescribeTable({ dbConnectionId: args.db_connection_id, table: args.table });
-        if (!result.ok) throw new Error(`db_describe_table failed: ${result.error.message}`);
-        return result.value;
-      }
-    }));
-
-    ctx.tools.register(defineTool({
-      name: "db_preview",
-      description: "Sample rows of a table (SELECT * with LIMIT/OFFSET) on a connected MySQL or PostgreSQL database without hand-writing SQL. Returns columns, rows, and a row-count estimate from planner statistics (no full-table COUNT). The table identifier is validated against injection; limit/offset are bound as parameters.",
-      parameters: {
-        db_connection_id: { type: "string", required: true },
-        table: { type: "string", required: true, description: "Table name, optionally schema-qualified (e.g. public.users)." },
-        limit: { type: "integer", description: "Rows per page, 1-200, default 50." },
-        offset: { type: "integer", description: "Rows to skip, default 0 (use for pagination)." }
-      },
-      output: {
-        schema: {
-          type: "object", additionalProperties: false,
-          properties: {
-            table: { type: "string", required: true },
-            columns: { type: "array", required: true, items: { type: "string" } },
-            rows: { type: "array", required: true, items: { type: "object", additionalProperties: true } },
-            rowCount: { type: "integer", required: true },
-            truncated: { type: "boolean", required: true },
-            limit: { type: "integer", required: true },
-            offset: { type: "integer", required: true },
-            estimatedTotal: { oneOf: [{ type: "integer" }, { type: "null" }], required: true }
-          }
-        },
-        render(_args, value) {
-          const header = value.columns.join("\t");
-          const body = value.rows.map((r) => value.columns.map((c) => r[c] ?? "").join("\t")).join("\n");
-          const range = value.rowCount > 0 ? `${value.offset + 1}-${value.offset + value.rowCount}` : "0";
-          const est = value.estimatedTotal != null ? ` (estimate ~${value.estimatedTotal})` : "";
-          let text = `${value.table} rows ${range}${est}:\n${header.length > 0 ? `${header}\n${body}` : "(empty)"}`;
-          if (value.truncated) text += "\n[truncated to 200 rows]";
-          return [{ type: "text", text }];
-        }
-      },
-      async execute(args) {
-        const result = await service.dbPreview({ dbConnectionId: args.db_connection_id, table: args.table, limit: args.limit, offset: args.offset });
-        if (!result.ok) throw new Error(`db_preview failed: ${result.error.message}`);
-        return result.value;
-      }
-    }));
-
-    ctx.tools.register(defineTool({
-      name: "db_explain",
-      description: "Get the execution plan of a SELECT/WITH query (MySQL EXPLAIN FORMAT=JSON / PostgreSQL EXPLAIN (FORMAT JSON)) on a connected database, e.g. to check index usage before optimizing. The statement must pass the same lexically read-only gate as db_query.",
-      parameters: {
-        db_connection_id: { type: "string", required: true },
-        sql: { type: "string", required: true, description: "SELECT or WITH ... SELECT statement to explain." },
-        params: { type: "array", description: "Optional parameter values for placeholders." }
-      },
-      output: {
-        schema: { type: "object", additionalProperties: false, properties: { plan: { type: "json", required: true } } },
-        render(_args, value) {
-          return [{ type: "text", text: JSON.stringify(value.plan, null, 2) }];
-        }
-      },
-      async execute(args) {
-        const result = await service.dbExplain({ dbConnectionId: args.db_connection_id, sql: args.sql, params: args.params });
-        if (!result.ok) throw new Error(`db_explain failed: ${result.error.message}`);
-        return result.value;
-      }
-    }));
-
-    ctx.tools.register(defineTool({
-      name: "db_tx_begin",
-      description: "Begin an interactive transaction on a dedicated connection (MySQL/PostgreSQL) for verified change workflows: db_tx_begin → db_tx_execute (the write) → db_tx_execute (SELECT to verify) → db_tx_commit or db_tx_rollback. Idle transactions are rolled back automatically after 5 minutes.",
-      parameters: {
-        db_connection_id: { type: "string", required: true }
-      },
-      output: {
-        schema: { type: "object", additionalProperties: false, properties: { txId: { type: "string", required: true }, dbConnectionId: { type: "string", required: true } } },
-        render(_args, value) {
-          return [{ type: "text", text: `Transaction ${value.txId} started on ${value.dbConnectionId}. Run db_tx_execute next; finish with db_tx_commit or db_tx_rollback.` }];
-        }
-      },
-      async execute(args) {
-        const result = await service.dbTxBegin({ dbConnectionId: args.db_connection_id });
-        if (!result.ok) throw new Error(`db_tx_begin failed: ${result.error.message}`);
-        return result.value;
-      }
-    }));
-
-    ctx.tools.register(defineTool({
-      name: "db_tx_execute",
-      description: "Run one statement inside a transaction opened with db_tx_begin. Use SELECT there to verify the effect of your write before committing. Destructive verbs (DROP/TRUNCATE/SHUTDOWN) remain blocked.",
-      parameters: {
-        tx_id: { type: "string", required: true },
-        sql: { type: "string", required: true },
-        params: { type: "array", description: "Optional parameter values for placeholders." }
-      },
-      output: {
-        schema: {
-          type: "object", additionalProperties: false,
-          properties: {
-            affectedRows: { type: "integer", required: true },
-            rowCount: { type: "integer", required: true },
-            truncated: { type: "boolean", required: true },
-            rows: { type: "array", required: true, items: { type: "object", additionalProperties: true } },
-            insertId: { oneOf: [{ type: "integer" }, { type: "string" }] }
-          }
-        },
-        render(_args, value) {
-          if (value.rowCount > 0) {
-            const columns = value.rows[0] ? Object.keys(value.rows[0]) : [];
-            const body = value.rows.map((r) => columns.map((c) => r[c] ?? "").join("\t")).join("\n");
-            const header = columns.length > 0 ? `${columns.join("\t")}\n${body}` : "(empty)";
-            const suffix = value.truncated ? "\n[truncated to 200 rows]" : "";
-            return [{ type: "text", text: `${header}${suffix}` }];
-          }
-          let text = `Affected ${value.affectedRows} row(s).`;
-          if (value.insertId !== undefined) text += ` Insert id: ${value.insertId}.`;
-          return [{ type: "text", text }];
-        }
-      },
-      async execute(args) {
-        const result = await service.dbTxExecute({ txId: args.tx_id, sql: args.sql, params: args.params });
-        if (!result.ok) throw new Error(`db_tx_execute failed: ${result.error.message}`);
-        return result.value;
-      }
-    }));
-
-    ctx.tools.register(defineTool({
-      name: "db_tx_commit",
-      description: "Commit a transaction opened with db_tx_begin. Call this only after db_tx_execute verification looked right.",
-      parameters: { tx_id: { type: "string", required: true } },
-      output: {
-        schema: { type: "object", additionalProperties: false, properties: { txId: { type: "string", required: true }, finished: { type: "boolean", required: true }, committed: { type: "boolean", required: true } } },
-        render(_args, value) { return [{ type: "text", text: `Transaction ${value.txId} committed.` }]; }
-      },
-      async execute(args) {
-        const result = await service.dbTxCommit({ txId: args.tx_id });
-        if (!result.ok) throw new Error(`db_tx_commit failed: ${result.error.message}`);
-        return result.value;
-      }
-    }));
-
-    ctx.tools.register(defineTool({
-      name: "db_tx_rollback",
-      description: "Roll back a transaction opened with db_tx_begin, undoing every statement executed in it.",
-      parameters: { tx_id: { type: "string", required: true } },
-      output: {
-        schema: { type: "object", additionalProperties: false, properties: { txId: { type: "string", required: true }, finished: { type: "boolean", required: true }, rolledBack: { type: "boolean", required: true } } },
-        render(_args, value) { return [{ type: "text", text: `Transaction ${value.txId} rolled back.` }]; }
-      },
-      async execute(args) {
-        const result = await service.dbTxRollback({ txId: args.tx_id });
-        if (!result.ok) throw new Error(`db_tx_rollback failed: ${result.error.message}`);
-        return result.value;
-      }
-    }));
-
-    ctx.tools.register(defineTool({
-      name: "db_run",
-      description: "Run a command on a connected Redis or MongoDB database. Redis: pass {command, args} (e.g. command='GET', args=['mykey'], or command='KEYS', args=['*']). MongoDB: pass {collection, operation} where operation is 'find'|'findOne'|'insertOne'|'updateOne'|'deleteOne'|'countDocuments', plus filter/document/update as needed. For MySQL/PostgreSQL, use db_query or db_execute instead.",
-      parameters: {
-        db_connection_id: { type: "string", required: true },
-        command: { type: "string", description: "Redis command name (e.g. GET, SET, KEYS, HGETALL)." },
-        args: { type: "array", description: "Redis command arguments (as strings)." },
-        collection: { type: "string", description: "MongoDB collection name." },
-        operation: { type: "string", enum: ["find", "findOne", "insertOne", "updateOne", "deleteOne", "countDocuments"], description: "MongoDB operation." },
-        filter: { type: "object", additionalProperties: true, description: "MongoDB query filter (for find/findOne/updateOne/deleteOne/countDocuments)." },
-        document: { type: "object", additionalProperties: true, description: "MongoDB document to insert (insertOne)." },
-        update: { type: "object", additionalProperties: true, description: "MongoDB update spec (updateOne)." },
-        options: { type: "object", additionalProperties: true, description: "MongoDB update options (updateOne)." }
-      },
-      output: {
-        schema: { type: "object", additionalProperties: false, properties: { result: { type: "json" } } },
-        render(_args, value) {
-          const text = typeof value.result === "string" ? value.result : JSON.stringify(value.result, null, 2);
-          return [{ type: "text", text }];
-        }
-      },
-      async execute(args) {
-        const result = await service.dbRun({
-          dbConnectionId: args.db_connection_id, command: args.command, args: args.args,
-          collection: args.collection, operation: args.operation, filter: args.filter,
-          document: args.document, update: args.update, options: args.options
-        });
-        if (!result.ok) throw new Error(`db_run failed: ${result.error.message}`);
-        return result.value;
-      }
-    }));
-
-    ctx.tools.register(defineTool({
-      name: "db_disconnect",
-      description: "Close a database connection opened with db_connect. Use it when the user is done querying a database.",
-      parameters: {
-        db_connection_id: { type: "string", required: true }
-      },
-      output: {
-        schema: { type: "object", additionalProperties: false, properties: { dbConnectionId: { type: "string", required: true }, disconnected: { type: "boolean", required: true } } },
-        render(args) { return [{ type: "text", text: `Disconnected ${args.db_connection_id}` }]; }
-      },
-      async execute(args) {
-        const result = await service.dbDisconnect({ dbConnectionId: args.db_connection_id });
-        if (!result.ok) throw new Error(`db_disconnect failed: ${result.error.message}`);
-        return result.value;
-      }
-    }));
-
+    // Tool bodies live in src/tools/*; each register function binds this
+    // service instance via closure (defineTool invokes execute as a bare
+    // function, so the tools reach service methods through this argument).
+    registerSshSessionTools(ctx, this);
+    registerSftpTools(ctx, this);
+    registerTunnelTools(ctx, this);
+    registerBatchTools(ctx, this);
+    registerDbTools(ctx, this);
   }
 
   // ── internals ──────────────────────────────────────────────────────────────
@@ -3400,10 +2399,11 @@ export default class SshOpsService extends TypertRemoteService {
       if (conn !== undefined) conn.sessions.delete(session.id);
     }
     this.wakeWaiters(session, exit);
+    this.notifyStreamListeners(session, "");
   }
 
   rememberExit(id, exit) {
-    if (this.exitedSessions.size >= 64) {
+    if (this.exitedSessions.size >= MAX_EXIT_TOMBSTONES) {
       const oldest = this.exitedSessions.keys().next().value;
       if (oldest !== void 0) this.exitedSessions.delete(oldest);
     }
@@ -3420,6 +2420,15 @@ export default class SshOpsService extends TypertRemoteService {
       for (const rest of session.waiters.splice(0)) {
         rest.resolve({ ok: true, value: { data: "", exit } });
       }
+    }
+  }
+
+  /** Feed appended output to stream-push consumers; every listener sees every item. */
+  notifyStreamListeners(session, text) {
+    if (session.streamListeners === undefined) return;
+    for (const listener of session.streamListeners) {
+      if (text !== "") listener.chunks.push(text);
+      listener.wake?.();
     }
   }
 

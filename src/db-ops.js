@@ -13,6 +13,8 @@ import { createClient as createRedisClient } from "redis";
 import { MongoClient } from "mongodb";
 import pgCursorModule from "pg-cursor";
 import { assessSqlStatement, assessReadOnlySql } from "./db-safety.js";
+// The db layer wraps every failure straight into the full result envelope.
+import { failResult as fail } from "./envelope.js";
 
 const Cursor = pgCursorModule.default ?? pgCursorModule;
 
@@ -133,10 +135,6 @@ function serializeDbValue(value) {
     }
     return val;
   }));
-}
-
-function fail(code, message) {
-  return { ok: false, error: { code, message } };
 }
 
 // ── DbOpsManager ────────────────────────────────────────────────────────────

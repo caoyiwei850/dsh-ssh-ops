@@ -8,7 +8,7 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.2.20-blue)
+![version](https://img.shields.io/badge/version-0.2.21-blue)
 
 > **v0.2.20 新增**：SSH 面板独立的「快捷命令」页签，内置常用运维模板并支持按名称/命令内容搜索；用页签内紧凑的「＋ 自定义」管理全局/分组/单服务器命令。点击仅填入终端，不自动执行。桌面版安装说明见 **[INSTALL.md](./INSTALL.md)**。
 
@@ -56,12 +56,14 @@ Agent 命中上述黑名单时不会被静默拒绝：插件会创建一条一�
 
 同样的模型覆盖 `sftp_delete`（不再由 Agent 直接删，改为将等价 `rm -rf <路径>` 加入待确认队列）和 `db_execute` 的高危 SQL（`DROP`/`TRUNCATE`/`SHUTDOWN`）：高危 SQL 保持现有模式，返回带 ```sql 代码块的卡片，供操作者粘贴到数据库面板的 SQL 编辑器手动执行。SQL 判断按**语句动词**识别（跳过字符串/注释、支持多语句、按 `;` 切分），不会误杀字符串字面量里的关键字，高频增删改查正常放行。
 
+**凭据使用建议**：`ssh_connect` / `db_connect` 以明文参数接收密码或私钥时，这些参数会进入对话与工具调用记录。生产环境请优先把服务器保存为「SSH 资源」（密码存入宿主加密凭据库，面板与 Agent 只见引用），或使用密钥文件的 passphrase 方式，避免在对话中直接传递密钥。
+
 ## 安装
 
 ### 从 GitHub 安装（推荐）
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.2.20
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.2.21
 ```
 
 安装后重启 DSH Web：
@@ -74,14 +76,14 @@ dsh web
 
 ### 从发布压缩包安装
 
-从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.2.20) 下载 `dsh-ssh-ops-0.2.20.tgz` 后：
+从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.2.21) 下载 `dsh-ssh-ops-0.2.21.tgz` 后：
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.2.20.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.2.21.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.2.20.zip` 适用于离线审阅或二次开发；解压后可在目录中执行 `npm install && npm run build`。
+`dsh-ssh-ops-0.2.21.zip` 适用于离线审阅或二次开发；解压后可在目录中执行 `npm install && npm run build`。
 
 ## 使用方式
 
@@ -163,12 +165,12 @@ npm run build
 npm run pack:release
 ```
 
-推送与 `package.json.version` 一致的 `vX.Y.Z` tag 时，GitHub Actions 会测试、构建并从同一个 `.tgz` 同时发布 npm 包和 GitHub Release。首次启用前，在仓库 Secrets 配置 `NPM_TOKEN`。
+推送与 `package.json.version` 一致的 `vX.Y.Z` tag 时，GitHub Actions 会测试、构建并从同一个 `.tgz` 同时发布 npm 包和 GitHub Release。首次启用前，在仓库 Secrets 配置 `NPM_TOKEN`。发版改完版本号后先执行 `npm run bump:readme`，把 README/README.en 中的徽章、安装命令与发布链接一并同步到新版本。
 
 生成物位于 `release/`：
 
-- `dsh-ssh-ops-0.2.20.tgz`：可直接被 DSH 安装。
-- `dsh-ssh-ops-0.2.20.zip`：完整离线源码包。
+- `dsh-ssh-ops-0.2.21.tgz`：可直接被 DSH 安装。
+- `dsh-ssh-ops-0.2.21.zip`：完整离线源码包。
 
 ## 许可
 

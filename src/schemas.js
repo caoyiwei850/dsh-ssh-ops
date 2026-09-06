@@ -257,6 +257,12 @@ export const readRequestSchema = z.object({
   timeoutMs: z.number().int().min(0).max(60000).optional()
 });
 
+// Stream push: one sessionId, endless item stream. Each yielded item reuses
+// the read() envelope so the client render path stays identical.
+export const terminalStreamRequestSchema = z.object({
+  sessionId: z.string().min(1)
+});
+
 export const readResultSchema = resultSchema(
   z.object({
     data: z.string(),

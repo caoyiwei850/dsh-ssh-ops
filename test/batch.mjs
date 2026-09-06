@@ -93,6 +93,26 @@ service.batchTasks = new Map();
   assert.equal(good.ok, true);
 }
 
+// ── batchRun: concurrency is capped so N targets never open N simultaneous SSH sessions ──
+{
+  let inFlight = 0;
+  let maxInFlight = 0;
+  service.runCommandOnProfile = async (profileId) => {
+    inFlight += 1;
+    maxInFlight = Math.max(maxInFlight, inFlight);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    inFlight -= 1;
+    return { ok: true, value: { profileId, name: profileId, host: "h", exitCode: 0, stdout: "", stderr: "", truncated: false, timedOut: false } };
+  };
+  const task = service.batchPlan({ command: "uptime" }).value.task;
+  const targets = Array.from({ length: 12 }, (_, i) => `p${i}`);
+  const r = await service.batchRun({ batchId: task.batchId, profileIds: targets });
+  assert.equal(r.ok, true);
+  assert.equal(r.value.results.length, 12);
+  assert.deepEqual(r.value.results.map((x) => x.profileId), targets, "results keep the requested target order");
+  assert.ok(maxInFlight <= 4, `at most 4 concurrent execs (saw ${maxInFlight})`);
+}
+
 // ── runCommandOnProfile: connect → exec → disconnect lifecycle ──
 {
   delete service.runCommandOnProfile; // restore the prototype method (mocked by batchRun tests above)
@@ -168,7 +188,7 @@ service.batchTasks = new Map();
 
   // timeout: closes the stream and reports timedOut
   {
-    const { stream, client } = makeClient();
+    const { client } = makeClient();
     const p = service.execRawOnClient(client, "sleep", 10);
     const r = await p;
     assert.equal(r.ok, true);
