@@ -14,13 +14,13 @@
 
 ## 示例
 
-主对话直接指挥已连接的服务器，右侧保留真实交互式终端，支持文件管理（SFTP）、端口转发与数据库管理：
+主对话直接指挥已连接的服务器，SSH 终端作为官方右侧边栏标签与对话并排显示：
 
-![SSH 主界面](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/ssh-main-view.png)
+![主对话与官方侧栏中的 SSH 终端](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/official-sidebar-terminal.png)
 
-![文件管理（SFTP）](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/ssh-files-tab.png)
+文件页签支持 SFTP 管理，并可用 `cd` 将交互终端切换到选中的远程目录：
 
-![端口转发](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/ssh-tunnels-tab.png)
+![官方侧栏中的 SFTP 文件管理与 cd](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/official-sidebar-files-cd.png)
 
 ![数据库管理界面](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/db-panel.png)
 

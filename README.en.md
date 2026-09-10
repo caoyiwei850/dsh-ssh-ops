@@ -14,13 +14,13 @@
 
 ## Screenshots
 
-Drive the connected server directly from the main conversation, with a real interactive terminal on the right and panels for files (SFTP), tunnels, and databases:
+Drive the connected server from the main conversation while the interactive SSH terminal sits beside it as an official right-Sidebar tab:
 
-![SSH main view](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/ssh-main-view.png)
+![Main conversation with the SSH terminal in the official Sidebar](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/official-sidebar-terminal.png)
 
-![File management (SFTP)](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/ssh-files-tab.png)
+The Files tab provides SFTP management and can `cd` the interactive terminal into the selected remote directory:
 
-![Port forwarding](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/ssh-tunnels-tab.png)
+![SFTP file management and cd in the official Sidebar](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/official-sidebar-files-cd.png)
 
 ![Database management](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/db-panel.png)
 
