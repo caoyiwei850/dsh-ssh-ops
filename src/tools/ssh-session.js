@@ -101,7 +101,7 @@ export function registerSshSessionTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "ssh_exec",
-    description: "Run a normal SSH command on the server currently open in the right-side SSH terminal and return its output. Omit connection_id when the user means the current server; do not call ssh_list first. SSH configuration, package changes, service reloads, and config edits are allowed and remain subject to DSH permissions. Explicitly destructive or irreversible operations are not run: a confirmation popup appears in the right-side SSH panel, where only the operator can execute or cancel them. The command and output are also shown in the terminal panel.",
+    description: "Run a normal SSH command on the server currently open in the right-side SSH terminal and return its output. Omit connection_id when the user means the current server; do not call ssh_list first. On Linux with one identifiable idle POSIX terminal shell, the dedicated exec channel starts in that shell's verified current directory. A busy, ambiguous, or inaccessible terminal directory rejects the command instead of guessing; when no terminal shell is detectable, the normal login directory is used and cwd is null. SSH configuration, package changes, service reloads, and config edits are allowed and remain subject to DSH permissions. Explicitly destructive or irreversible operations are not run: a confirmation popup appears in the right-side SSH panel, where only the operator can execute or cancel them. The command and output are also shown in the terminal panel.",
     parameters: {
       connection_id: { type: "string", description: "Optional. Omit to target the current right-side SSH connection." },
       command: { type: "string", required: true, description: "The shell command to execute." },
@@ -117,6 +117,7 @@ export function registerSshSessionTools(ctx, service) {
           exitCode: { oneOf: [{ type: "integer" }, { type: "null" }], required: true },
           stdout: { type: "string", required: true },
           stderr: { type: "string", required: true },
+          cwd: { oneOf: [{ type: "string" }, { type: "null" }], required: true },
           commandId: { type: "string", required: true },
           startedAt: { type: "string", required: true },
           finishedAt: { type: "string", required: true },
@@ -136,7 +137,8 @@ export function registerSshSessionTools(ctx, service) {
           const where = value.queued
             ? "命令未执行；右侧 SSH 终端面板已弹出确认卡片，等待操作员点击“执行”或“撤销”："
             : "命令未执行，无法预填，请粘贴到右侧终端执行：";
-          return [{ type: "text", text: `⚠️ 已拦截：${value.reason ?? ""}\n${where}\n\`\`\`bash\n${value.command ?? ""}\n\`\`\`\n请勿重试/绕行，由人工确认执行。` }];
+          const whereRuns = "确认执行（或粘贴执行）发生在右侧交互 shell 内，跟随终端当前目录；与 ssh_exec 的 exec 通道目录无关。命令里的相对路径请按此理解。";
+          return [{ type: "text", text: `⚠️ 已拦截：${value.reason ?? ""}\n${where}\n\`\`\`bash\n${value.command ?? ""}\n\`\`\`\n${whereRuns}\n请勿重试/绕行，由人工确认执行。` }];
         }
         const out = value.stdout ?? "";
         const err = value.stderr ?? "";
@@ -150,7 +152,12 @@ export function registerSshSessionTools(ctx, service) {
         if (value.timedOut) body += "\n[command timed out]";
         if (value.truncated) body += "\n[output truncated for safe model context]";
         if (value.redacted) body += "\n[sensitive values redacted]";
-        return [{ type: "text", text: body }];
+        // Where the command ran. First line, so relative-path output always
+        // has its context above it; null spells out the home fallback.
+        const cwdNote = value.cwd
+          ? `[cwd: ${value.cwd}]`
+          : "[cwd: login directory — no interactive shell directory detected]";
+        return [{ type: "text", text: `${cwdNote}\n${body}` }];
       }
     },
     async execute(args) {

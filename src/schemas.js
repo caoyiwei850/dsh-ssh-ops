@@ -254,18 +254,27 @@ export const forgetHostKeyResultSchema = resultSchema(z.object({ forgotten: z.bo
 
 export const readRequestSchema = z.object({
   sessionId: z.string().min(1),
-  timeoutMs: z.number().int().min(0).max(60000).optional()
+  timeoutMs: z.number().int().min(0).max(60000).optional(),
+  after: z.number().int().nonnegative().safe().optional()
 });
 
 // Stream push: one sessionId, endless item stream. Each yielded item reuses
 // the read() envelope so the client render path stays identical.
 export const terminalStreamRequestSchema = z.object({
-  sessionId: z.string().min(1)
+  sessionId: z.string().min(1),
+  after: z.number().int().nonnegative().safe().optional()
+});
+
+export const changeDirectoryRequestSchema = z.object({
+  sessionId: z.string().min(1),
+  path: z.string().min(1).max(4096).refine((path) => path.startsWith("/") && !/[\x00-\x1f\x7f]/.test(path))
 });
 
 export const readResultSchema = resultSchema(
   z.object({
     data: z.string(),
+    startOffset: z.number().int().nonnegative().optional(),
+    offset: z.number().int().nonnegative().optional(),
     exit: z.union([z.object({ code: z.number(), signal: z.number().optional() }), z.null()])
   })
 );

@@ -1,18 +1,30 @@
 /**
- * The right-side SSH terminal panel: a floating panel pinned to the right edge
- * of the conversation view. Shows a connection toolbar, an xterm.js terminal
- * for the active session, and a connect dialog.
+ * The SSH workspace: connection toolbar, inner tabs (terminal / files /
+ * tunnels / snippets / database) and the dialogs. It is the shared INNER
+ * content rendered by two hosts:
+ *
+ * - `SshDrawer.jsx` — the legacy fixed right-side floating panel (old DSH
+ *   fallback), which adds positioning, drag-resize and the hide button.
+ * - `SshSidebarBody.jsx` — a body of the official right-Sidebar tab
+ *   (`sidebar.right.pane.tab`, new DSH), which owns width, split and
+ *   fullscreen.
+ *
+ * The workspace itself owns no outer geometry. Terminals are keep-alive:
+ * unmounting a view (tab switch, sidebar collapse, chat switch) never
+ * disposes the xterm instance, so remounting restores the full scrollback
+ * while the host replays output buffered in the meantime.
  */
 import * as React from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { XTERM_CSS } from "./xterm-css.js";
-import { useSshUi, getSshUiSnapshot, sshUiSetActiveConnection, sshUiSetBusy, sshUiSetConnections, sshUiSetError, sshUiSetOpen } from "./store.js";
+import { useSshUi, getSshUiSnapshot, sshUiSetActiveConnection, sshUiSetBusy, sshUiSetConnections, sshUiSetError } from "./store.js";
 import { SshFiles } from "./SshFiles.jsx";
 import { SshTunnels } from "./SshTunnels.jsx";
 import { SshDatabase } from "./SshDatabase.jsx";
 import { privateKeyProblem } from "./pemkey.js";
 import { availableCommandSnippets, loadCommandSnippets, matchingCommandSnippets, saveCommandSnippets, searchCommandSnippets } from "./command-snippets.js";
+import { createTerminalPool } from "./terminal-pool.js";
 
 const { useEffect, useRef, useState, Component } = React;
 
@@ -39,124 +51,63 @@ class TabErrorBoundary extends Component {
 }
 
 let stylesInjected = false;
-const PANEL_LAYOUT_STYLE_ID = "dsh-ssh-ops-panel-layout";
-const PANEL_WIDTH_KEY = "dsh-ssh-ops.panel-width";
-const PANEL_MIN_WIDTH = 320;
-const PANEL_MAX_WIDTH = 720;
 
-function maxPanelWidth() {
-  return Math.max(PANEL_MIN_WIDTH, Math.min(PANEL_MAX_WIDTH, Math.floor(window.innerWidth * 0.7)));
+/**
+ * Workspace button visuals that need real pseudo-classes (hover/active on the
+ * add-server button) and therefore cannot live in inline style objects. Kept
+ * class-scoped and plugin-prefixed; only colors/borders live here — geometry
+ * stays with the inline styles so the two cannot drift.
+ */
+const PANEL_CSS = `
+.dsh-ssh-ops-add-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border: 1px solid rgba(45, 108, 223, 0.55);
+  background: rgba(45, 108, 223, 0.14);
+  color: #7fb0f5;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 550;
+  line-height: 1;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
 }
-
-function clampPanelWidth(width) {
-  return clamp(Math.round(width), PANEL_MIN_WIDTH, maxPanelWidth());
+.dsh-ssh-ops-add-btn:hover {
+  background: #2d6cdf;
+  border-color: #2d6cdf;
+  color: #fff;
 }
-
-function initialPanelWidth() {
-  try {
-    const stored = Number(localStorage.getItem(PANEL_WIDTH_KEY));
-    if (Number.isFinite(stored)) return clampPanelWidth(stored);
-  } catch {}
-  return 480;
+.dsh-ssh-ops-add-btn:active {
+  background: #255cba;
+  border-color: #255cba;
+  color: #fff;
 }
+`;
 
-
+/**
+ * Inject the xterm stylesheet and the workspace button styles once. Neither
+ * carries outer-geometry rules: outer geometry (drawer width, chat-column
+ * reservation, sidebar fit) belongs to the hosts.
+ */
 function ensureStyles() {
   if (stylesInjected) return;
   stylesInjected = true;
   const style = document.createElement("style");
-  style.textContent = `${XTERM_CSS}
-
-/*
- * The shell overlay does not reserve layout space on its own.  When the SSH
- * drawer is open, make the main conversation column yield the drawer width so
- * text never continues underneath the terminal.  The class suffix is emitted
- * by DSH's CSS modules and is stable across its hashed prefix.
- */
-html[data-dsh-ssh-ops-panel-open] [class*="centerCol"] {
-  margin-right: var(--dsh-ssh-ops-panel-space, 496px) !important;
-  transition: margin-right 160ms ease;
-}
-
-/*
- * DSH-better-sidebar reserves its own right-hand lane by publishing
- * --dsh-sidebar-width.  Keep this drawer inside the remaining app frame
- * instead of covering that lane.  The fallback retains the normal DSH layout
- * when better-sidebar is absent or collapsed.
- */
-html[data-dsh-ssh-ops-panel-open] [data-dsh-ssh-ops-panel] {
-  right: var(--dsh-sidebar-width, 0px) !important;
-}
-
-/*
- * When better-sidebar is collapsed its two toggle buttons live in the
- * viewport's top-right corner.  Move this drawer's own + / close actions out
- * of that shared corner while leaving the title and panel body unchanged.
- */
-body[data-dsh-sidebar-collapsed] [data-dsh-ssh-ops-panel-header] {
-  padding-right: 84px !important;
-}
-
-/* On narrow screens, preserving a usable conversation column matters more
- * than a permanent split view, so the terminal remains an overlay. */
-@media (max-width: 900px) {
-  html[data-dsh-ssh-ops-panel-open] [class*="centerCol"] {
-    margin-right: 0 !important;
-  }
-}`;
+  style.textContent = XTERM_CSS + PANEL_CSS;
   document.head.appendChild(style);
 }
 
-function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value));
-}
-
 /**
- * Whether the plugin runs inside the DSH Desktop shell, whose frameless window
- * draws its own titlebar (and window controls) above the web content.
+ * Keep-alive pool for this workspace's terminals, keyed by host SSH session
+ * id. The official Sidebar draws only the ACTIVE tab's body, so switching to
+ * the Files tab (or closing the SSH tab, or switching chats) unmounts every
+ * XtermView; the pool keeps each xterm instance — and with it the scrollback —
+ * alive across those unmounts. Host-side, output written while no view is
+ * attached accumulates in the session buffer and is replayed on re-attach.
  */
-function isDesktopShell() {
-  return (
-    (typeof document !== "undefined" && document.body?.classList?.contains("dsh-desktop-windows-titlebar-layout")) ||
-    (typeof document !== "undefined" && document.getElementById("dsh-desktop-drag-region") !== null)
-  );
-}
-
-/**
- * The DSH Desktop shell's window controls (minimize / maximize / close) sit in
- * the top-right of a ~36px frameless titlebar. Align the drawer's top edge with
- * the sidebar "New session" button so the drawer header (＋/×) lands below that
- * titlebar instead of covering the window close button. Falls back to 74px
- * (36px titlebar + sidebar brand row) when the button cannot be measured.
- */
-function desktopPanelTop() {
-  if (!isDesktopShell()) return 0;
-  const sidebar = document.querySelector("[data-dsh-sidebar-root]");
-  if (!sidebar) return 74;
-  const labelRe = /新建会话|New session/i;
-  let best = null;
-  for (const button of sidebar.querySelectorAll("button")) {
-    if (!labelRe.test(button.getAttribute("aria-label") ?? "")) continue;
-    // The brand logo button shares the same aria-label but lives higher in the
-    // logo row; the real New Session button is the lower of the two.
-    if (best === null || button.getBoundingClientRect().top > best.getBoundingClientRect().top) {
-      best = button;
-    }
-  }
-  if (!best) return 74;
-  const top = Math.round(best.getBoundingClientRect().top);
-  return top > 0 ? top : 74;
-}
-
-/** One xterm instance bound to one host session via long-poll reads. */
-function XtermView({ api, sessionId, connectionId }) {
-  const containerRef = useRef(null);
-  const termRef = useRef(null);
-  const fitRef = useRef(null);
-  const [closed, setClosed] = useState(false);
-
-  useEffect(() => {
-    ensureStyles();
+const terminalPool = createTerminalPool({
+  create: () => {
     const term = new Terminal({
       cursorBlink: true,
       fontSize: 13,
@@ -169,13 +120,37 @@ function XtermView({ api, sessionId, connectionId }) {
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
-    termRef.current = term;
-    fitRef.current = fit;
-    term.open(containerRef.current);
-    fit.fit();
+    return { term, fit };
+  },
+  max: 8
+});
+
+/** One xterm view bound to one host session via long-poll reads / stream push. */
+function XtermView({ api, sessionId, connectionId }) {
+  const containerRef = useRef(null);
+  const [closed, setClosed] = useState(() => terminalPool.get(sessionId)?.closed ?? false);
+
+  useEffect(() => {
+    ensureStyles();
+    const container = containerRef.current;
+    if (!container) return undefined;
+    const owner = { sessionId };
+    const entry = terminalPool.acquire(sessionId, owner);
+    const term = entry.term;
+    const fit = entry.fit;
+
+    // (Re)attach: a pooled terminal keeps its DOM element — move it into this
+    // mount's container instead of opening it a second time. xterm's open()
+    // early-returns once opened, so the re-parent plus a full refresh is what
+    // actually redraws it at the new size.
+    if (entry.reused && term.element) {
+      if (term.element.parentElement !== container) container.appendChild(term.element);
+      try { term.refresh(0, Math.max(0, term.rows - 1)); } catch {}
+    } else {
+      term.open(container);
+    }
 
     let alive = true;
-    let resizeObserver = null;
     let writing = false;
     let pendingInput = "";
     const MAX_PENDING_INPUT = 64 * 1024;
@@ -199,15 +174,22 @@ function XtermView({ api, sessionId, connectionId }) {
       pendingInput += data;
       flushInput();
     };
-    term.onData(onData);
+    const inputSubscription = term.onData(onData);
 
     const controller = new AbortController();
     const NO_SESSION_NOTICE = `\r\n\x1b[31m[终端会话已失效：DSH 服务已重启或该连接已关闭。请到 设置 → 插件 → SSH 资源 重新连接]\x1b[0m\r\n`;
     const EXIT_NOTICE = `\r\n\x1b[90m[session exited]\x1b[0m\r\n`;
-    const showItem = ({ data, exit }) => {
-      if (data) term.write(data);
+    const markClosed = () => {
+      // The closed flag belongs to the session, not this mount: a remount
+      // (tab switch back, sidebar reopen) must not reset it.
+      terminalPool.setClosed(sessionId, true);
+      setClosed(true);
+    };
+    const showItem = ({ data, exit, startOffset, offset }) => {
+      const fresh = entry.consume(data ?? "", startOffset, offset);
+      if (fresh) term.write(fresh);
       if (exit !== null) {
-        setClosed(true);
+        markClosed();
         term.write(EXIT_NOTICE);
         return true;
       }
@@ -224,7 +206,7 @@ function XtermView({ api, sessionId, connectionId }) {
     const streamLoop = async () => {
       let errorBackoff = 0;
       while (alive) {
-        const stream = await api.streamTerminal(sessionId, controller.signal);
+        const stream = await api.streamTerminal(sessionId, controller.signal, entry.offset);
         if (!stream) return false;
         try {
           for await (const item of stream) {
@@ -241,7 +223,7 @@ function XtermView({ api, sessionId, connectionId }) {
             // The host restarted or the connection was closed server-side.
             // Without this notice the pane freezes on stale output and it
             // looks like agent commands stopped being echoed.
-            setClosed(true);
+            markClosed();
             term.write(NO_SESSION_NOTICE);
             return true;
           }
@@ -258,14 +240,14 @@ function XtermView({ api, sessionId, connectionId }) {
       let errorBackoff = 0;
       while (alive) {
         try {
-          const { data, exit } = await api.read(sessionId, 300);
+          const { data, exit, startOffset, offset } = await api.read(sessionId, 300, entry.offset);
           if (!alive) return;
           errorBackoff = 0;
-          if (showItem({ data, exit })) return;
+          if (showItem({ data, exit, startOffset, offset })) return;
         } catch (error) {
           if (!alive) return;
           if (error?.code === "no-session") {
-            setClosed(true);
+            markClosed();
             term.write(NO_SESSION_NOTICE);
             return;
           }
@@ -282,23 +264,37 @@ function XtermView({ api, sessionId, connectionId }) {
     };
     loop();
 
-    const onResize = () => {
+    // Refit whenever the container gets a new box: sidebar drag-resize,
+    // fullscreen switch, tab re-activation, server-tab switch — and the first
+    // observe after a remount, which is what restores correct dimensions when
+    // the terminal returns while the sidebar changed size while hidden.
+    let lastCols = 0;
+    let lastRows = 0;
+    const fitNow = () => {
+      if (!alive) return;
       try {
         fit.fit();
-        const dims = term.cols && term.rows ? { cols: term.cols, rows: term.rows } : null;
-        if (dims && alive) api.resize(sessionId, dims.cols, dims.rows).catch(() => {});
+        if (term.cols > 0 && term.rows > 0 && (term.cols !== lastCols || term.rows !== lastRows)) {
+          lastCols = term.cols;
+          lastRows = term.rows;
+          api.resize(sessionId, term.cols, term.rows).catch(() => {});
+        }
       } catch {}
     };
-    resizeObserver = new ResizeObserver(onResize);
-    if (containerRef.current) resizeObserver.observe(containerRef.current);
+    const raf = requestAnimationFrame(fitNow);
+    const resizeObserver = new ResizeObserver(fitNow);
+    resizeObserver.observe(container);
 
     return () => {
       alive = false;
       controller.abort();
+      cancelAnimationFrame(raf);
       pendingInput = "";
-      resizeObserver?.disconnect();
-      term.dispose();
-      termRef.current = null;
+      resizeObserver.disconnect();
+      inputSubscription.dispose();
+      // Detach only — the pooled terminal (and its scrollback) survives this
+      // unmount. Connections are host-side and are not touched here either.
+      terminalPool.release(sessionId, owner);
     };
   }, [sessionId, connectionId, api]);
 
@@ -874,8 +870,6 @@ function BatchDialog({ api, task, onDone }) {
 export function SshPanel({ api, credentials, locale }) {
   const ui = useSshUi();
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [panelWidth, setPanelWidth] = useState(initialPanelWidth);
-  const [panelTop, setPanelTop] = useState(() => desktopPanelTop());
   const [tab, setTab] = useState("terminal");
   const [batchTask, setBatchTask] = useState(null);
   const [pendingBatchCount, setPendingBatchCount] = useState(0);
@@ -897,16 +891,20 @@ export function SshPanel({ api, credentials, locale }) {
   // id re-opens the interruptive popup, so deferring one is not undone by the
   // next poll tick.
   const seenPendingIdsRef = useRef(null);
-  const panelRef = useRef(null);
   const snippetSearchRef = useRef(null);
   const t = zhDict;
 
+  // The workspace runs its data loops for exactly as long as it is mounted:
+  // the host (drawer open, or the SSH tab being the Sidebar's active tab in an
+  // expanded panel) decides visibility, and unmounting never touches the
+  // host-side connections. Style injection rides the first effect too, so the
+  // empty-state add button is styled before any terminal exists.
   useEffect(() => {
-    if (!ui.open) return;
+    ensureStyles();
     refreshConnections(api);
     const timer = setInterval(() => refreshConnections(api), 5000);
     return () => clearInterval(timer);
-  }, [ui.open, api]);
+  }, [api]);
 
   useEffect(() => {
     const sync = () => setCommandSnippets(loadCommandSnippets());
@@ -915,34 +913,11 @@ export function SshPanel({ api, credentials, locale }) {
   }, []);
 
   useEffect(() => {
-    if (!ui.open) return;
     Promise.all([api.profileList(), api.groupList()]).then(([profileValue, groupValue]) => {
       setProfiles(profileValue.profiles ?? []);
       setGroups(groupValue.groups ?? []);
     }).catch(() => {});
-  }, [ui.open, api]);
-
-  // Keep the drawer's top edge aligned with the sidebar "New session" button so
-  // the header controls never overlap the DSH Desktop window buttons. Re-measure
-  // on resize, sidebar reflow, and a slow poll as a safety net for late mounts.
-  useEffect(() => {
-    if (!ui.open) return;
-    const sync = () => setPanelTop(desktopPanelTop());
-    sync();
-    window.addEventListener("resize", sync);
-    const sidebar = document.querySelector("[data-dsh-sidebar-root]");
-    let observer = null;
-    if (sidebar) {
-      observer = new ResizeObserver(sync);
-      observer.observe(sidebar);
-    }
-    const timer = setInterval(sync, 2000);
-    return () => {
-      window.removeEventListener("resize", sync);
-      observer?.disconnect();
-      clearInterval(timer);
-    };
-  }, [ui.open]);
+  }, [api]);
 
   const refreshPendingConfirmations = async () => {
     try {
@@ -965,11 +940,10 @@ export function SshPanel({ api, credentials, locale }) {
   };
 
   useEffect(() => {
-    if (!ui.open) return;
     refreshPendingConfirmations();
     const timer = setInterval(refreshPendingConfirmations, 1000);
     return () => clearInterval(timer);
-  }, [ui.open, api]);
+  }, [api]);
 
   const refreshBatchTasks = async () => {
     try {
@@ -996,11 +970,10 @@ export function SshPanel({ api, credentials, locale }) {
   };
 
   useEffect(() => {
-    if (!ui.open) return;
     refreshBatchTasks();
     const timer = setInterval(refreshBatchTasks, 1000);
     return () => clearInterval(timer);
-  }, [ui.open, api]);
+  }, [api]);
 
 
   // Every queued command handled → no reason to keep the popup up.
@@ -1017,35 +990,6 @@ export function SshPanel({ api, credentials, locale }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [pendingModalOpen]);
 
-  useEffect(() => {
-    if (!ui.open) return;
-
-    ensureStyles();
-    const root = document.documentElement;
-    const syncReservedSpace = () => {
-      const width = Math.ceil(panelRef.current?.getBoundingClientRect().width || 480);
-      // Keep a small breathing gap between the message column and the drawer.
-      root.style.setProperty("--dsh-ssh-ops-panel-space", `${width + 16}px`);
-    };
-
-    syncReservedSpace();
-    root.dataset.dshSshOpsPanelOpen = "true";
-    const observer = new ResizeObserver(syncReservedSpace);
-    if (panelRef.current) observer.observe(panelRef.current);
-
-    return () => {
-      observer.disconnect();
-      delete root.dataset.dshSshOpsPanelOpen;
-      root.style.removeProperty("--dsh-ssh-ops-panel-space");
-    };
-  }, [ui.open]);
-
-  useEffect(() => {
-    const onWindowResize = () => setPanelWidth((width) => clampPanelWidth(width));
-    window.addEventListener("resize", onWindowResize);
-    return () => window.removeEventListener("resize", onWindowResize);
-  }, []);
-
   const active = ui.connections.find((c) => c.connectionId === ui.activeConnectionId);
   const visibleCommandSnippets = searchCommandSnippets(
     matchingCommandSnippets(availableCommandSnippets(commandSnippets), active, profiles),
@@ -1053,12 +997,10 @@ export function SshPanel({ api, credentials, locale }) {
   );
 
   useEffect(() => {
-    if (!ui.open || tab !== "snippets") return;
+    if (tab !== "snippets") return;
     const frame = requestAnimationFrame(() => snippetSearchRef.current?.focus());
     return () => cancelAnimationFrame(frame);
-  }, [ui.open, tab]);
-
-  if (!ui.open) return null;
+  }, [tab]);
 
   const openSession = async () => {
     if (!active) return;
@@ -1083,6 +1025,19 @@ export function SshPanel({ api, credentials, locale }) {
       setTab("terminal");
     } catch (error) {
       sshUiSetError(`填入快捷命令失败：${error?.message ?? String(error)}`);
+    }
+  };
+
+  // The host verifies a single idle POSIX shell and an empty input line.
+  // Never append a command to an operator draft or a foreground program.
+  const cdFromFiles = async (dir) => {
+    const sessionId = active?.sessions?.[0];
+    if (!sessionId || !dir) return sshUiSetError("请先打开当前服务器的终端，再使用 cd");
+    try {
+      await api.changeDirectory(sessionId, dir);
+      setTab("terminal");
+    } catch (error) {
+      sshUiSetError(`cd 失败：${error?.message ?? String(error)}`);
     }
   };
 
@@ -1129,13 +1084,6 @@ export function SshPanel({ api, credentials, locale }) {
     }
   };
 
-  const closePanel = () => {
-    // Hiding the panel must never tear down the open connections: they are
-    // managed per tab, and the panel is only a view over them.  Reopening the
-    // panel (top SSH button) shows the same tabs still connected.
-    sshUiSetOpen(false);
-  };
-
   const actOnPending = async (confirmationId, action) => {
     setPendingBusy(confirmationId);
     sshUiSetError(null);
@@ -1158,54 +1106,8 @@ export function SshPanel({ api, credentials, locale }) {
     }
   };
 
-  const beginResize = (event) => {
-    event.preventDefault();
-    const startX = event.clientX;
-    const startWidth = panelRef.current?.getBoundingClientRect().width ?? panelWidth;
-    const previousCursor = document.body.style.cursor;
-    const previousUserSelect = document.body.style.userSelect;
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
-
-    const onPointerMove = (moveEvent) => {
-      // The drawer is anchored at the right, so moving its left edge left makes
-      // it wider and moving it right makes it narrower.
-      setPanelWidth(clampPanelWidth(startWidth + startX - moveEvent.clientX));
-    };
-    const endResize = () => {
-      document.body.style.cursor = previousCursor;
-      document.body.style.userSelect = previousUserSelect;
-      window.removeEventListener("pointermove", onPointerMove);
-      window.removeEventListener("pointerup", endResize);
-      window.removeEventListener("pointercancel", endResize);
-      setPanelWidth((width) => {
-        try {
-          localStorage.setItem(PANEL_WIDTH_KEY, String(width));
-        } catch {}
-        return width;
-      });
-    };
-
-    window.addEventListener("pointermove", onPointerMove);
-    window.addEventListener("pointerup", endResize);
-    window.addEventListener("pointercancel", endResize);
-  };
-
   return (
-    <div ref={panelRef} data-dsh-ssh-ops-panel="true" style={{ ...panelStyles.root, width: panelWidth, top: panelTop }}>
-      <div
-        style={panelStyles.resizeHandle}
-        onPointerDown={beginResize}
-        role="separator"
-        aria-label="调整 SSH 终端宽度"
-        aria-orientation="vertical"
-        title="拖动以调整 SSH 终端宽度"
-      />
-      <div data-dsh-ssh-ops-panel-header="true" style={panelStyles.header}>
-        <span style={panelStyles.title}>{t.panelTitle}</span>
-        <button onClick={closePanel} disabled={ui.busy} style={panelStyles.btnSmall} title={t.closePanel}>×</button>
-      </div>
-
+    <div style={panelStyles.workspace}>
       <div style={panelStyles.serverTabs}>
         {ui.connections.map((conn) => {
           const isActive = conn.connectionId === ui.activeConnectionId;
@@ -1233,7 +1135,16 @@ export function SshPanel({ api, credentials, locale }) {
           );
         })}
         {ui.connections.length === 0 && <span style={panelStyles.connEmpty}>{t.empty}</span>}
-        <button type="button" style={panelStyles.serverTabAdd} onClick={() => setDialogOpen(true)} title={t.connect} aria-label="连接新服务器">＋</button>
+        <button
+          type="button"
+          className="dsh-ssh-ops-add-btn"
+          style={ui.connections.length === 0 ? panelStyles.serverTabAddLabeled : panelStyles.serverTabAdd}
+          onClick={() => setDialogOpen(true)}
+          title={t.connect}
+          aria-label="连接新服务器"
+        >
+          {ui.connections.length === 0 ? `＋ ${t.connect}` : "＋"}
+        </button>
       </div>
 
       {ui.error && <div style={panelStyles.error}>{ui.error}</div>}
@@ -1328,7 +1239,7 @@ export function SshPanel({ api, credentials, locale }) {
           <>
             <TabErrorBoundary key="files">
               <div style={{ ...panelStyles.tabPane, display: tab === "files" ? "flex" : "none" }}>
-                <SshFiles api={api} connectionId={active.connectionId} />
+                <SshFiles api={api} connectionId={active.connectionId} onCd={cdFromFiles} />
               </div>
             </TabErrorBoundary>
             <TabErrorBoundary key="tunnels">
@@ -1427,9 +1338,8 @@ export function SshPanel({ api, credentials, locale }) {
 const zhDict = {
   panelTitle: "SSH 终端",
   connect: "连接服务器",
-  closePanel: "隐藏 SSH 终端面板（不断开连接）",
   openSession: "打开终端",
-  empty: "还没有连接。点「＋」添加服务器，或在对话里让我帮你连。",
+  empty: "还没有连接。",
   sessionClosed: "会话已关闭",
   noConnection: "未连接",
   busy: "忙…",
@@ -1442,9 +1352,8 @@ const zhDict = {
 const enDict = {
   panelTitle: "SSH Terminal",
   connect: "Connect",
-  closePanel: "Hide SSH terminal panel (keep connections)",
   openSession: "Open",
-  empty: "No connections. Click ＋ to add a server, or ask me in the conversation.",
+  empty: "No connections yet.",
   sessionClosed: "Session closed",
   noConnection: "Not connected",
   busy: "Busy…",
@@ -1455,41 +1364,20 @@ const enDict = {
 };
 
 const panelStyles = {
-  root: {
-    position: "fixed",
-    top: 0,
-    right: 0,
-    bottom: 0,
-    width: 480,
-    maxWidth: "70vw",
-    zIndex: 900,
+  /** The workspace fill: works inside the fixed drawer (flex child) and inside
+   * the official Sidebar's tab body (block parent with a definite height). */
+  workspace: {
+    boxSizing: "border-box",
+    flex: "1 1 auto",
+    height: "100%",
+    minHeight: 0,
     display: "flex",
     flexDirection: "column",
+    overflow: "hidden",
     background: "#101418",
-    borderLeft: "1px solid #262b33",
-    boxShadow: "-8px 0 24px rgba(0,0,0,.35)",
     fontFamily: "var(--dsw-font-family, system-ui, sans-serif)",
     color: "#d7dbe2"
   },
-  resizeHandle: {
-    position: "absolute",
-    top: 0,
-    bottom: 0,
-    left: -5,
-    width: 10,
-    cursor: "col-resize",
-    zIndex: 1,
-    touchAction: "none"
-  },
-  header: {
-    display: "flex",
-    alignItems: "center",
-    gap: 8,
-    padding: "10px 12px",
-    borderBottom: "1px solid #262b33",
-    flex: "none"
-  },
-  title: { fontSize: 13, fontWeight: 600, flex: 1 },
   btnSmall: {
     background: "transparent",
     border: "1px solid #3a414b",
@@ -1563,16 +1451,18 @@ const panelStyles = {
     cursor: "pointer",
     opacity: 0.8
   },
+  // Add-server button. Colors/border/hover live in the injected
+  // .dsh-ssh-ops-add-btn class; these inline styles carry only geometry.
   serverTabAdd: {
-    background: "transparent",
-    border: "1px dashed #3a414b",
-    color: "#8b93a1",
-    borderRadius: 6,
     width: 24,
     height: 24,
-    cursor: "pointer",
     fontSize: 14,
-    lineHeight: 1,
+    flex: "none"
+  },
+  serverTabAddLabeled: {
+    height: 24,
+    padding: "0 10px",
+    fontSize: 12,
     flex: "none"
   },
   snippetPage: { display: "flex", flex: 1, minHeight: 0, flexDirection: "column", gap: 10, padding: 8, overflow: "hidden" },

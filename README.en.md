@@ -8,9 +8,9 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.2.21-blue)
+![version](https://img.shields.io/badge/version-0.3.0-blue)
 
-> **New in v0.2.20**: a dedicated **Command Library** tab in the SSH panel, with searchable built-in operations commands and a compact in-tab **+ Custom** editor for global, group, or per-server commands. Choosing a command only fills the terminal input; it never runs automatically.
+> **New in v0.3.0**: the SSH terminal is now a **tab of the official right Sidebar** (next to the built-in Files tab) on current DSH builds — width, split, collapse, and fullscreen are managed by the official sidebar, with no floating-panel overlap and no chat-column margin. Connection lifetime is fully decoupled from the tab display: switching tabs, collapsing the sidebar, closing the tab, or switching chats never disconnects SSH, and reopening restores the full terminal scrollback (including output the host buffered while hidden). Older DSH builds automatically fall back to the previous floating panel. See **[INSTALL.md](./INSTALL.md)** for desktop install instructions.
 
 ## Screenshots
 
@@ -28,13 +28,13 @@ Drive the connected server directly from the main conversation, with a real inte
 
 ## What it does
 
-- Open a resizable xterm.js SSH terminal on the right of a session. When **DSH-better-sidebar** is also enabled, the terminal docks to the left of the sidebar instead of covering the file sidebar or the top-right controls.
-- Manage any number of servers and groups under **Settings → Plugins → SSH Resources**; the top **SSH** toggle only shows or hides the right-side terminal.
+- **Official right-Sidebar integration (current DSH)**: the SSH terminal is a tab of the official right Sidebar, beside the built-in Files tab. The **SSH** button in the conversation header opens or focuses that tab (repeated clicks focus instead of duplicating). Use the official split view to see files and the terminal together; drag-resize, fullscreen, and collapse are the sidebar's, and the terminal re-fits automatically. **Connection lifetime is independent of the tab**: switching tabs, collapsing the sidebar, closing the tab, or switching chats never disconnects SSH; terminal instances live in a client-side pool, so reopening restores the full scrollback while host-buffered output from the hidden period replays on return. Older DSH builds (no `sidebarRightTabs`) fall back to the floating panel unchanged.
+- Manage any number of servers and groups under **Settings → Plugins → SSH Resources**; the top **SSH** button only opens or focuses the right-side terminal tab (on older DSH it shows/hides the floating panel — neither disconnects).
 - **Command library**: the SSH panel has a dedicated Command Library tab with system inspection, service, Docker, logs, networking, storage, scheduler, and Ubuntu/RHEL/CentOS install/update templates. Search matches command names and contents. Custom commands are managed inside this tab; they are stored only in browser local storage and must never contain passwords, tokens, or other secrets.
 - Server name, address, port, username, auth type, and group are stored in DSH local storage; there is no count limit.
 - Passwords, PEM private keys, and passphrases are stored **only** in DSH's official local credentials store `~/.dsh/.credentials.yaml` (owner-only permissions). Browser storage, agent context, tool results, and resource lists never read or display secrets.
 - The main conversation auto-detects the currently-connected server on the right; the agent never has to ask the user for an internal connection id.
-- Commands the agent runs via `ssh_exec` are echoed in the right-side terminal, and the exit code, output, duration, timeout, and truncation status are returned to the main conversation for analysis.
+- Commands run through `ssh_exec` are echoed in the terminal and return exit code, output, `cwd`, duration, timeout, and truncation state. On Linux, the command inherits the verified directory of one idle POSIX interactive shell. Busy or ambiguous terminals and inaccessible directories are rejected; when no interactive shell is detectable, the login directory is used and clearly reported.
 - Manual terminal output is read on demand via `ssh_read`; it is never silently injected into the conversation context.
 - Output sent to the model is redacted for private keys, Bearer tokens, common passwords/API keys (including bare `sk-`-prefixed keys), and database passwords.
 - **Connection stability**: SSH connections enable keepalive (20s interval, 3 checks), so NAT/firewalls no longer silently drop idle connections. Transport drops trigger exponential-backoff auto-reconnect (capped at 30s); a command that drops mid-run is retried once transparently. Transient connection failures auto-retry 3 times (auth failures excluded). Explicit disconnect or plugin unload never triggers reconnect; remote tunnels re-register automatically after a reconnect.
@@ -62,7 +62,7 @@ The same model covers `sftp_delete` (the agent no longer deletes directly; inste
 ### From GitHub (recommended)
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.2.21
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.0
 ```
 
 Then restart DSH Web:
@@ -75,14 +75,14 @@ Open any session, click the top **SSH** tab, and use the right-side panel to con
 
 ### From a release archive
 
-Download `dsh-ssh-ops-0.2.21.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.2.21), then:
+Download `dsh-ssh-ops-0.3.0.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.0), then:
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.2.21.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.0.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.2.21.zip` is for offline review or further development; extract it and run `npm install && npm run build` in the directory.
+`dsh-ssh-ops-0.3.0.zip` is for offline review or further development; extract it and run `npm install && npm run build` in the directory.
 
 ## Usage
 
@@ -107,7 +107,7 @@ There are 29 agent tools. Omitting `connection_id` / `db_connection_id` targets 
 | --- | --- |
 | `ssh_list` | List open SSH connections and identify the active server; only when the user asks which is connected |
 | `ssh_connect` | Connect over SSH (password or private key) and make it the current server |
-| `ssh_exec` | Run a command on the current server; returns exit code/output/duration/timeout/truncation/redacted state |
+| `ssh_exec` | Run a command on the current server (inherits the interactive shell's cwd); returns exit code/output/cwd/duration/timeout/truncation/redacted state |
 | `ssh_read` | Read buffered output from the right-side terminal on demand (never silently injected) |
 | `ssh_write` | Send interactive input to a terminal; `press_enter` (default true) appends Enter so prompts are submitted like a real keypress (use `connection_id` to target a specific server's terminal) |
 | `ssh_disconnect` | Close the current connection and its shell sessions |
@@ -168,8 +168,8 @@ Pushing a `vX.Y.Z` tag that matches `package.json.version` runs tests, builds th
 
 Artifacts are written to `release/`:
 
-- `dsh-ssh-ops-0.2.21.tgz`: installable directly by DSH.
-- `dsh-ssh-ops-0.2.21.zip`: full offline source archive.
+- `dsh-ssh-ops-0.3.0.tgz`: installable directly by DSH.
+- `dsh-ssh-ops-0.3.0.zip`: full offline source archive.
 
 ## License
 

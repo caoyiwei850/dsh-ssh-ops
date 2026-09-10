@@ -9,6 +9,7 @@ const { Client } = ssh2;
 
 const HOST = "127.0.0.1";
 const PORT = Number(process.argv[2] ?? 2222);
+const IS_WINDOWS = process.platform === "win32";
 
 function connect() {
   return new Promise((resolve, reject) => {
@@ -50,7 +51,7 @@ const conn = await connect();
 console.log("[client] connected");
 
 // 1) exec channel
-const r1 = await exec(conn, "echo EXEC-OK & ver");
+const r1 = await exec(conn, IS_WINDOWS ? "echo EXEC-OK & ver" : "echo EXEC-OK; uname -s");
 console.log("[client] exec exit=", r1.code, "out=", JSON.stringify(r1.out.replace(/\r?\n/g, " | ").slice(0, 120)));
 
 // 2) shell channel: write a command + CR, see if it executes

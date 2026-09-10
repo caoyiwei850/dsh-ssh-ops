@@ -12,9 +12,9 @@
  * Credentials: any username / password "test123".
  *
  * Channels:
- *   - exec  -> runs the command through cmd.exe /c and streams stdout/stderr
+ *   - exec  -> runs the command through the platform shell and streams stdout/stderr
  *              with a real exit code (exercises ssh_exec).
- *   - shell -> runs an interactive cmd.exe and pipes the session's stdin/stdout
+ *   - shell -> runs an interactive platform shell and pipes stdin/stdout
  *              to it (exercises the terminal + ssh_write Enter).
  */
 import ssh2 from "ssh2";
@@ -28,6 +28,8 @@ const { Server } = ssh2;
 
 const PORT = Number(process.argv[2] ?? 2222);
 const PASSWORD = "test123";
+const IS_WINDOWS = process.platform === "win32";
+const SHELL = IS_WINDOWS ? "cmd.exe" : "/bin/sh";
 
 // Persist the host key so restarts keep the same fingerprint (a real sshd keeps
 // a fixed host key; regenerating one each run would trip the plugin's TOFU host
@@ -44,7 +46,11 @@ if (existsSync(HOST_KEY_PATH)) {
 }
 
 function runShell(stream, args, { onExit } = {}) {
-  const child = spawn("cmd.exe", args, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+  const child = spawn(SHELL, args, {
+    stdio: ["pipe", "pipe", "pipe"],
+    windowsHide: true,
+    env: IS_WINDOWS ? process.env : { ...process.env, PS1: "dsh-test$ " }
+  });
   child.stdout.on("data", (d) => { if (!stream.destroyed) stream.write(d); });
   child.stderr.on("data", (d) => { if (!stream.destroyed) stream.stderr.write(d); });
   stream.on("data", (d) => {
@@ -53,7 +59,9 @@ function runShell(stream, args, { onExit } = {}) {
     // discipline (icrnl) turns that CR into a line terminator; Windows cmd.exe
     // is CRLF-oriented and would otherwise ignore a lone CR. Expand CR/LF to
     // CRLF so the local Windows test server behaves like a Linux shell.
-    const normalized = d.toString("utf8").replace(/\r\n?|\n/g, "\r\n");
+    const normalized = IS_WINDOWS
+      ? d.toString("utf8").replace(/\r\n?|\n/g, "\r\n")
+      : d.toString("utf8").replace(/\r\n?/g, "\n");
     // Simulate a real PTY's ECHO: pipe the typed line back to the client so the
     // command text is visible, exactly as a Linux terminal echoes keystrokes.
     if (!stream.destroyed) stream.write(normalized);
@@ -106,10 +114,9 @@ const server = new Server({ hostKeys: [hostKey] }, (client) => {
       session.on("shell", (acceptShell) => {
         const stream = acceptShell();
         stream.on("error", () => {});
-        // Interactive cmd prompt. Piped stdin is line-oriented: cmd executes a
-        // line on CRLF/LF, so Enter (CR) from the terminal reaches it as a
-        // line terminator through the pipe.
-        const args = term && term !== "" ? ["/Q"] : ["/Q"];
+        // Interactive shell. Windows cmd.exe needs CRLF input; POSIX shells
+        // accept LF. runShell normalizes terminal Enter for each platform.
+        const args = IS_WINDOWS ? ["/Q"] : [];
         runShell(stream, args, { onExit: (code) => { if (!stream.destroyed) { try { stream.exit(code ?? 0); } catch {} } } });
       });
 
@@ -117,7 +124,8 @@ const server = new Server({ hostKeys: [hostKey] }, (client) => {
         const stream = acceptExec();
         stream.on("error", () => {});
         const command = typeof info.command === "string" ? info.command : "";
-        runShell(stream, ["/Q", "/C", command], {
+        const args = IS_WINDOWS ? ["/Q", "/C", command] : ["-c", command];
+        runShell(stream, args, {
           onExit: (code) => { if (!stream.destroyed) { try { stream.exit(code ?? 0); } catch {} } }
         });
       });

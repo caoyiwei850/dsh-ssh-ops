@@ -146,9 +146,14 @@ export class SshApi {
   }
 
 
-  async read(sessionId, timeoutMs = 300) {
-    const value = await this.call("read", { sessionId, timeoutMs });
-    return { data: value.data ? decodeBase64(value.data) : "", exit: value.exit };
+  async read(sessionId, timeoutMs = 300, after) {
+    const value = await this.call("read", { sessionId, timeoutMs, ...(after === undefined ? {} : { after }) });
+    return {
+      data: value.data ? decodeBase64(value.data) : "",
+      exit: value.exit,
+      startOffset: value.startOffset,
+      offset: value.offset
+    };
   }
 
   /**
@@ -157,13 +162,14 @@ export class SshApi {
    * { data, exit } items, or null when the stream path is unavailable (older
    * host, mux offline) so the caller falls back to read() polling.
    */
-  async streamTerminal(sessionId, signal) {
+  async streamTerminal(sessionId, signal, after) {
     const namespace = this.getNamespace();
     const fn = namespace?.terminalStream;
     if (typeof fn !== "function") return null;
     let stream;
     try {
-      stream = signal !== undefined ? await fn({ sessionId }, signal) : await fn({ sessionId });
+      const request = { sessionId, ...(after === undefined ? {} : { after }) };
+      stream = signal !== undefined ? await fn(request, signal) : await fn(request);
     } catch {
       return null;
     }
@@ -174,10 +180,14 @@ export class SshApi {
           if (!item || item.ok !== true) {
             throw new SshApiError(item?.error?.code ?? "rpc-failed", item?.error?.message ?? "terminal stream failed");
           }
-          yield { data: item.value.data ? decodeBase64(item.value.data) : "", exit: item.value.exit };
+          yield { data: item.value.data ? decodeBase64(item.value.data) : "", exit: item.value.exit, startOffset: item.value.startOffset, offset: item.value.offset };
         }
       }
     };
+  }
+
+  changeDirectory(sessionId, path) {
+    return this.call("changeDirectory", { sessionId, path });
   }
 
   resize(sessionId, cols, rows) {

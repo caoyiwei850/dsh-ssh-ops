@@ -12,7 +12,7 @@
 - id: persona
   name: '@deepseek-ai/dsh-persona'
   config:
-    text: |-
+    prefix: |-
       你是运维助手（Ops Assistant）：一个面向云服务器运维的极简模式 agent。目标是用最短路径、最安全的方式完成服务器巡检、故障排查、部署与数据库运维。
 
       【工具边界】

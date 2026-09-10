@@ -17,7 +17,7 @@ function dirnameOf(path) {
   return path.slice(0, idx);
 }
 
-export function SshFiles({ api, connectionId }) {
+export function SshFiles({ api, connectionId, onCd }) {
   const [cwd, setCwd] = useState("/");
   const [entries, setEntries] = useState(null);
   const [error, setError] = useState(null);
@@ -368,6 +368,15 @@ export function SshFiles({ api, connectionId }) {
               )}
               {selected?.name === entry.name && (
                 <span style={filesStyles.rowActions} onClick={(e) => e.stopPropagation()}>
+                  {entry.isDirectory && onCd && (
+                    <button
+                      onClick={() => onCd(joinPath(cwd, entry.name))}
+                      disabled={busy}
+                      style={filesStyles.btnTiny}
+                      title="在右侧终端 cd 到此目录"
+                      aria-label={`在终端 cd 到 ${joinPath(cwd, entry.name)}`}
+                    >cd</button>
+                  )}
                   <button onClick={() => download(entry)} disabled={busy} style={filesStyles.btnTiny}>下载</button>
                   <button onClick={() => setRenaming(!renaming)} style={filesStyles.btnTiny}>改名</button>
                   <button onClick={() => doDelete(entry)} disabled={busy} style={filesStyles.btnDanger}>删除</button>

@@ -8,9 +8,9 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.2.21-blue)
+![version](https://img.shields.io/badge/version-0.3.0-blue)
 
-> **v0.2.20 新增**：SSH 面板独立的「快捷命令」页签，内置常用运维模板并支持按名称/命令内容搜索；用页签内紧凑的「＋ 自定义」管理全局/分组/单服务器命令。点击仅填入终端，不自动执行。桌面版安装说明见 **[INSTALL.md](./INSTALL.md)**。
+> **v0.3.0 新增**：接入 DSH 新版官方右侧边栏——SSH 成为与「文件」并列的官方标签页，宽度、分栏、收起与全屏全部由官方侧栏统一管理，不再有浮动面板遮挡与聊天列留白；连接生命周期与标签显示彻底分离，切换标签 / 收起侧栏 / 切换聊天都不会断开 SSH，重新打开完整恢复终端回看（含隐藏期间在宿主侧缓冲的输出）。旧版 DSH 自动回退为原有可拖宽的浮动面板。桌面版安装说明见 **[INSTALL.md](./INSTALL.md)**。
 
 ## 示例
 
@@ -28,12 +28,12 @@
 
 ## 能做什么
 
-- 在会话右侧打开可调整宽度的 xterm.js SSH 终端；与 **DSH-better-sidebar** 同时启用时，终端会自动停靠在侧栏左边，不会覆盖文件侧栏或右上角控制按钮。
-- 在 **设置 → 插件 → SSH 资源** 中管理任意数量的服务器和分组；顶部的 **SSH** 仅显示或隐藏右侧终端。
+- **官方右侧边栏集成（新版 DSH）**：SSH 终端是官方右侧边栏的一个标签页（与内置「文件」并列），聊天顶部的 **SSH** 按钮打开或聚焦该标签（重复点击只聚焦、不重复创建）；需要同时看文件和终端时使用官方分栏，拖宽、全屏、收起全部由官方管理，终端尺寸随之自动重算。**连接生命周期与标签显示分离**：切换标签、收起侧栏、关闭标签、切换聊天都不会断开 SSH；终端实例常驻内存池，重新打开即恢复完整回看，隐藏期间服务器输出由宿主缓冲、重开时自动补齐。旧版 DSH（无 `sidebarRightTabs`）自动回退为浮动面板模式，行为不变。
+- 在 **设置 → 插件 → SSH 资源** 中管理任意数量的服务器和分组；顶部的 **SSH** 仅打开或聚焦右侧终端标签（旧版 DSH 中为显示/隐藏浮动面板，均不断开连接）。
 - 服务器名称、地址、端口、用户名、认证类型和分组保存到 DSH 本地存储；数量不设上限。
 - 密码、PEM 私钥和私钥口令仅保存到 DSH 官方本机凭据库 `~/.dsh/.credentials.yaml`（owner-only 权限）；浏览器存储、Agent 上下文、工具结果和资源列表均不会读取或显示秘密内容。
 - 主对话自动识别当前右侧已连接服务器，无需向用户索取内部连接 ID。
-- Agent 发出的 `ssh_exec` 命令会显示在右侧终端，并将退出码、输出、耗时、超时和截断状态回传给主对话分析。
+- Agent 发出的 `ssh_exec` 命令会显示在右侧终端，并回传退出码、输出、`cwd`、耗时、超时和截断状态。Linux 上能唯一确认空闲 POSIX 交互 shell 时继承其实际目录；终端繁忙、候选不唯一或目录不可访问时拒绝执行，未检测到交互 shell 时使用登录初始目录并明确标注。
 - 对手动终端输出提供按需 `ssh_read` 读取；不会静默把人工终端内容塞入对话上下文。
 - 输出给模型前会脱敏私钥、Bearer Token、常见密码/API Key（含裸 `sk-` 开头的密钥）和数据库连接口令。
 - **连接稳定性**：SSH 连接启用 keepalive（20 秒间隔、3 次判定），NAT/防火墙不再静默丢弃空闲连接；传输意外断开后指数退避自动重连（上限 30 秒），命令中途掉线透明重试一次，瞬时连接失败自动重试 3 次（认证失败除外）；显式断开或插件卸载不触发重连，重连后远程隧道自动重新注册。
@@ -63,7 +63,7 @@ Agent 命中上述黑名单时不会被静默拒绝：插件会创建一条一�
 ### 从 GitHub 安装（推荐）
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.2.21
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.0
 ```
 
 安装后重启 DSH Web：
@@ -76,14 +76,14 @@ dsh web
 
 ### 从发布压缩包安装
 
-从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.2.21) 下载 `dsh-ssh-ops-0.2.21.tgz` 后：
+从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.0) 下载 `dsh-ssh-ops-0.3.0.tgz` 后：
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.2.21.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.0.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.2.21.zip` 适用于离线审阅或二次开发；解压后可在目录中执行 `npm install && npm run build`。
+`dsh-ssh-ops-0.3.0.zip` 适用于离线审阅或二次开发；解压后可在目录中执行 `npm install && npm run build`。
 
 ## 使用方式
 
@@ -108,7 +108,7 @@ dsh web
 | --- | --- |
 | `ssh_list` | 查看当前活动连接的安全元数据（不包含保存资源或秘密）；仅在用户问“连了哪台”时用 |
 | `ssh_connect` | 建立 SSH 连接（密码或私钥）并设为当前服务器 |
-| `ssh_exec` | 在当前服务器执行 Agent 命令，回传退出码/输出/耗时/超时/截断/脱敏状态 |
+| `ssh_exec` | 在当前服务器执行 Agent 命令（继承交互 shell 当前目录），回传退出码/输出/cwd/耗时/超时/截断/脱敏状态 |
 | `ssh_read` | 按需读取右侧终端缓冲输出（不静默塞入对话） |
 | `ssh_write` | 向指定终端写入交互输入；`press_enter`（默认 true）自动补回车提交（可传 `connection_id` 指定目标服务器的终端） |
 | `ssh_disconnect` | 断开当前连接及其 shell 会话 |
@@ -169,8 +169,8 @@ npm run pack:release
 
 生成物位于 `release/`：
 
-- `dsh-ssh-ops-0.2.21.tgz`：可直接被 DSH 安装。
-- `dsh-ssh-ops-0.2.21.zip`：完整离线源码包。
+- `dsh-ssh-ops-0.3.0.tgz`：可直接被 DSH 安装。
+- `dsh-ssh-ops-0.3.0.zip`：完整离线源码包。
 
 ## 许可
 

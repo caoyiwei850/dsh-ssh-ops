@@ -4,6 +4,7 @@
  * through long-poll reads. Also registers agent tools (ssh_connect, ssh_exec,
  * ...) so the main conversation can drive the same sessions the panel shows.
  */
+import { createTerminalOutput } from "./terminal-output.js";
 import { randomUUID } from "node:crypto";
 import net from "node:net";
 import { Client } from "ssh2";
@@ -13,6 +14,7 @@ import { defineDomain, domainTable } from "@deepseek-ai/dsh-storage-domain";
 import { TypertRemoteService } from "@deepseek-ai/dsh-typert-protocol";
 import { z } from "zod";
 import { assessShellCommand, isPrefillable } from "./safety.js";
+import { EXEC_CWD_ERROR_PREFIX, buildCwdAwareCommand, execEchoWarning, extractExecCwd, posixLoginShell } from "./exec-cwd.js";
 import { scpCommand, scpDownload, scpUpload } from "./scp.js";
 import { redactForModel } from "./redact.js";
 import { isTransientConnectError } from "./net-errors.js";
@@ -1035,12 +1037,70 @@ export default class SshOpsService extends TypertRemoteService {
     return { ok: true, value: { written: text.length } };
   }
 
+  /** Explicit UI action: refuse drafts, foreground jobs, and ambiguous PTYs. */
+  async changeDirectory(request) {
+    if (typeof request.path !== "string" || !request.path.startsWith("/") || /[\x00-\x1f\x7f]/.test(request.path)) {
+      return { ok: false, error: fail("bad-path", "目录必须是绝对路径，且不能包含控制字符") };
+    }
+    const session = this.sessions.get(request.sessionId);
+    const conn = session && this.connections.get(session.connectionId);
+    const ready = () => session && conn && this.sessions.get(request.sessionId) === session
+      && !conn.dead && !conn.closing && session.exited === null && session.stream
+      && session.inputKnown === true && session.inputLine === ""
+      && !this.pendingForSession(session.id) && conn.sessions.size === 1;
+    if (!ready()) return { ok: false, error: fail("terminal-not-ready", "请先结束前台程序、清空未提交输入，并仅保留一个交互终端") };
+    const revision = session.inputRevision ?? 0;
+    const client = conn.client;
+    try {
+      if (!posixLoginShell(await this.resolveLoginShell(conn))) {
+        return { ok: false, error: fail("unsupported-shell", "无法确认此 shell 的空闲状态，请在终端手动切换目录") };
+      }
+      const probe = await this.collectExecOutput(client, buildCwdAwareCommand(":"), 5000);
+      if (probe.exitCode !== 0 || extractExecCwd(probe.stdout).cwd === null) {
+        return { ok: false, error: fail("terminal-busy", "未确认空闲交互 shell，请结束前台程序后重试或手动 cd") };
+      }
+      if (!ready() || client !== conn.client || revision !== (session.inputRevision ?? 0)) {
+        return { ok: false, error: fail("terminal-changed", "终端输入已变化，请检查后重试") };
+      }
+      const quoted = "'" + request.path.replace(/'/g, "'\\''") + "'";
+      return this.write({ sessionId: session.id, data: encodeData(`cd -- ${quoted}\r`) });
+    } catch (error) {
+      return { ok: false, error: fail("cd-failed", error.message) };
+    }
+  }
+
   async read(request) {
     const session = this.sessions.get(request.sessionId);
     if (session === void 0) {
       const exit = this.exitedSessions.get(request.sessionId);
       if (exit !== void 0) return { ok: true, value: { data: "", exit } };
       return { ok: false, error: fail("no-session", `session "${request.sessionId}" does not exist`) };
+    }
+    // Cursor readers share the append-only journal. This keeps stream-to-poll
+    // fallback exact and lets multiple panes observe the same bytes without
+    // competing for a destructive buffer.
+    if (request.after !== undefined) {
+      const journal = this.terminalOutput(session);
+      const available = journal.read(request.after);
+      if (available.data !== "" || session.exited !== null) {
+        return { ok: true, value: { ...available, data: encodeData(available.data), exit: session.exited } };
+      }
+      const timeoutMs = request.timeoutMs ?? this.config.defaultReadTimeoutMs;
+      return new Promise((resolve) => {
+        let settled = false;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          const index = session.waiters.indexOf(waiter);
+          if (index >= 0) session.waiters.splice(index, 1);
+          const item = journal.read(request.after);
+          resolve({ ok: true, value: { ...item, data: encodeData(item.data), exit: session.exited } });
+        };
+        const timer = setTimeout(finish, timeoutMs);
+        const waiter = { resolve: finish, timer, cursor: true };
+        session.waiters.push(waiter);
+      });
     }
     if (session.exited !== null) {
       return { ok: true, value: { data: this.drain(session), exit: session.exited } };
@@ -1082,32 +1142,26 @@ export default class SshOpsService extends TypertRemoteService {
       yield { ok: false, error: fail("no-session", `session "${request.sessionId}" does not exist`) };
       return;
     }
-    const listener = { chunks: [], wake: null, timer: null };
-    if (session.streamListeners === undefined) session.streamListeners = new Set();
+    const journal = this.terminalOutput(session);
+    const listener = { wake: null, timer: null };
+    session.streamListeners ??= new Set();
     session.streamListeners.add(listener);
-    // Take over the pending poll buffer so output that arrived between PTY
-    // creation and this subscription is not lost (the poller is idle while
-    // the stream is open, so the buffer belongs to us now).
-    if (session.buffer !== "") {
-      listener.chunks.push(session.buffer);
-      session.buffer = "";
-    }
+    let cursor = request.after;
     const abort = () => listener.wake?.();
     signal?.addEventListener("abort", abort);
     try {
       let heartbeatFired = false;
-      while (true) {
-        const data = listener.chunks.join("");
-        listener.chunks = [];
+      while (!signal?.aborted) {
+        const item = journal.read(cursor);
         const exit = session.exited;
-        // Yield on real output, on exit, or on the idle keepalive heartbeat.
-        if (data !== "" || exit !== null || heartbeatFired) {
-          yield { ok: true, value: { data: encodeData(data), exit } };
+        if (item.data !== "" || exit !== null || heartbeatFired) {
+          cursor = item.offset;
+          yield { ok: true, value: { ...item, data: encodeData(item.data), exit } };
         }
+        if (exit !== null || signal?.aborted) return;
+        // Output can arrive while suspended at yield. Do not sleep over it.
+        if (journal.read(cursor).data !== "") continue;
         heartbeatFired = false;
-        if (exit !== null) return;
-        // Sleep until output arrives, the caller aborts, or the keepalive
-        // heartbeat fires — whichever comes first.
         await new Promise((resolve) => {
           listener.wake = resolve;
           listener.timer = setTimeout(() => {
@@ -1118,12 +1172,19 @@ export default class SshOpsService extends TypertRemoteService {
         listener.wake = null;
         clearTimeout(listener.timer);
         listener.timer = null;
-        if (signal?.aborted) return;
       }
     } finally {
+      clearTimeout(listener.timer);
       session.streamListeners.delete(listener);
       signal?.removeEventListener("abort", abort);
+      // History belongs to the session, not its readers. No per-reader
+      // copyback: simultaneous cancellations cannot duplicate output.
     }
+  }
+
+  terminalOutput(session) {
+    session.outputJournal ??= createTerminalOutput(session.buffer ?? "", this.config.maxBufferBytes);
+    return session.outputJournal;
   }
 
   pendingConfirmationList() {
@@ -1576,6 +1637,30 @@ export default class SshOpsService extends TypertRemoteService {
     }
   }
 
+  /**
+   * One-time probe of the connection's login shell — the binary sshd runs for
+   * exec channels — cached on the connection record. `echo $SHELL` is a bare
+   * variable expansion valid in every shell family, so the probe itself never
+   * breaks fish/csh; unknown or exotic families keep the plain-exec behavior.
+   * A transient probe failure clears itself so a later exec can retry.
+   */
+  resolveLoginShell(conn) {
+    if (conn.loginShell !== undefined) return Promise.resolve(conn.loginShell);
+    if (conn.loginShellProbe === undefined) {
+      conn.loginShellProbe = this.collectExecOutput(conn.client, "echo $SHELL", 10000)
+        .then((state) => {
+          const name = state.stdout.trim().split("/").pop() ?? "";
+          conn.loginShell = name.length > 0 ? name.toLowerCase() : null;
+        })
+        .catch(() => {
+          // Leave loginShell undefined: the next exec re-probes once the
+          // transport is healthy again. This call keeps the plain behavior.
+          conn.loginShellProbe = undefined;
+        });
+    }
+    return conn.loginShellProbe.then(() => conn.loginShell);
+  }
+
   async execOnConnection(connectionId, command, timeoutMs = 30000, retried = false) {
     const decision = assessShellCommand(command);
     if (!decision.ok) return this.prefillBlockedResult(connectionId, command, decision.category ?? decision.reason);
@@ -1584,12 +1669,19 @@ export default class SshOpsService extends TypertRemoteService {
     if (!(await this.ensureAlive(conn))) {
       return { ok: false, error: fail("connection-lost", `connection "${connectionId}" is down and could not be re-established`) };
     }
+    // An exec channel always starts in the login home directory — the panel's
+    // interactive shell may be somewhere else entirely. When the login shell
+    // is POSIX-family, prepend the interactive-cwd prologue (see exec-cwd.js)
+    // so the command runs where the operator's terminal is, and the resolved
+    // directory comes back on a stripped marker line.
+    const shell = await this.resolveLoginShell(conn);
+    const sent = posixLoginShell(shell) ? buildCwdAwareCommand(command) : command;
     const commandId = randomUUID();
     const startedAt = new Date().toISOString();
     const startedAtMs = Date.now();
     let state;
     try {
-      state = await this.collectExecOutput(conn.client, command, timeoutMs);
+      state = await this.collectExecOutput(conn.client, sent, timeoutMs);
     } catch (error) {
       // The transport may have died between the liveness check and the exec.
       // Wait for the self-healing reconnect and retry once transparently.
@@ -1598,10 +1690,19 @@ export default class SshOpsService extends TypertRemoteService {
       }
       return { ok: false, error: fail("exec-failed", error.message) };
     }
-    const { stdout, stderr } = state;
+    const { cwd, stdout } = extractExecCwd(state.stdout);
+    const { stderr } = state;
+    if (state.exitCode === 125 && cwd === null && stderr.startsWith(EXEC_CWD_ERROR_PREFIX)) {
+      return { ok: false, error: fail("cwd-unavailable", stderr.trim()) };
+    }
     // Mirror the command and output into every live shell session of this
-    // connection so the panel displays agent-driven commands too.
-    const display = normalizeTerminalEol(`$ ${command}\n${stdout}${stderr.length > 0 ? stderr : ""}`)
+    // connection so the panel displays agent-driven commands too. No steady-
+    // state label: the `$ ` prefix is the established agent marker and, with
+    // the cwd inherited, output is consistent with the visible prompt. A dim
+    // warning appears only in the fallback case (cwd undetected — the exec
+    // ran from the home directory, so output may contradict the prompt).
+    const warning = execEchoWarning(cwd);
+    const display = normalizeTerminalEol(`${warning ? `${warning}\n` : ""}$ ${command}\n${stdout}${stderr.length > 0 ? stderr : ""}`)
       .replace(/(?:\r\n)+$/, "");
     for (const sessionId of conn.sessions) {
       const session = this.sessions.get(sessionId);
@@ -1618,6 +1719,7 @@ export default class SshOpsService extends TypertRemoteService {
         exitCode: state.exitCode,
         stdout,
         stderr,
+        cwd,
         display,
         commandId,
         startedAt,
@@ -1685,6 +1787,7 @@ export default class SshOpsService extends TypertRemoteService {
         exitCode: null,
         stdout: "",
         stderr: "",
+        cwd: null,
         commandId: "(blocked)",
         startedAt: now,
         finishedAt: now,
@@ -1732,6 +1835,7 @@ export default class SshOpsService extends TypertRemoteService {
    * execute it. History navigation and tab completion fail closed as well.
    */
   prepareTerminalInput(session, text) {
+    session.inputRevision = (session.inputRevision ?? 0) + 1;
     const { forwarded, blockedReason } = processTerminalInput(session, text, (line) => assessShellCommand(line));
     if (blockedReason !== null) this.appendTerminalNotice(session, blockedReason);
     return { forwarded, blockedReason };
@@ -1747,6 +1851,7 @@ export default class SshOpsService extends TypertRemoteService {
    * on this path, only the mirror is kept honest.
    */
   updateInputMirror(session, text) {
+    session.inputRevision = (session.inputRevision ?? 0) + 1;
     if (typeof text !== "string") return;
     if (session.inputLine === undefined) session.inputLine = "";
     if (session.inputKnown === undefined) session.inputKnown = true;
@@ -2282,7 +2387,7 @@ export default class SshOpsService extends TypertRemoteService {
       };
     }
     if (!result.ok) return result;
-    const { exitCode, stdout, stderr, commandId, startedAt, finishedAt, durationMs, truncated, timedOut } = result.value;
+    const { exitCode, stdout, stderr, cwd, commandId, startedAt, finishedAt, durationMs, truncated, timedOut } = result.value;
     const safeStdout = redactForModel(stdout);
     const safeStderr = redactForModel(stderr);
     return {
@@ -2293,6 +2398,7 @@ export default class SshOpsService extends TypertRemoteService {
         exitCode,
         stdout: safeStdout.text,
         stderr: safeStderr.text,
+        cwd,
         commandId,
         startedAt,
         finishedAt,
@@ -2356,6 +2462,8 @@ export default class SshOpsService extends TypertRemoteService {
 
   /** Append transport data and retain a bounded, explicit-read capture. */
   appendSessionOutput(session, text, { capture = true, observePrompt = true } = {}) {
+    this.terminalOutput(session).append(text);
+    // Legacy poll readers retain their independent destructive buffer.
     session.buffer = tailCapped((session.buffer ?? "") + text, this.config.maxBufferBytes);
     if (capture) {
       session.captureBuffer = tailCapped((session.captureBuffer ?? "") + text, this.config.maxCaptureBytes);
@@ -2412,6 +2520,10 @@ export default class SshOpsService extends TypertRemoteService {
 
   wakeWaiters(session, exit) {
     if (session.waiters.length === 0) return;
+    const cursorWaiters = session.waiters.filter((waiter) => waiter.cursor);
+    session.waiters = session.waiters.filter((waiter) => !waiter.cursor);
+    for (const waiter of cursorWaiters) waiter.resolve();
+    if (session.waiters.length === 0) return;
     session.waiters.shift().resolve({
       ok: true,
       value: { data: this.drain(session), exit }
@@ -2424,10 +2536,9 @@ export default class SshOpsService extends TypertRemoteService {
   }
 
   /** Feed appended output to stream-push consumers; every listener sees every item. */
-  notifyStreamListeners(session, text) {
+  notifyStreamListeners(session, _text) {
     if (session.streamListeners === undefined) return;
     for (const listener of session.streamListeners) {
-      if (text !== "") listener.chunks.push(text);
       listener.wake?.();
     }
   }

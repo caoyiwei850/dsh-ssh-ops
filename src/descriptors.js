@@ -49,6 +49,7 @@ export const DESCRIPTORS = [
   def("groupSave", S.groupSaveRequestSchema, "SshGroupSaveRequest", S.groupSaveResultSchema, "SshGroupSaveResult"),
   def("groupDelete", S.groupDeleteRequestSchema, "SshGroupDeleteRequest", S.groupDeleteResultSchema, "SshGroupDeleteResult"),
   def("openSession", S.openSessionRequestSchema, "SshOpenSessionRequest", S.openSessionResultSchema, "SshOpenSessionResult"),
+  def("changeDirectory", S.changeDirectoryRequestSchema, "SshChangeDirectoryRequest", S.writeResultSchema, "SshWriteResult"),
   def("write", S.writeRequestSchema, "SshWriteRequest", S.writeResultSchema, "SshWriteResult"),
   def("pendingConfirmationList", S.pendingConfirmationListRequestSchema, "PendingConfirmationListRequest", S.pendingConfirmationListResultSchema, "PendingConfirmationListResult"),
   def("pendingConfirmationApprove", S.pendingConfirmationActionRequestSchema, "PendingConfirmationActionRequest", S.pendingConfirmationApproveResultSchema, "PendingConfirmationApproveResult"),

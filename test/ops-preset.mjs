@@ -13,6 +13,8 @@ const skill = read(".agent-presets/ops/skills/test-op/SKILL.md");
 
 assert.match(manifest, /^name: 运维模式$/m);
 assert.match(manifest, /无本地 shell/);
+assert.match(config, /^\s+prefix: \|-$/m, "persona uses the current required prefix field");
+assert.doesNotMatch(config, /^\s+text:/m, "persona never uses the removed text field");
 for (const required of ["dsh-ssh-ops", "ssh_batch", "complete: true", "includeRuntimeContext: false", "@deepseek-ai/dsh-fs-local", "@deepseek-ai/dsh-skill-filesystem"]) {
   assert.ok(config.includes(required), `native preset keeps ${required}`);
 }

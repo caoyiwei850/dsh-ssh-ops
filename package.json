@@ -1,7 +1,7 @@
 {
   "name": "dsh-ssh-ops",
   "description": "SSH ops and database tools for DSH Web UI: connect to remote servers via SSH terminal/SFTP/tunnels, and connect to MySQL/PostgreSQL/Redis/MongoDB databases. Host half manages sessions with ssh2; client half renders the terminal and database panel.",
-  "version": "0.2.21",
+  "version": "0.3.0",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -99,7 +99,7 @@
     "build": "npm run gen:xterm-css && npm run build:host && npm run build:client",
     "lint": "eslint .",
     "bump:readme": "node scripts/bump-readme.mjs",
-    "test": "node --test test/safety.mjs test/db-safety.mjs test/db-ops.mjs test/hostkey.mjs test/batch.mjs test/scp.mjs test/ops-preset.mjs test/command-snippets.mjs test/ssh-panel-command-picker.mjs test/client.mjs test/manifest.mjs test/ssh-write.mjs test/credentials.mjs test/sftp-tools.mjs test/terminal-stream.mjs",
+    "test": "node --test test/safety.mjs test/db-safety.mjs test/db-ops.mjs test/hostkey.mjs test/batch.mjs test/scp.mjs test/ops-preset.mjs test/command-snippets.mjs test/ssh-panel-command-picker.mjs test/client.mjs test/manifest.mjs test/ssh-write.mjs test/credentials.mjs test/sftp-tools.mjs test/terminal-stream.mjs test/exec-cwd.mjs test/terminal-pool.mjs test/sidebar-integration.mjs test/review-regressions.mjs",
     "install:dev": "node scripts/install-dev.mjs",
     "pack:release": "npm run build && node scripts/package-release.mjs"
   }

@@ -198,6 +198,7 @@ service.execOnConnection = async (connectionId, command) => {
       exitCode: 0,
       stdout: "Mem: 1.0G 0.5G\n",
       stderr: "",
+      cwd: "/root",
       commandId: "cmd-1",
       startedAt: "2026-08-15T00:00:00.000Z",
       finishedAt: "2026-08-15T00:00:01.000Z",
@@ -211,7 +212,8 @@ const execution = await service.executeCommand({ command: "free -h" });
 assert.deepEqual(commandInvocation, { connectionId: "active", command: "free -h" });
 assert.equal(execution.ok, true);
 assert.equal(execution.value.host, "192.0.2.10");
-assert.deepEqual(Object.keys(execution.value).sort(), ["commandId", "connectionId", "durationMs", "exitCode", "finishedAt", "host", "redacted", "startedAt", "stderr", "stdout", "timedOut", "truncated"]);
+assert.equal(execution.value.cwd, "/root", "the interactive cwd travels with the result");
+assert.deepEqual(Object.keys(execution.value).sort(), ["commandId", "connectionId", "cwd", "durationMs", "exitCode", "finishedAt", "host", "redacted", "startedAt", "stderr", "stdout", "timedOut", "truncated"]);
 
 const registeredTools = [];
 service.registerTools({ tools: { register(tool) { registeredTools.push(tool); } } });
@@ -222,7 +224,7 @@ assert.ok(registeredTools.some((tool) => tool.name === "ssh_list"));
 const renderFixtures = {
   ssh_list: [{}, { activeConnectionId: "active", connections: [{ connectionId: "active", name: "demo", host: "192.0.2.10", port: 22, username: "root", connected: true, sessions: [] }] }],
   ssh_connect: [{ username: "root", host: "192.0.2.10" }, { connectionId: "active" }],
-  ssh_exec: [{}, { connectionId: "active", host: "192.0.2.10", exitCode: 0, stdout: "ok\n", stderr: "", commandId: "cmd-1", startedAt: "2026-08-15T00:00:00.000Z", finishedAt: "2026-08-15T00:00:01.000Z", durationMs: 1000, truncated: false, timedOut: false, redacted: false }],
+  ssh_exec: [{}, { connectionId: "active", host: "192.0.2.10", exitCode: 0, stdout: "ok\n", stderr: "", cwd: "/root/KVideo", commandId: "cmd-1", startedAt: "2026-08-15T00:00:00.000Z", finishedAt: "2026-08-15T00:00:01.000Z", durationMs: 1000, truncated: false, timedOut: false, redacted: false }],
   ssh_read: [{}, { connectionId: "active", host: "192.0.2.10", data: "prompt", hasSession: true, truncated: false, redacted: false }],
   ssh_write: [{}, { written: 5 }],
   ssh_disconnect: [{}, { disconnected: true }]
@@ -238,7 +240,7 @@ for (const [name, [args, value]] of Object.entries(renderFixtures)) {
 // A blocked ssh_exec renders a copyable command card, not a thrown error.
 {
   const sshExecTool = registeredTools.find((t) => t.name === "ssh_exec");
-  const baseBlocked = { connectionId: "live", host: "192.0.2.10", exitCode: null, stdout: "", stderr: "", commandId: "(blocked)", startedAt: "2026-08-20T00:00:00.000Z", finishedAt: "2026-08-20T00:00:00.000Z", durationMs: 0, truncated: false, timedOut: false, redacted: false };
+  const baseBlocked = { connectionId: "live", host: "192.0.2.10", exitCode: null, stdout: "", stderr: "", cwd: null, commandId: "(blocked)", startedAt: "2026-08-20T00:00:00.000Z", finishedAt: "2026-08-20T00:00:00.000Z", durationMs: 0, truncated: false, timedOut: false, redacted: false };
   const prefilledCard = sshExecTool.output.render({}, { ...baseBlocked, blocked: true, reason: "删除文件或目录", command: "rm -rf /tmp/x", prefilled: false, queued: true });
   assert.equal(prefilledCard.length, 1);
   assert.match(prefilledCard[0].text, /已拦截：删除文件或目录/);
@@ -251,9 +253,12 @@ for (const [name, [args, value]] of Object.entries(renderFixtures)) {
   assert.match(copyCard[0].text, /粘贴到右侧终端执行/);
   assert.match(copyCard[0].text, /```bash/);
   assert.match(copyCard[0].text, /请勿重试/);
-  // Normal (non-blocked) ssh_exec output still renders as before.
-  const normalCard = sshExecTool.output.render({}, { connectionId: "live", host: "192.0.2.10", exitCode: 0, stdout: "ok\n", stderr: "", commandId: "cmd-1", startedAt: "x", finishedAt: "x", durationMs: 1, truncated: false, timedOut: false, redacted: false });
-  assert.equal(normalCard[0].text, "ok\n");
+  // Normal (non-blocked) ssh_exec output renders the cwd note, then output.
+  const normalCard = sshExecTool.output.render({}, { connectionId: "live", host: "192.0.2.10", exitCode: 0, stdout: "ok\n", stderr: "", cwd: "/root/KVideo", commandId: "cmd-1", startedAt: "x", finishedAt: "x", durationMs: 1, truncated: false, timedOut: false, redacted: false });
+  assert.equal(normalCard[0].text, "[cwd: /root/KVideo]\nok\n");
+  // Unknown cwd spells out the home fallback instead of printing "null".
+  const fallbackCard = sshExecTool.output.render({}, { connectionId: "live", host: "192.0.2.10", exitCode: 0, stdout: "ok\n", stderr: "", cwd: null, commandId: "cmd-1", startedAt: "x", finishedAt: "x", durationMs: 1, truncated: false, timedOut: false, redacted: false });
+  assert.match(fallbackCard[0].text, /^\[cwd: login directory — no interactive shell directory detected\]\nok\n$/);
 }
 
 // sftp_delete never deletes via the agent; it queues an equivalent
