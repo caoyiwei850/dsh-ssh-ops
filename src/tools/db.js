@@ -2,13 +2,26 @@
  * Agent tools for database operations (MySQL/PostgreSQL/Redis/MongoDB).
  * Read-only SQL is lexically enforced host-side; destructive statements are
  * returned as copyable cards instead of executed.
+ *
+ * Every tool declares a cooperative timeoutMs and forwards `exec.signal` down
+ * to the driver layer. A half-open transport (SSH tunnel silently dropped: no
+ * error event, no data) leaves driver promises that never settle, and the
+ * registry cannot hard-kill same-process code — so without a declared budget
+ * the dsh timeout policy skips these tools entirely and a hung db_query spins
+ * forever, uninterruptible. The budget sits above the db layer's own
+ * client-side deadlines so the agent gets the specific message ("timed out
+ * connecting…", "…cancelled") from the layer that knows what hung.
  */
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { pickSshConnectionId } from "../db-ops.js";
 
+/** Cooperative tool-call budget; the db layer's own ceilings are all lower. */
+export const DB_TOOL_TIMEOUT_MS = 60000;
+
 export function registerDbTools(ctx, service) {
   ctx.tools.register(defineTool({
     name: "db_connect",
+    timeoutMs: DB_TOOL_TIMEOUT_MS,
     description: "Connect to a database (MySQL, PostgreSQL, Redis, or MongoDB) so the agent can query or run commands in later db_query/db_execute/db_run calls. When an SSH server is connected, a loopback host (127.0.0.1/localhost) is automatically tunneled through the current server (via_ssh=auto), so 'connect to the database on the server' works without an internal connection id; pass via_ssh='no' to force a local connection, or ssh_connection_id to pick a specific server. For cloud-managed databases requiring TLS, set ssl to 'verify' (public-CA certs) or 'preferred' (self-signed certs). Returns a db_connection_id.",
     parameters: {
       type: { type: "string", enum: ["mysql", "postgresql", "redis", "mongodb"], required: true, description: "Database type." },
@@ -35,7 +48,7 @@ export function registerDbTools(ctx, service) {
         return [{ type: "text", text: `Connected ${value.type} ${args.host}:${args.port} (id: ${value.dbConnectionId})` }];
       }
     },
-    async execute(args) {
+    async execute(args, exec) {
       const routed = pickSshConnectionId({
         sshConnectionId: args.ssh_connection_id,
         viaSsh: args.via_ssh,
@@ -46,7 +59,7 @@ export function registerDbTools(ctx, service) {
       const result = await service.dbConnect({
         type: args.type, host: args.host, port: args.port, database: args.database,
         username: args.username, password: args.password, ssl: args.ssl,
-        sshConnectionId: routed.sshConnectionId, name: args.name
+        sshConnectionId: routed.sshConnectionId, name: args.name, signal: exec?.signal
       });
       if (!result.ok) throw new Error(`db_connect failed: ${result.error.message}`);
       return result.value;
@@ -55,6 +68,7 @@ export function registerDbTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "db_list_connections",
+    timeoutMs: DB_TOOL_TIMEOUT_MS,
     description: "List currently open database connections (db_connection_id, type, host, port). Use it only when the user asks which databases are connected.",
     parameters: {},
     output: {
@@ -82,8 +96,8 @@ export function registerDbTools(ctx, service) {
         return [{ type: "text", text: value.connections.map((c) => `- ${c.name} (${c.type}): ${c.host}:${c.port}${c.sshConnectionId ? " via SSH" : ""} (id: ${c.dbConnectionId})`).join("\n") }];
       }
     },
-    async execute() {
-      const result = await service.dbListConnections({});
+    async execute(_args, exec) {
+      const result = await service.dbListConnections({ signal: exec?.signal });
       if (!result.ok) throw new Error(`db_list_connections failed: ${result.error.message}`);
       return result.value;
     }
@@ -91,6 +105,7 @@ export function registerDbTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "db_query",
+    timeoutMs: DB_TOOL_TIMEOUT_MS,
     description: "Run a read-only SQL query on a connected MySQL or PostgreSQL database and return columns and rows. Read-only is LEXICALLY ENFORCED: only SELECT/SHOW/DESCRIBE/EXPLAIN/WITH(read-only) statements pass; write verbs, SELECT INTO, FOR UPDATE locking reads and data-modifying CTEs are rejected (use db_execute for writes, db_tx_* for verified change workflows). For Redis or MongoDB, use db_run instead. Results stream and are capped at 200 rows; queries time out after 30s.",
     parameters: {
       db_connection_id: { type: "string", required: true, description: "A db_connection_id from db_connect." },
@@ -115,8 +130,8 @@ export function registerDbTools(ctx, service) {
         return [{ type: "text", text }];
       }
     },
-    async execute(args) {
-      const result = await service.dbQuery({ dbConnectionId: args.db_connection_id, sql: args.sql, params: args.params });
+    async execute(args, exec) {
+      const result = await service.dbQuery({ dbConnectionId: args.db_connection_id, sql: args.sql, params: args.params, signal: exec?.signal });
       if (!result.ok) throw new Error(`db_query failed: ${result.error.message}`);
       return result.value;
     }
@@ -124,6 +139,7 @@ export function registerDbTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "db_execute",
+    timeoutMs: DB_TOOL_TIMEOUT_MS,
     description: "Run a write SQL statement (INSERT/UPDATE/DELETE/CREATE/ALTER) on a connected MySQL or PostgreSQL database. Destructive statements (DROP/TRUNCATE/SHUTDOWN, detected by leading statement verb so keywords inside string literals or comments are not false-positives) are not executed by the agent: the SQL is returned as a copyable card to paste into the database panel's SQL editor and run manually. For Redis or MongoDB, use db_run instead.",
     parameters: {
       db_connection_id: { type: "string", required: true },
@@ -151,8 +167,8 @@ export function registerDbTools(ctx, service) {
         return [{ type: "text", text }];
       }
     },
-    async execute(args) {
-      const result = await service.dbExecute({ dbConnectionId: args.db_connection_id, sql: args.sql, params: args.params });
+    async execute(args, exec) {
+      const result = await service.dbExecute({ dbConnectionId: args.db_connection_id, sql: args.sql, params: args.params, signal: exec?.signal });
       if (!result.ok) {
         if (result.error.code === "unsafe-sql") {
           return { affectedRows: 0, truncated: false, blocked: true, reason: result.error.message, sql: args.sql };
@@ -165,6 +181,7 @@ export function registerDbTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "db_list_tables",
+    timeoutMs: DB_TOOL_TIMEOUT_MS,
     description: "List tables in the current schema of a connected MySQL or PostgreSQL database. For MongoDB, use db_run with operation 'countDocuments' on a collection instead.",
     parameters: {
       db_connection_id: { type: "string", required: true }
@@ -175,8 +192,8 @@ export function registerDbTools(ctx, service) {
         return [{ type: "text", text: value.tables.length ? value.tables.join("\n") : "(no tables)" }];
       }
     },
-    async execute(args) {
-      const result = await service.dbListTables({ dbConnectionId: args.db_connection_id });
+    async execute(args, exec) {
+      const result = await service.dbListTables({ dbConnectionId: args.db_connection_id, signal: exec?.signal });
       if (!result.ok) throw new Error(`db_list_tables failed: ${result.error.message}`);
       return result.value;
     }
@@ -184,6 +201,7 @@ export function registerDbTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "db_describe_table",
+    timeoutMs: DB_TOOL_TIMEOUT_MS,
     description: "Full structural introspection of a table in a connected MySQL or PostgreSQL database: columns (name, type, nullable, default), indexes, foreign keys, row-count/data-size estimates from planner statistics, and the MySQL SHOW CREATE TABLE DDL.",
     parameters: {
       db_connection_id: { type: "string", required: true },
@@ -263,8 +281,8 @@ export function registerDbTools(ctx, service) {
         return [{ type: "text", text: lines.join("\n") }];
       }
     },
-    async execute(args) {
-      const result = await service.dbDescribeTable({ dbConnectionId: args.db_connection_id, table: args.table });
+    async execute(args, exec) {
+      const result = await service.dbDescribeTable({ dbConnectionId: args.db_connection_id, table: args.table, signal: exec?.signal });
       if (!result.ok) throw new Error(`db_describe_table failed: ${result.error.message}`);
       return result.value;
     }
@@ -272,6 +290,7 @@ export function registerDbTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "db_preview",
+    timeoutMs: DB_TOOL_TIMEOUT_MS,
     description: "Sample rows of a table (SELECT * with LIMIT/OFFSET) on a connected MySQL or PostgreSQL database without hand-writing SQL. Returns columns, rows, and a row-count estimate from planner statistics (no full-table COUNT). The table identifier is validated against injection; limit/offset are bound as parameters.",
     parameters: {
       db_connection_id: { type: "string", required: true },
@@ -303,8 +322,8 @@ export function registerDbTools(ctx, service) {
         return [{ type: "text", text }];
       }
     },
-    async execute(args) {
-      const result = await service.dbPreview({ dbConnectionId: args.db_connection_id, table: args.table, limit: args.limit, offset: args.offset });
+    async execute(args, exec) {
+      const result = await service.dbPreview({ dbConnectionId: args.db_connection_id, table: args.table, limit: args.limit, offset: args.offset, signal: exec?.signal });
       if (!result.ok) throw new Error(`db_preview failed: ${result.error.message}`);
       return result.value;
     }
@@ -312,6 +331,7 @@ export function registerDbTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "db_explain",
+    timeoutMs: DB_TOOL_TIMEOUT_MS,
     description: "Get the execution plan of a SELECT/WITH query (MySQL EXPLAIN FORMAT=JSON / PostgreSQL EXPLAIN (FORMAT JSON)) on a connected database, e.g. to check index usage before optimizing. The statement must pass the same lexically read-only gate as db_query.",
     parameters: {
       db_connection_id: { type: "string", required: true },
@@ -324,8 +344,8 @@ export function registerDbTools(ctx, service) {
         return [{ type: "text", text: JSON.stringify(value.plan, null, 2) }];
       }
     },
-    async execute(args) {
-      const result = await service.dbExplain({ dbConnectionId: args.db_connection_id, sql: args.sql, params: args.params });
+    async execute(args, exec) {
+      const result = await service.dbExplain({ dbConnectionId: args.db_connection_id, sql: args.sql, params: args.params, signal: exec?.signal });
       if (!result.ok) throw new Error(`db_explain failed: ${result.error.message}`);
       return result.value;
     }
@@ -333,6 +353,7 @@ export function registerDbTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "db_tx_begin",
+    timeoutMs: DB_TOOL_TIMEOUT_MS,
     description: "Begin an interactive transaction on a dedicated connection (MySQL/PostgreSQL) for verified change workflows: db_tx_begin → db_tx_execute (the write) → db_tx_execute (SELECT to verify) → db_tx_commit or db_tx_rollback. Idle transactions are rolled back automatically after 5 minutes.",
     parameters: {
       db_connection_id: { type: "string", required: true }
@@ -343,8 +364,8 @@ export function registerDbTools(ctx, service) {
         return [{ type: "text", text: `Transaction ${value.txId} started on ${value.dbConnectionId}. Run db_tx_execute next; finish with db_tx_commit or db_tx_rollback.` }];
       }
     },
-    async execute(args) {
-      const result = await service.dbTxBegin({ dbConnectionId: args.db_connection_id });
+    async execute(args, exec) {
+      const result = await service.dbTxBegin({ dbConnectionId: args.db_connection_id, signal: exec?.signal });
       if (!result.ok) throw new Error(`db_tx_begin failed: ${result.error.message}`);
       return result.value;
     }
@@ -352,6 +373,7 @@ export function registerDbTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "db_tx_execute",
+    timeoutMs: DB_TOOL_TIMEOUT_MS,
     description: "Run one statement inside a transaction opened with db_tx_begin. Use SELECT there to verify the effect of your write before committing. Destructive verbs (DROP/TRUNCATE/SHUTDOWN) remain blocked.",
     parameters: {
       tx_id: { type: "string", required: true },
@@ -382,8 +404,8 @@ export function registerDbTools(ctx, service) {
         return [{ type: "text", text }];
       }
     },
-    async execute(args) {
-      const result = await service.dbTxExecute({ txId: args.tx_id, sql: args.sql, params: args.params });
+    async execute(args, exec) {
+      const result = await service.dbTxExecute({ txId: args.tx_id, sql: args.sql, params: args.params, signal: exec?.signal });
       if (!result.ok) throw new Error(`db_tx_execute failed: ${result.error.message}`);
       return result.value;
     }
@@ -391,14 +413,15 @@ export function registerDbTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "db_tx_commit",
+    timeoutMs: DB_TOOL_TIMEOUT_MS,
     description: "Commit a transaction opened with db_tx_begin. Call this only after db_tx_execute verification looked right.",
     parameters: { tx_id: { type: "string", required: true } },
     output: {
       schema: { type: "object", additionalProperties: false, properties: { txId: { type: "string", required: true }, finished: { type: "boolean", required: true }, committed: { type: "boolean", required: true } } },
       render(_args, value) { return [{ type: "text", text: `Transaction ${value.txId} committed.` }]; }
     },
-    async execute(args) {
-      const result = await service.dbTxCommit({ txId: args.tx_id });
+    async execute(args, exec) {
+      const result = await service.dbTxCommit({ txId: args.tx_id, signal: exec?.signal });
       if (!result.ok) throw new Error(`db_tx_commit failed: ${result.error.message}`);
       return result.value;
     }
@@ -406,14 +429,15 @@ export function registerDbTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "db_tx_rollback",
+    timeoutMs: DB_TOOL_TIMEOUT_MS,
     description: "Roll back a transaction opened with db_tx_begin, undoing every statement executed in it.",
     parameters: { tx_id: { type: "string", required: true } },
     output: {
       schema: { type: "object", additionalProperties: false, properties: { txId: { type: "string", required: true }, finished: { type: "boolean", required: true }, rolledBack: { type: "boolean", required: true } } },
       render(_args, value) { return [{ type: "text", text: `Transaction ${value.txId} rolled back.` }]; }
     },
-    async execute(args) {
-      const result = await service.dbTxRollback({ txId: args.tx_id });
+    async execute(args, exec) {
+      const result = await service.dbTxRollback({ txId: args.tx_id, signal: exec?.signal });
       if (!result.ok) throw new Error(`db_tx_rollback failed: ${result.error.message}`);
       return result.value;
     }
@@ -421,6 +445,7 @@ export function registerDbTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "db_run",
+    timeoutMs: DB_TOOL_TIMEOUT_MS,
     description: "Run a command on a connected Redis or MongoDB database. Redis: pass {command, args} (e.g. command='GET', args=['mykey'], or command='KEYS', args=['*']). MongoDB: pass {collection, operation} where operation is 'find'|'findOne'|'insertOne'|'updateOne'|'deleteOne'|'countDocuments', plus filter/document/update as needed. For MySQL/PostgreSQL, use db_query or db_execute instead.",
     parameters: {
       db_connection_id: { type: "string", required: true },
@@ -440,11 +465,12 @@ export function registerDbTools(ctx, service) {
         return [{ type: "text", text }];
       }
     },
-    async execute(args) {
+    async execute(args, exec) {
       const result = await service.dbRun({
         dbConnectionId: args.db_connection_id, command: args.command, args: args.args,
         collection: args.collection, operation: args.operation, filter: args.filter,
-        document: args.document, update: args.update, options: args.options
+        document: args.document, update: args.update, options: args.options,
+        signal: exec?.signal
       });
       if (!result.ok) throw new Error(`db_run failed: ${result.error.message}`);
       return result.value;
@@ -453,6 +479,7 @@ export function registerDbTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "db_disconnect",
+    timeoutMs: DB_TOOL_TIMEOUT_MS,
     description: "Close a database connection opened with db_connect. Use it when the user is done querying a database.",
     parameters: {
       db_connection_id: { type: "string", required: true }
@@ -461,8 +488,8 @@ export function registerDbTools(ctx, service) {
       schema: { type: "object", additionalProperties: false, properties: { dbConnectionId: { type: "string", required: true }, disconnected: { type: "boolean", required: true } } },
       render(args) { return [{ type: "text", text: `Disconnected ${args.db_connection_id}` }]; }
     },
-    async execute(args) {
-      const result = await service.dbDisconnect({ dbConnectionId: args.db_connection_id });
+    async execute(args, exec) {
+      const result = await service.dbDisconnect({ dbConnectionId: args.db_connection_id, signal: exec?.signal });
       if (!result.ok) throw new Error(`db_disconnect failed: ${result.error.message}`);
       return result.value;
     }

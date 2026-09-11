@@ -48,6 +48,34 @@ const KEEPALIVE_COUNT_MAX = 3;
 // Transient connect failures (resets, timeouts, scanner-induced refusals) are
 // retried with backoff; authentication failures are never retried.
 const CONNECT_RETRIES = 3;
+
+/**
+ * Key-exchange algorithms for Huawei legacy VRP (S12712 and similar switches,
+ * also some old IOS/Comware builds). Such devices offer ONLY SHA-1 group14 and
+ * reject every modern KEX, so the handshake dies with "no matching key
+ * exchange algorithm" and the device looks simply unreachable.
+ *
+ * ssh2 ships `diffie-hellman-group14-sha1` in SUPPORTED_KEX but deliberately
+ * leaves it out of DEFAULT_KEX (SHA-1 KEX is no longer considered secure), so
+ * it must be opted into explicitly. `append` places these after every modern
+ * algorithm: a modern peer still negotiates modern, and only a peer that
+ * speaks nothing else lands on SHA-1. Scope is deliberately KEX-only — host
+ * key and cipher policy are left at ssh2's defaults.
+ */
+export const LEGACY_VRP_ALGORITHMS = Object.freeze({
+  kex: { append: ["diffie-hellman-group14-sha1"] }
+});
+
+/**
+ * True when the handshake failed because the two sides share no KEX algorithm
+ * (as opposed to a wrong password, an unreachable host, or a timeout). Only
+ * this specific failure justifies retrying with legacy algorithms — matching
+ * anything broader would silently weaken every failing connection.
+ */
+export function isKexMismatchError(error) {
+  const message = String(error?.message ?? error ?? "");
+  return /no matching key exchange|no matching kex|key exchange algorithm/i.test(message);
+}
 const RECONNECT_BASE_DELAY_MS = 1000;
 const RECONNECT_MAX_DELAY_MS = 30000;
 const RECONNECT_WAIT_MS = 30000;
@@ -315,6 +343,13 @@ export default class SshOpsService extends TypertRemoteService {
       // a dropped transport can be re-established transparently instead of
       // forcing the user to open a brand-new session.
       connectConfig,
+      // Legacy-KEX policy for this connection: an explicit request disables
+      // the automatic retry, because the user already told us what to use.
+      legacyAlgorithms: request.legacy === true,
+      legacyFallback: false,
+      // `legacy: false` is an explicit "modern only, do NOT downgrade" — the
+      // automatic retry is opt-out, not merely opt-in.
+      allowLegacyDowngrade: request.legacy === undefined,
       proxyJump: Array.isArray(request.proxyJump) ? request.proxyJump : [],
       // Host-key TOFU mode for this connection (undefined → accept-new default
       // resolved in attachHostVerifier). Persisted on the record so transparent
@@ -343,6 +378,13 @@ export default class SshOpsService extends TypertRemoteService {
     };
     // See list(): the RPC gateway rejects `undefined` as a JSON value.
     if (request.name !== undefined) value.name = request.name;
+    // Surface a downgraded handshake to the caller: a silently weakened
+    // transport is worse than a slow one, because nobody thinks to upgrade the
+    // device afterwards.
+    if (record.legacyFallback) {
+      value.legacyFallback = true;
+      value.warning = "This server offered no modern SSH key exchange; connected with the legacy diffie-hellman-group14-sha1 algorithm. The transport is weaker than the default — upgrade the device firmware when possible.";
+    }
     // A newly connected server is the natural target for the conversation,
     // even if the browser has not rendered its PTY yet.
     this.activeConnectionId = id;
@@ -459,6 +501,13 @@ export default class SshOpsService extends TypertRemoteService {
           client.on("error", onError);
           client.once("close", onClose);
           const config = { ...record.connectConfig };
+          // Single source of truth for the legacy KEX set: `legacy: true`
+          // seeds the flag, an automatic downgrade flips it mid-loop, and this
+          // is the only place a handshake's options are assembled (so the two
+          // paths can never drift apart).
+          if (record.legacyAlgorithms) {
+            config.algorithms = { ...(config.algorithms ?? {}), ...LEGACY_VRP_ALGORITHMS };
+          }
           if (sock !== undefined) config.sock = sock;
           this.attachHostVerifier(config, record, record.host, record.port, record.hostKeyMode);
           client.connect(config);
@@ -480,6 +529,22 @@ export default class SshOpsService extends TypertRemoteService {
         // Tear down hops on failure so the retry starts fresh.
         for (const hop of record.hops) { try { hop.end(); } catch {} }
         record.hops = [];
+        // Only when the user did not ask for legacy explicitly: a shared
+        // KEX-less handshake means this peer may be an old VRP switch, so
+        // retry ONCE with the legacy algorithm set and remember that we did.
+        //
+        // This consumes a retry attempt on purpose — but the loop bound is
+        // widened by one while the downgrade is still available, so a caller
+        // that passed retries:0 (or a small budget) still gets the legacy
+        // chance. Otherwise a modern-only handshake failure would be reported
+        // for a device the plugin can actually reach.
+        if (!record.legacyAlgorithms && record.allowLegacyDowngrade && isKexMismatchError(error)) {
+          record.legacyAlgorithms = true;
+          record.legacyFallback = true;
+          this.log(`SSH ${record.host}:${record.port} offered no modern key exchange; retrying with legacy algorithms (diffie-hellman-group14-sha1). The transport is weaker than the default — reachable, but prefer upgrading the device if you can.`);
+          if (attempt >= retries) retries += 1;
+          continue;
+        }
         if (!isTransientConnectError(error) || attempt >= retries) break;
         await this.sleep(Math.min(2000, 500 * 2 ** attempt));
       }
@@ -509,6 +574,10 @@ export default class SshOpsService extends TypertRemoteService {
         host: hopConfig.host,
         port: hopConfig.port ?? 22,
         username: hopConfig.username,
+        // Jump hosts are ordinary SSH servers; legacy KEX is NOT forced on
+        // them, so an old switch as a jump host would need its own explicit
+        // `legacy` support. The legacy downgrade applies to the target
+        // connection (the one that terminates at the device).
         readyTimeout: hopConfig.readyTimeout ?? 20000
       };
       if (hopConfig.auth?.kind === "password") {
@@ -567,6 +636,16 @@ export default class SshOpsService extends TypertRemoteService {
   }
 
   /** Wire transport-loss handlers to the record's current client. */
+  /**
+   * Defensive logging: ctx.logger is not wired in the DSH host, so console
+   * output is what reaches ~/.dsh/web.log. Without this, a security-relevant
+   * decision (a downgraded SSH handshake) would leave no trace anywhere.
+   */
+  log(message) {
+    try { this.ctx?.logger?.warn?.(message); } catch {}
+    try { console.warn("[dsh-ssh-ops]", message); } catch {}
+  }
+
   attachTransportHandlers(record) {
     const client = record.client;
     client.on("error", (error) => this.handleTransportLoss(record, client, error));

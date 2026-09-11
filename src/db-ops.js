@@ -23,6 +23,71 @@ const DB_QUERY_TIMEOUT_MS = 30000;
 /** Idle transactions are rolled back and released after this long. */
 const DB_TX_IDLE_MS = 5 * 60 * 1000;
 
+/**
+ * Client-side ceilings for every driver await. A half-open transport (idle
+ * NAT drop, network switch, server restart behind an SSH tunnel) produces
+ * neither an error event nor data, so server-side guards like pg's
+ * statement_timeout never fire — the SQL never reaches the server. Without
+ * these ceilings the awaited driver promise simply never settles: the tool
+ * call spins forever, GUI "stop" cannot interrupt it (cancellation can only
+ * wait for the tool to settle), and checked-out pool slots (max 4) leak one
+ * by one until every later db_query on the connection freezes. Every value
+ * stays below the tools' timeoutMs budget so the agent sees the specific
+ * message from here instead of a generic policy cancellation.
+ */
+export const DB_DEADLINES = Object.freeze({
+  /** One statement round-trip (server statement_timeout is 30s, plus grace). */
+  op: 35000,
+  /** Acquiring a pooled connection (pg pool.connect / mysql getConnection). */
+  checkout: 12000,
+  /** Best-effort cleanup round-trips: RESET statement_timeout, cursor close. */
+  reset: 2000,
+  /** Whole db_connect handshake + validation checkout. */
+  connect: 20000,
+  /** Driver-level connect timeout (pg connectionTimeoutMillis, mysql connectTimeout). */
+  poolConnection: 10000,
+  /** Teardown: pool.end()/quit()/close() and transaction disposal. */
+  end: 5000
+});
+
+/**
+ * Race driver work against cancellation and a deadline. On a half-open
+ * transport the driver promise never settles, so losing the race is the only
+ * way out; `onLose` must destroy the underlying connection so the abandoned
+ * work reaches quiescence and pool slots are reclaimed. Both handlers are
+ * attached up front, so a late-settling driver promise can never surface as
+ * an unhandled rejection.
+ */
+function raceDeadline(work, { signal, timeoutMs, label, onLose }) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let timer = null;
+    const cleanup = () => {
+      if (timer) { clearTimeout(timer); timer = null; }
+      if (signal) signal.removeEventListener("abort", onAbort);
+    };
+    const lose = (error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      try { onLose?.(error); } catch {}
+      reject(error);
+    };
+    function onAbort() { lose(new Error(`${label} cancelled`)); }
+    work.then(
+      (value) => { if (settled) return; settled = true; cleanup(); resolve(value); },
+      (error) => { if (settled) return; settled = true; cleanup(); reject(error); }
+    );
+    if (signal) {
+      if (signal.aborted) { onAbort(); return; }
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+    if (Number.isFinite(timeoutMs)) {
+      timer = setTimeout(() => lose(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+    }
+  });
+}
+
 // ── SSL option mappers (pure, unit-tested) ──────────────────────────────────
 
 /** mysql2: undefined omits ssl; preferred/verify set rejectUnauthorized. */
@@ -195,42 +260,64 @@ export class DbOpsManager {
     }
 
     const id = `db-${randomUUID().slice(0, 8)}`;
+    const signal = request.signal;
     let client;
     try {
       if (type === "mysql") {
         client = mysql.createPool({
           host: connectHost, port: connectPort, user: username, password, database,
-          ssl: buildMysqlSsl(ssl), connectionLimit: 4, supportBigNumbers: true
+          ssl: buildMysqlSsl(ssl), connectionLimit: 4, supportBigNumbers: true,
+          connectTimeout: this.dl("poolConnection")
         });
-        const c = await client.getConnection();
+        const c = await this.mysqlCheckout({ client }, { signal, label: "db_connect", timeoutMs: this.dl("connect") });
         c.release();
       } else if (type === "postgresql") {
         client = new pg.Pool({
           host: connectHost, port: connectPort, user: username, password, database,
-          ssl: buildPgSsl(ssl), max: 4
+          ssl: buildPgSsl(ssl), max: 4,
+          // Without this pg-pool waits forever — both on new TCP connects and
+          // on the waiter queue of an exhausted pool (the half-open state).
+          connectionTimeoutMillis: this.dl("poolConnection")
         });
-        const c = await client.connect();
+        const c = await this.pgCheckout({ client }, { signal, label: "db_connect", timeoutMs: this.dl("connect") });
         c.release();
       } else if (type === "redis") {
         client = createRedisClient({
-          socket: buildRedisSocket(ssl, connectHost, connectPort),
+          socket: { ...buildRedisSocket(ssl, connectHost, connectPort), connectTimeout: this.dl("poolConnection") },
           password,
           database: database ? Number(database) : undefined
         });
-        await client.connect();
+        await raceDeadline(client.connect(), {
+          signal, timeoutMs: this.dl("connect"), label: "db_connect",
+          onLose: () => { try { client.disconnect(); } catch {} }
+        });
       } else if (type === "mongodb") {
         const cred = username ? `${encodeURIComponent(username)}:${encodeURIComponent(password ?? "")}@` : "";
         const uri = `mongodb://${cred}${connectHost}:${connectPort}/${database ?? ""}`;
-        client = new MongoClient(uri, buildMongoOptions(ssl));
-        await client.connect();
+        client = new MongoClient(uri, {
+          ...buildMongoOptions(ssl),
+          serverSelectionTimeoutMS: this.dl("connect"),
+          connectTimeoutMS: this.dl("poolConnection")
+        });
+        await raceDeadline(client.connect(), {
+          signal, timeoutMs: this.dl("connect"), label: "db_connect",
+          onLose: () => { try { client.close(true); } catch {} }
+        });
       } else {
         throw new Error(`unsupported database type: ${type}`);
       }
     } catch (error) {
-      // node-redis retries forever on its own; a half-opened client from a
-      // failed connect must be disconnected or it spins on a dead target.
-      if (type === "redis" && client && typeof client.disconnect === "function") {
-        try { client.disconnect(); } catch {}
+      // A half-created client must not keep sockets or retry loops alive:
+      // node-redis retries forever on its own, and an abandoned pg/mysql pool
+      // still holds connecting sockets. Teardown is best-effort fire-and-
+      // forget — pool.end() on a dead transport may never settle, and the
+      // failed connect must not wait for it.
+      if (client) {
+        try {
+          if (type === "redis" && typeof client.disconnect === "function") client.disconnect();
+          else if (type === "mongodb" && typeof client.close === "function") client.close(true).catch(() => {});
+          else if (typeof client.end === "function") client.end()?.catch?.(() => {});
+        } catch {}
       }
       if (tunnel) { try { tunnel.server.close(); } catch {} }
       const target = tunnel ? `${connectHost}:${connectPort} (tunneled to ${host}:${port})` : `${connectHost}:${connectPort}`;
@@ -275,6 +362,9 @@ export class DbOpsManager {
     // would retry a dead local port forever, so stop its retry loop for good.
     if (record.type === "redis" && typeof client.disconnect === "function") {
       try { client.disconnect(); } catch {}
+    } else if (record.type === "mongodb" && typeof client.close === "function") {
+      // Force-close: a graceful close() would wait on the dead transport.
+      try { client.close(true).catch(() => {}); } catch {}
     }
     const target = `${record.config.host}:${record.config.port}`;
     this.warn(`database connection ${id} (${record.type} ${target}) dropped: ${error?.message ?? error}`);
@@ -293,19 +383,158 @@ export class DbOpsManager {
     return record;
   }
 
+  // ── bounded driver primitives (half-open transport self-healing) ──────────
+
+  /** Deadline lookup; `this.deadlines` is an instance override used by tests. */
+  dl(key) {
+    return this.deadlines?.[key] ?? DB_DEADLINES[key];
+  }
+
+  /**
+   * pool.connect() with cancellation and a deadline. Without
+   * connectionTimeoutMillis pg-pool queues waiters forever; a late-arriving
+   * client after we gave up is destroyed on arrival (release(err)) so it can
+   * neither leak a slot nor hand a suspect connection to the next caller.
+   */
+  async pgCheckout(record, { signal, label, timeoutMs } = {}) {
+    const checkout = record.client.connect();
+    try {
+      return await raceDeadline(checkout, {
+        signal, timeoutMs: timeoutMs ?? this.dl("checkout"), label: `${label} checkout`
+      });
+    } catch (error) {
+      checkout.then(
+        (client) => { try { client.release(error instanceof Error ? error : new Error(String(error))); } catch {} },
+        () => {}
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * mysql2 counterpart of pgCheckout; mysql2 pools have no acquire timeout.
+   * Pools created before this change (and test doubles) may expose only
+   * query(), which manages its own pooled connection internally — then there
+   * is no slot to hand back and the statement itself is the unit of work.
+   */
+  async mysqlCheckout(record, { signal, label, timeoutMs } = {}) {
+    if (typeof record.client.getConnection !== "function") {
+      return { kind: "pool", pool: record.client, release() {}, destroy() {} };
+    }
+    const checkout = record.client.getConnection();
+    try {
+      return await raceDeadline(checkout, {
+        signal, timeoutMs: timeoutMs ?? this.dl("checkout"), label: `${label} checkout`
+      });
+    } catch (error) {
+      checkout.then(
+        (conn) => { try { conn.destroy(); } catch {} },
+        () => {}
+      );
+      throw error;
+    }
+  }
+
+  /** One statement on a dedicated checked-out pg client; kill-safe. */
+  async pgQueryOnce(record, sql, params, opts) {
+    return this.pgWithClient(record, opts, (run) => run(sql, params));
+  }
+
+  /** One statement on a dedicated checked-out mysql connection; kill-safe. */
+  async mysqlQueryOnce(record, sql, params, opts) {
+    return this.mysqlWithConn(record, opts, (run) => run(sql, params));
+  }
+
+  /**
+   * Run `fn(run)` against one checked-out pg client. Every statement is
+   * raced; a lost race marks the client dead so it is released WITH an error
+   * — pg-pool then removes it synchronously and its end() force-destroys the
+   * socket of a hung query, returning the slot to the pool.
+   */
+  async pgWithClient(record, opts, fn) {
+    const label = opts?.label ?? "db statement";
+    const client = await this.pgCheckout(record, { signal: opts?.signal, label, timeoutMs: this.dl("checkout") });
+    let dead = false;
+    const run = (sql, params) => raceDeadline(client.query(sql, params), {
+      signal: opts?.signal, timeoutMs: this.dl("op"), label, onLose: () => { dead = true; }
+    });
+    try {
+      return await fn(run);
+    } finally {
+      if (dead) client.release(new Error(`${label}: connection killed after cancel/timeout`));
+      else client.release();
+    }
+  }
+
+  /**
+   * mysql counterpart of pgWithClient. A pool-shaped handle (no
+   * getConnection) issues the statement through pool.query(); pg has no such
+   * shape because pg.Pool.query() checks out and releases internally, which
+   * would bypass the kill path, so pg always goes through a checked-out client.
+   */
+  async mysqlWithConn(record, opts, fn) {
+    const label = opts?.label ?? "db statement";
+    const conn = await this.mysqlCheckout(record, { signal: opts?.signal, label, timeoutMs: this.dl("checkout") });
+    const target = conn.kind === "pool" ? conn.pool : conn;
+    let killed = false;
+    const run = (sql, params) => raceDeadline(target.query(sql, params), {
+      signal: opts?.signal, timeoutMs: this.dl("op"), label, onLose: () => { killed = true; }
+    }).catch((error) => {
+      // A timed-out or protocol-fatal command leaves the connection
+      // mid-protocol; it must never go back to the pool (see mysqlQueryPaged).
+      if (error?.code === "PROTOCOL_SEQUENCE_TIMEOUT" || error?.fatal === true) killed = true;
+      throw error;
+    });
+    try {
+      return await fn(run);
+    } finally {
+      if (killed) { try { conn.destroy(); } catch {} } else conn.release();
+    }
+  }
+
   async disconnect(request) {
     const record = this.dbConnections.get(request.dbConnectionId);
     if (!record) return fail("no-db-connection", `database connection ${request.dbConnectionId} not found`);
-    // Open transactions must be rolled back while the pool is still alive.
-    await this.disposeDbTransactionsFor(request.dbConnectionId);
+    // Open transactions must be rolled back while the pool is still alive —
+    // but bounded: on a dead transport even the ROLLBACK round-trip hangs.
+    await raceDeadline(this.disposeDbTransactionsFor(request.dbConnectionId), {
+      timeoutMs: this.dl("end"), label: "db_disconnect tx cleanup"
+    }).catch(() => {});
     this.dbConnections.delete(request.dbConnectionId);
-    try {
+    // The teardown itself is raced too: pool.end()/quit()/close() wait on the
+    // transport, and the record must leave the manager even if it never dies.
+    const teardown = (async () => {
       if (record.type === "mysql" || record.type === "postgresql") await record.client.end();
       else if (record.type === "redis") await record.client.quit();
       else if (record.type === "mongodb") await record.client.close();
-    } catch {}
+    })();
+    await raceDeadline(teardown, {
+      signal: request.signal, timeoutMs: this.dl("end"), label: "db_disconnect",
+      // A pool whose end() never returns keeps its half-open sockets (and, for
+      // pg, its waiter queue) alive for the life of the process. Force-destroy
+      // the checked-out clients; pg's pool.end() then completes on its own.
+      onLose: () => this.forceClosePool(record)
+    }).catch(() => {});
     if (record.tunnel) { try { record.tunnel.server.close(); } catch {} }
     return { ok: true, value: { dbConnectionId: request.dbConnectionId, disconnected: true } };
+  }
+
+  /**
+   * Best-effort force teardown of a pool whose graceful end() hung on a dead
+   * transport: destroy every checked-out and idle client so no socket survives
+   * disconnect. Idempotent — clients already destroyed are skipped by the
+   * driver, and a missing internal array (test doubles) is simply ignored.
+   */
+  forceClosePool(record) {
+    const client = record.client;
+    for (const bucket of ["_clients", "clients"]) {
+      const list = client?.[bucket];
+      if (!Array.isArray(list)) continue;
+      for (const entry of [...list]) {
+        try { entry?.connection?.stream?.destroy?.(); } catch {}
+        try { entry?.end?.(); } catch {}
+      }
+    }
   }
 
   /** Close every database connection (called from sshOps cleanup/disconnect). */
@@ -341,12 +570,8 @@ export class DbOpsManager {
     // interpolated into SQL).
     const gate = assessReadOnlySql(request.sql);
     if (!gate.ok) return fail("readonly-sql", gate.reason);
-    const sqlText = request.sql;
-    const values = request.params ?? [];
     try {
-      const paged = record.type === "mysql"
-        ? await this.mysqlQueryPaged(record, sqlText, values)
-        : await this.pgQueryPaged(record, sqlText, values);
+      const paged = await this.queryPaged(record, request);
       const columns = paged.fieldNames.length > 0 ? paged.fieldNames : (paged.rows[0] ? Object.keys(paged.rows[0]) : []);
       return {
         ok: true,
@@ -358,29 +583,48 @@ export class DbOpsManager {
   }
 
   /**
+   * Dialect dispatch for the read path. The statement already passed the
+   * read-only lexical gate in query() and its values always travel as
+   * driver-bound placeholders; the caller's cancellation signal rides along
+   * so a half-open transport cannot pin the call forever.
+   */
+  queryPaged(record, request) {
+    const opts = { signal: request.signal, label: "db_query" };
+    const { sql: statement, params: bindings } = request;
+    return record.type === "mysql"
+      ? this.mysqlQueryPaged(record, statement, bindings ?? [], opts)
+      : this.pgQueryPaged(record, statement, bindings ?? [], opts);
+  }
+
+  /**
    * Stream a MySQL query row by row and stop as soon as one row past the cap
    * arrives, so a huge table never reaches memory in full. Uses a dedicated
    * pooled connection: the per-query `timeout` aborts long-running statements,
    * and an early stop destroys the connection (its protocol state is not
-   * reusable after a mid-stream abort).
+   * reusable after a mid-stream abort). The stream additionally races the
+   * caller's cancellation and the client-side op deadline: the per-query
+   * timeout is itself a protocol timer, and a half-open socket never fires it.
    */
-  async mysqlQueryPaged(record, sqlText, values) {
-    const conn = await record.client.getConnection();
+  async mysqlQueryPaged(record, statement, bindings, opts = {}) {
+    const label = opts.label ?? "db_query";
+    const conn = await this.mysqlCheckout(record, { signal: opts.signal, label });
     const rows = [];
     let fieldNames = [];
     let truncated = false;
     let settled = false;
     let killed = false;
     try {
-      await new Promise((resolve, reject) => {
+      // Object form: mysql2 renders `statement` with `?` placeholders and
+      // sends `bindings` through the protocol's separate parameter slot.
+      const stream = conn.connection
+        .query({ sql: statement, values: bindings, timeout: DB_QUERY_TIMEOUT_MS })
+        .stream();
+      const streamed = new Promise((resolve, reject) => {
         const once = (fn) => {
           if (settled) return;
           settled = true;
           fn();
         };
-        const stream = conn.connection
-          .query({ sql: sqlText, values, timeout: DB_QUERY_TIMEOUT_MS })
-          .stream();
         stream.on("fields", (fields) => {
           if (fields?.length) fieldNames = fields.map((f) => f.name);
         });
@@ -406,6 +650,10 @@ export class DbOpsManager {
         });
         stream.on("end", () => once(resolve));
       });
+      await raceDeadline(streamed, {
+        signal: opts.signal, timeoutMs: this.dl("op"), label,
+        onLose: () => { killed = true; try { stream.destroy(); } catch {} }
+      });
     } finally {
       // Once destroyed the connection may be mid-protocol; never hand it back.
       if (killed) { try { conn.destroy(); } catch {} } else { conn.release(); }
@@ -419,40 +667,65 @@ export class DbOpsManager {
    * out client and is reset before release so pooled writes are unaffected.
    * The timeout itself is bound as a parameter via set_config (pg cannot
    * parameterize SET, and SQL must never be assembled by interpolation).
+   *
+   * Every await here is bounded: on a half-open transport (SSH tunnel silently
+   * dead) the statement, the portal fetch AND the trailing reset all wait
+   * forever, because none of those guards is client-side. Losing any race
+   * marks the client dead so it is released WITH an error and pg-pool destroys
+   * it — the alternative is leaking one pool slot (max 4) per hung query until
+   * the whole connection is unusable.
    */
-  async pgQueryPaged(record, sqlText, values) {
-    const client = await record.client.connect();
+  async pgQueryPaged(record, statement, bindings, opts = {}) {
+    const label = opts.label ?? "db_query";
+    const client = await this.pgCheckout(record, { signal: opts.signal, label });
     const rows = [];
     let fieldNames = [];
     let truncated = false;
+    let dead = false;
+    const run = (text, params) => raceDeadline(client.query(text, params), {
+      signal: opts.signal, timeoutMs: this.dl("op"), label, onLose: () => { dead = true; }
+    });
     try {
-      await client.query("SELECT set_config('statement_timeout', $1, false)", [String(DB_QUERY_TIMEOUT_MS)]);
-      const cursor = client.query(new Cursor(sqlText, values));
+      await run("SELECT set_config('statement_timeout', $1, false)", [String(DB_QUERY_TIMEOUT_MS)]);
+      const cursor = client.query(new Cursor(statement, bindings));
       try {
-        await new Promise((resolve, reject) => {
+        await raceDeadline(new Promise((resolve, reject) => {
           const readBatch = () => {
             cursor.read(MAX_DB_ROWS + 1 - rows.length, (err, batch) => {
-              if (err) return reject(err);
-              if (batch.length === 0) return resolve();
+              if (err) { reject(err); return; }
+              if (batch.length === 0) { resolve(); return; }
               rows.push(...batch);
               if (rows.length > MAX_DB_ROWS) {
                 truncated = true;
                 rows.length = MAX_DB_ROWS;
-                return resolve();
+                resolve();
+                return;
               }
               readBatch();
             });
           };
           readBatch();
+        }), {
+          signal: opts.signal, timeoutMs: this.dl("op"), label,
+          // The portal is mid-fetch: the client must not return to the pool.
+          onLose: () => { dead = true; }
         });
       } finally {
-        await cursor.close().catch(() => {});
+        // Closing the portal is best-effort; on a dead socket it never answers.
+        await raceDeadline(cursor.close().catch(() => {}), {
+          timeoutMs: this.dl("reset"), label: "db_query cursor close", onLose: () => { dead = true; }
+        }).catch(() => {});
       }
       const fields = cursor.rowDescription?.fields;
       if (fields?.length) fieldNames = fields.map((f) => f.name);
     } finally {
-      try { await client.query("RESET statement_timeout"); } catch {}
-      client.release();
+      // Bounded by construction: a bare await here would hang forever on a
+      // half-open transport, leaking this pool slot with it.
+      await raceDeadline(client.query("RESET statement_timeout"), {
+        timeoutMs: this.dl("reset"), label: "db_query reset", onLose: () => { dead = true; }
+      }).catch(() => {});
+      if (dead) client.release(new Error(`${label}: connection killed after cancel/timeout`));
+      else client.release();
     }
     return { rows, fieldNames, truncated };
   }
@@ -467,17 +740,19 @@ export class DbOpsManager {
       return fail("unsupported-op", `db_execute only supports mysql/postgresql, use db_run for ${record.type}`);
     }
     try {
+      const opts = { signal: request.signal, label: "db_execute" };
       let affectedRows, insertId;
       if (record.type === "mysql") {
-        const [r] = await record.client.query(request.sql, request.params ?? []);
-        if (Array.isArray(r)) {
-          affectedRows = r.length;
+        const r = await this.mysqlQueryOnce(record, request.sql, request.params ?? [], opts);
+        const [rows] = r;
+        if (Array.isArray(rows)) {
+          affectedRows = rows.length;
         } else {
-          affectedRows = r.affectedRows ?? 0;
-          if (r.insertId) insertId = r.insertId;
+          affectedRows = rows.affectedRows ?? 0;
+          if (rows.insertId) insertId = rows.insertId;
         }
       } else {
-        const r = await record.client.query(request.sql, request.params ?? []);
+        const r = await this.pgQueryOnce(record, request.sql, request.params ?? [], opts);
         affectedRows = r.rowCount ?? r.rows?.length ?? 0;
       }
       const value = { affectedRows, truncated: false };
@@ -496,15 +771,15 @@ export class DbOpsManager {
       return fail("unsupported-op", `db_list_tables only supports mysql/postgresql, use db_run for ${record.type}`);
     }
     try {
-      let rows;
+      const opts = { signal: request.signal, label: "db_list_tables" };
+      let tables;
       if (record.type === "mysql") {
-        const [r] = await record.client.query("SHOW TABLES");
-        rows = r;
+        const [rows] = await this.mysqlQueryOnce(record, "SHOW TABLES", [], opts);
+        tables = rows.map((row) => Object.values(row)[0]);
       } else {
-        const r = await record.client.query("SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema() ORDER BY table_name");
-        rows = r.rows;
+        const r = await this.pgQueryOnce(record, "SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema() ORDER BY table_name", [], opts);
+        tables = r.rows.map((row) => Object.values(row)[0]);
       }
-      const tables = rows.map((row) => Object.values(row)[0]);
       return { ok: true, value: { tables } };
     } catch (error) {
       return fail("db-list-tables-failed", error.message);
@@ -524,6 +799,10 @@ export class DbOpsManager {
       return fail("bad-request", `illegal table name: ${String(request.table)}`);
     }
     const bareTable = request.table.split(".").pop();
+    // Every introspection statement runs on a dedicated, deadline-bounded
+    // connection: metadata reads hang exactly like user queries when the
+    // transport goes half-open.
+    const opts = { signal: request.signal, label: "db_describe_table" };
     try {
       let columns;
       let indexes = [];
@@ -531,12 +810,12 @@ export class DbOpsManager {
       let ddl = null;
       let stats = null;
       if (record.type === "mysql") {
-        const [r] = await record.client.query("SHOW COLUMNS FROM ??", [request.table]);
+        const [r] = await this.mysqlQueryOnce(record, "SHOW COLUMNS FROM ??", [request.table], opts);
         columns = r.map((c) => ({
           name: c.Field, type: c.Type, nullable: c.Null === "YES",
           key: c.Key, default: c.Default, extra: c.Extra
         }));
-        const [idxRows] = await record.client.query("SHOW INDEX FROM ??", [request.table]);
+        const [idxRows] = await this.mysqlQueryOnce(record, "SHOW INDEX FROM ??", [request.table], opts);
         const byName = new Map();
         for (const row of idxRows) {
           const entry = byName.get(row.Key_name) ?? { name: row.Key_name, unique: row.Non_unique === 0, columns: [], definition: null };
@@ -544,11 +823,11 @@ export class DbOpsManager {
           byName.set(row.Key_name, entry);
         }
         indexes = [...byName.values()];
-        const [createRows] = await record.client.query("SHOW CREATE TABLE ??", [request.table]);
+        const [createRows] = await this.mysqlQueryOnce(record, "SHOW CREATE TABLE ??", [request.table], opts);
         ddl = createRows?.[0]?.["Create Table"] ?? createRows?.[0]?.["Create View"] ?? null;
-        const [statRows] = await record.client.query(
+        const [statRows] = await this.mysqlQueryOnce(record,
           "SELECT TABLE_ROWS, DATA_LENGTH, INDEX_LENGTH FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?",
-          [bareTable]
+          [bareTable], opts
         );
         const s = statRows?.[0];
         if (s) {
@@ -558,32 +837,32 @@ export class DbOpsManager {
             indexBytes: s.INDEX_LENGTH == null ? null : Number(s.INDEX_LENGTH)
           };
         }
-        const [fkRows] = await record.client.query(
+        const [fkRows] = await this.mysqlQueryOnce(record,
           "SELECT CONSTRAINT_NAME, COLUMN_NAME, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND REFERENCED_TABLE_NAME IS NOT NULL",
-          [bareTable]
+          [bareTable], opts
         );
         foreignKeys = fkRows.map((row) => ({
           name: row.CONSTRAINT_NAME, column: row.COLUMN_NAME,
           foreignTable: row.REFERENCED_TABLE_NAME, foreignColumn: row.REFERENCED_COLUMN_NAME
         }));
       } else {
-        const r = await record.client.query(
+        const r = await this.pgQueryOnce(record,
           "SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns WHERE table_name = $1 AND table_schema = current_schema() ORDER BY ordinal_position",
-          [bareTable]
+          [bareTable], opts
         );
         columns = r.rows.map((c) => ({
           name: c.column_name, type: c.data_type, nullable: c.is_nullable === "YES",
           default: c.column_default, extra: null
         }));
-        const idx = await record.client.query(
+        const idx = await this.pgQueryOnce(record,
           "SELECT indexname, indexdef FROM pg_indexes WHERE tablename = $1 AND schemaname = current_schema() ORDER BY indexname",
-          [bareTable]
+          [bareTable], opts
         );
         indexes = idx.rows.map((row) => ({
           name: row.indexname, definition: row.indexdef,
           unique: /CREATE\s+UNIQUE/i.test(row.indexdef), columns: []
         }));
-        const fks = await record.client.query(
+        const fks = await this.pgQueryOnce(record,
           `SELECT kcu.column_name, kcu.constraint_name, ccu.table_name AS foreign_table, ccu.column_name AS foreign_column
            FROM information_schema.key_column_usage kcu
            JOIN information_schema.table_constraints tc
@@ -591,15 +870,15 @@ export class DbOpsManager {
            JOIN information_schema.constraint_column_usage ccu
              ON ccu.constraint_name = kcu.constraint_name AND ccu.table_schema = kcu.table_schema
            WHERE kcu.table_name = $1 AND kcu.table_schema = current_schema() AND tc.constraint_type = 'FOREIGN KEY'`,
-          [bareTable]
+          [bareTable], opts
         );
         foreignKeys = fks.rows.map((row) => ({
           name: row.constraint_name, column: row.column_name,
           foreignTable: row.foreign_table, foreignColumn: row.foreign_column
         }));
-        const st = await record.client.query(
+        const st = await this.pgQueryOnce(record,
           "SELECT reltuples::bigint AS estimate, pg_total_relation_size(c.oid) AS total_bytes FROM pg_class c WHERE c.relname = $1",
-          [bareTable]
+          [bareTable], opts
         );
         const s = st.rows?.[0];
         if (s) {
@@ -635,20 +914,25 @@ export class DbOpsManager {
     if (!built.ok) return fail("bad-request", built.error);
     const bareTable = request.table.split(".").pop();
     let estimatedTotal = null;
+    const opts = { signal: request.signal, label: "db_preview estimate" };
     try {
       if (record.type === "mysql") {
-        const [r] = await record.client.query(
+        const [statsRows] = await this.mysqlQueryOnce(record,
           "SELECT TABLE_ROWS AS est FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?",
-          [bareTable]
+          [bareTable], opts
         );
-        estimatedTotal = r?.[0]?.est == null ? null : Number(r[0].est);
+        estimatedTotal = statsRows?.[0]?.est == null ? null : Number(statsRows[0].est);
       } else {
-        const r = await record.client.query("SELECT reltuples::bigint AS est FROM pg_class WHERE relname = $1", [bareTable]);
-        estimatedTotal = r.rows?.[0]?.est == null ? null : Number(r.rows[0].est);
+        const estimate = await this.pgQueryOnce(record, "SELECT reltuples::bigint AS est FROM pg_class WHERE relname = $1", [bareTable], opts);
+        estimatedTotal = estimate.rows?.[0]?.est == null ? null : Number(estimate.rows[0].est);
       }
       if (estimatedTotal != null && estimatedTotal < 0) estimatedTotal = null;
-    } catch {}
-    const result = await this.query({ dbConnectionId: request.dbConnectionId, sql: built.sql, params: built.params });
+    } catch (error) {
+      // The estimate is decoration; the rows are the answer. Cancellation is
+      // the one exception - the caller asked us to stop, so stop.
+      if (request.signal?.aborted) return fail("db-query-cancelled", `db_preview cancelled: ${error.message}`);
+    }
+    const result = await this.query({ dbConnectionId: request.dbConnectionId, sql: built.sql, params: built.params, signal: request.signal });
     if (!result.ok) return result;
     return { ok: true, value: { ...result.value, table: request.table, limit, offset, estimatedTotal } };
   }
@@ -668,15 +952,41 @@ export class DbOpsManager {
       return fail("unsupported-op", "transactions only support mysql/postgresql");
     }
     const txId = `tx-${randomUUID().slice(0, 8)}`;
+    const signal = request.signal;
     let handle;
-    if (record.type === "mysql") {
-      const conn = await record.client.getConnection();
-      await conn.query("START TRANSACTION");
-      handle = { kind: "mysql", conn };
-    } else {
-      const client = await record.client.connect();
-      await client.query("BEGIN");
-      handle = { kind: "pg", client };
+    try {
+      if (record.type === "mysql") {
+        const conn = await this.mysqlCheckout(record, { signal, label: "db_tx_begin" });
+        let lost = false;
+        try {
+          await raceDeadline(conn.query("START TRANSACTION"), {
+            signal, timeoutMs: this.dl("op"), label: "db_tx_begin",
+            onLose: () => { lost = true; try { conn.destroy(); } catch {} }
+          });
+        } catch (error) {
+          if (!lost) { try { conn.destroy(); } catch {} }
+          throw error;
+        }
+        handle = { kind: "mysql", conn, signal };
+      } else {
+        const client = await this.pgCheckout(record, { signal, label: "db_tx_begin" });
+        let lost = false;
+        try {
+          await raceDeadline(client.query("BEGIN"), {
+            signal, timeoutMs: this.dl("op"), label: "db_tx_begin",
+            onLose: () => { lost = true; try { client.release(new Error("db_tx_begin: connection killed")); } catch {} }
+          });
+        } catch (error) {
+          if (!lost) { try { client.release(new Error("db_tx_begin failed")); } catch {} }
+          throw error;
+        }
+        handle = { kind: "pg", client, signal };
+      }
+    } catch (error) {
+      // START TRANSACTION/BEGIN failed before a transaction record existed.
+      // The dedicated connection is therefore owned only here; destroy it so
+      // a failed handshake or cancelled begin cannot leak a pool slot.
+      return fail("db-tx-begin-failed", error.message);
     }
     const tx = { txId, dbId: record.id, handle, createdAt: new Date().toISOString(), timer: null };
     this.dbTransactions.set(txId, tx);
@@ -698,12 +1008,19 @@ export class DbOpsManager {
     if (!tx) return fail("tx-missing", `transaction ${request.txId} not found or already finished`);
     const assessment = assessSqlStatement(request.sql);
     if (assessment.blocked) return fail("unsafe-sql", assessment.reason);
-    const sqlText = request.sql;
-    const values = request.params ?? [];
+    // The statement already passed the destructive-verb gate above and its
+    // values are handed to the driver as a separate bindings array — never
+    // assembled into the statement text.
+    const statement = request.sql;
+    const bindings = request.params ?? [];
+    const signal = request.signal ?? tx.handle.signal;
     try {
       let value;
       if (tx.handle.kind === "mysql") {
-        const [r] = await tx.handle.conn.query(sqlText, values);
+        const [r] = await raceDeadline(tx.handle.conn.query(statement, bindings), {
+          signal, timeoutMs: this.dl("op"), label: "db_tx_execute",
+          onLose: () => this.killTransaction(tx)
+        });
         if (Array.isArray(r)) {
           const truncated = r.length > MAX_DB_ROWS;
           const rows = truncated ? r.slice(0, MAX_DB_ROWS) : r;
@@ -713,7 +1030,10 @@ export class DbOpsManager {
           if (r.insertId) value.insertId = r.insertId;
         }
       } else {
-        const r = await tx.handle.client.query(sqlText, values);
+        const r = await raceDeadline(tx.handle.client.query(statement, bindings), {
+          signal, timeoutMs: this.dl("op"), label: "db_tx_execute",
+          onLose: () => this.killTransaction(tx)
+        });
         const allRows = r.rows ?? [];
         const truncated = allRows.length > MAX_DB_ROWS;
         const rows = truncated ? allRows.slice(0, MAX_DB_ROWS) : allRows;
@@ -726,25 +1046,56 @@ export class DbOpsManager {
     }
   }
 
+  /**
+   * Abandon a transaction whose statement lost a race (cancel/deadline) while
+   * it was in flight on a half-open transport: the dedicated connection is
+   * mid-protocol, so it is destroyed rather than released, and the bookmark is
+   * dropped so the agent reconnects instead of reusing a poisoned transaction.
+   */
+  killTransaction(tx) {
+    if (!tx || tx.finished) return;
+    tx.finished = true;
+    if (tx.timer) clearTimeout(tx.timer);
+    this.dbTransactions.delete(tx.txId);
+    try {
+      if (tx.handle.kind === "mysql") tx.handle.conn.destroy();
+      else tx.handle.client.release(new Error(`transaction ${tx.txId}: connection killed after cancel/timeout`));
+    } catch {}
+  }
+
   async dbTxCommit(request) {
-    return await this.finishTransaction(request.txId, "COMMIT", "db-tx-commit-failed");
+    return await this.finishTransaction(request.txId, "COMMIT", "db-tx-commit-failed", request.signal);
   }
 
   async dbTxRollback(request) {
-    return await this.finishTransaction(request.txId, "ROLLBACK", "db-tx-rollback-failed");
+    return await this.finishTransaction(request.txId, "ROLLBACK", "db-tx-rollback-failed", request.signal);
   }
 
-  async finishTransaction(txId, action, errorCode) {
+  async finishTransaction(txId, action, errorCode, signal) {
     const tx = this.dbTransactions.get(txId);
     if (!tx) return fail("tx-missing", `transaction ${txId} not found or already finished`);
+    const label = action === "COMMIT" ? "db_tx_commit" : "db_tx_rollback";
+    let killed = false;
     try {
-      if (tx.handle.kind === "mysql") {
-        await tx.handle.conn.query(action);
-        tx.handle.conn.release();
-      } else {
-        await tx.handle.client.query(action);
-        tx.handle.client.release();
+      const settled = tx.handle.kind === "mysql"
+        ? await raceDeadline(tx.handle.conn.query(action), {
+          signal, timeoutMs: this.dl("op"), label, onLose: () => { killed = true; }
+        })
+        : await raceDeadline(tx.handle.client.query(action), {
+          signal, timeoutMs: this.dl("op"), label, onLose: () => { killed = true; }
+        });
+      void settled;
+      if (killed) {
+        // Raced out: the connection is mid-protocol and its transaction state
+        // is unknown, so drop it instead of returning it to the pool.
+        if (tx.handle.kind === "mysql") tx.handle.conn.destroy();
+        else tx.handle.client.release(new Error(`${label}: connection killed after timeout`));
+        this.dbTransactions.delete(txId);
+        if (tx.timer) clearTimeout(tx.timer);
+        return fail(errorCode, `${label} timed out after ${this.dl("op")}ms: the transaction outcome is unknown — verify the data before retrying`);
       }
+      if (tx.handle.kind === "mysql") tx.handle.conn.release();
+      else tx.handle.client.release();
       if (tx.timer) clearTimeout(tx.timer);
       this.dbTransactions.delete(txId);
       const value = { txId, finished: true };
@@ -755,7 +1106,7 @@ export class DbOpsManager {
       if (tx.timer) clearTimeout(tx.timer);
       try {
         if (tx.handle.kind === "mysql") tx.handle.conn.destroy();
-        else tx.handle.client.release();
+        else tx.handle.client.release(killed ? new Error(`${label}: connection killed after cancel/timeout`) : undefined);
       } catch {}
       return fail(errorCode, error.message);
     }
@@ -767,13 +1118,20 @@ export class DbOpsManager {
     if (!tx) return;
     this.dbTransactions.delete(txId);
     if (tx.timer) clearTimeout(tx.timer);
+    let killed = false;
     try {
       if (tx.handle.kind === "mysql") {
-        await tx.handle.conn.query(action);
-        tx.handle.conn.release();
+        await raceDeadline(tx.handle.conn.query(action), {
+          timeoutMs: this.dl("end"), label: "transaction cleanup", onLose: () => { killed = true; }
+        });
+        if (killed) tx.handle.conn.destroy();
+        else tx.handle.conn.release();
       } else {
-        await tx.handle.client.query(action);
-        tx.handle.client.release();
+        await raceDeadline(tx.handle.client.query(action), {
+          timeoutMs: this.dl("end"), label: "transaction cleanup", onLose: () => { killed = true; }
+        });
+        if (killed) tx.handle.client.release(new Error("transaction cleanup: connection killed after timeout"));
+        else tx.handle.client.release();
       }
     } catch {
       try { if (tx.handle.kind === "mysql") tx.handle.conn.destroy(); else tx.handle.client.release(); } catch {}
@@ -819,16 +1177,15 @@ export class DbOpsManager {
     if (!gate.verbs?.length || !["SELECT", "WITH"].includes(gate.verbs[0])) {
       return fail("unsupported-op", "db_explain 仅支持 SELECT/WITH 查询计划");
     }
-    const sqlText = request.sql;
-    const values = request.params ?? [];
+    const opts = { signal: request.signal, label: "db_explain" };
     try {
       let plan;
       if (record.type === "mysql") {
-        const [r] = await record.client.query("EXPLAIN FORMAT=JSON " + sqlText, values);
+        const [r] = await this.mysqlQueryOnce(record, "EXPLAIN FORMAT=JSON " + request.sql, request.params ?? [], opts);
         const raw = r?.[0]?.EXPLAIN ?? null;
         plan = typeof raw === "string" ? JSON.parse(raw) : raw;
       } else {
-        const r = await record.client.query("EXPLAIN (FORMAT JSON) " + sqlText, values);
+        const r = await this.pgQueryOnce(record, "EXPLAIN (FORMAT JSON) " + request.sql, request.params ?? [], opts);
         const raw = r.rows?.[0]?.["QUERY PLAN"] ?? null;
         plan = typeof raw === "string" ? JSON.parse(raw) : raw;
       }
@@ -846,23 +1203,42 @@ export class DbOpsManager {
       if (record.type === "redis") {
         const { command, args } = request;
         if (!command) return fail("bad-request", "redis run requires { command, args }");
-        const result = await record.client.sendCommand([command, ...(args ?? [])]);
+        // node-redis queues commands while the socket is down and would answer
+        // only after its own reconnect succeeds — on a dead tunnel that never
+        // happens, so the command must race client-side. A lost race leaves the
+        // connection suspect: drop it (disconnect also stops the retry loop).
+        const result = await raceDeadline(record.client.sendCommand([command, ...(args ?? [])]), {
+          signal: request.signal, timeoutMs: this.dl("op"), label: "db_run",
+          onLose: (error) => { this.handleDbTransportLoss(record.id, record.client, error); }
+        });
         return { ok: true, value: { result: serializeDbValue(result) } };
       }
       if (record.type === "mongodb") {
         const { collection, operation, filter, document, update, options } = request;
         if (!collection || !operation) return fail("bad-request", "mongodb run requires { collection, operation }");
         const col = record.client.db(record.config.database).collection(collection);
-        let result;
-        switch (operation) {
-          case "find": result = await col.find(filter ?? {}).limit(100).toArray(); break;
-          case "findOne": result = await col.findOne(filter ?? {}); break;
-          case "insertOne": result = await col.insertOne(document); break;
-          case "updateOne": result = await col.updateOne(filter ?? {}, update, options); break;
-          case "deleteOne": result = await col.deleteOne(filter ?? {}); break;
-          case "countDocuments": result = await col.countDocuments(filter ?? {}); break;
-          default: throw new Error(`unsupported mongo operation: ${operation}`);
-        }
+        // The driver's own socketTimeoutMS is a SERVER option; a locally dead
+        // tunnel is not covered by it, so every op races the client deadline.
+        const mongoRun = async () => {
+          switch (operation) {
+            case "find": return await col.find(filter ?? {}).limit(100).toArray();
+            case "findOne": return await col.findOne(filter ?? {});
+            case "insertOne": return await col.insertOne(document);
+            case "updateOne": return await col.updateOne(filter ?? {}, update, options);
+            case "deleteOne": return await col.deleteOne(filter ?? {});
+            case "countDocuments": return await col.countDocuments(filter ?? {});
+            default: throw new Error(`unsupported mongo operation: ${operation}`);
+          }
+        };
+        const result = await raceDeadline(mongoRun(), {
+          signal: request.signal, timeoutMs: this.dl("op"), label: "db_run",
+          onLose: (error) => {
+            // Clear the stuck topology so the next call starts from a clean
+            // selection instead of queueing behind the dead one.
+            try { record.client.close(true).catch(() => {}); } catch {}
+            this.handleDbTransportLoss(record.id, record.client, error);
+          }
+        });
         return { ok: true, value: { result: serializeDbValue(result) } };
       }
       return fail("unsupported-op", `db_run only supports redis/mongodb, use db_query for ${record.type}`);

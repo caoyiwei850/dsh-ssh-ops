@@ -67,6 +67,7 @@ export function registerSshSessionTools(ctx, service) {
           passphrase: { type: "string" }
         }
       },
+      legacy: { type: "boolean", description: "Only for old network devices (Huawei legacy VRP e.g. S12712, some old IOS/Comware) that offer no modern SSH key exchange. Omit it and the plugin retries automatically once if the handshake fails on key-exchange selection, returning legacyFallback. Pass true to use the legacy algorithm set immediately, or false to forbid the automatic retry." },
       name: { type: "string", description: "Optional display name for this connection." }
     },
     output: {
@@ -78,12 +79,17 @@ export function registerSshSessionTools(ctx, service) {
           name: { type: "string" },
           host: { type: "string", required: true },
           port: { type: "integer", required: true },
-          username: { type: "string", required: true }
+          username: { type: "string", required: true },
+          legacyFallback: { type: "boolean" },
+          warning: { type: "string" }
         }
       },
       render(args, value) {
         const conn = value ?? {};
-        return [{ type: "text", text: `Connected ${args.username}@${args.host} (id: ${conn.connectionId ?? "?"})` }];
+        const base = `Connected ${args.username}@${args.host} (id: ${conn.connectionId ?? "?"})`;
+        // A weakened handshake must be visible in the tool result, not only in
+        // the host log — otherwise nobody learns the device needs upgrading.
+        return [{ type: "text", text: conn.legacyFallback ? `${base}\n⚠️ ${conn.warning ?? ""}` : base }];
       }
     },
     async execute(args) {
@@ -92,6 +98,7 @@ export function registerSshSessionTools(ctx, service) {
         port: args.port,
         username: args.username,
         auth: args.auth,
+        legacy: args.legacy,
         name: args.name
       });
       if (!result.ok) throw new Error(`ssh_connect failed: ${result.error.message}`);

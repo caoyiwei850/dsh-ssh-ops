@@ -51,6 +51,11 @@ export const connectRequestSchema = z.object({
   username: z.string().min(1),
   auth: authSchema,
   readyTimeout: z.number().int().min(1000).max(120000).optional(),
+  // Legacy KEX opt-in for old VRP/IOS devices that only offer SHA-1 group14.
+  // Omitted → the plugin retries once automatically when the handshake fails
+  // on KEX selection; true → use the legacy set up front (no downgrade
+  // warning); false → modern algorithms only, no automatic retry.
+  legacy: z.boolean().optional(),
   name: z.string().optional(),
   hostKeyMode: hostKeyModeSchema.optional(),
   proxyJump: z.array(z.object({
@@ -69,7 +74,11 @@ export const connectResultSchema = resultSchema(
     name: z.string().optional(),
     host: z.string(),
     port: z.number(),
-    username: z.string()
+    username: z.string(),
+    // Set when the handshake needed the legacy KEX set; `warning` carries the
+    // user-facing explanation so a weakened transport is never silent.
+    legacyFallback: z.boolean().optional(),
+    warning: z.string().optional()
   })
 );
 
@@ -512,7 +521,8 @@ export const dbConnectRequestSchema = z.object({
   password: z.string().optional(),
   ssl: dbSslSchema,
   sshConnectionId: z.string().optional(),
-  name: z.string().optional()
+  name: z.string().optional(),
+  signal: z.any().optional()
 });
 
 export const dbConnectionInfoSchema = z.object({
@@ -532,7 +542,7 @@ export const dbConnectResultSchema = resultSchema(
   z.object({ dbConnectionId: z.string(), name: z.string(), type: dbTypeSchema })
 );
 
-export const dbListConnectionsRequestSchema = z.object({});
+export const dbListConnectionsRequestSchema = z.object({ signal: z.any().optional() });
 export const dbListConnectionsResultSchema = resultSchema(
   z.object({ connections: z.array(dbConnectionInfoSchema) })
 );
@@ -540,7 +550,8 @@ export const dbListConnectionsResultSchema = resultSchema(
 export const dbQueryRequestSchema = z.object({
   dbConnectionId: z.string().min(1),
   sql: z.string().min(1),
-  params: z.array(z.any()).optional()
+  params: z.array(z.any()).optional(),
+  signal: z.any().optional()
 });
 export const dbQueryResultSchema = resultSchema(
   z.object({
@@ -554,7 +565,8 @@ export const dbQueryResultSchema = resultSchema(
 export const dbExecuteRequestSchema = z.object({
   dbConnectionId: z.string().min(1),
   sql: z.string().min(1),
-  params: z.array(z.any()).optional()
+  params: z.array(z.any()).optional(),
+  signal: z.any().optional()
 });
 export const dbExecuteResultSchema = resultSchema(
   z.object({
@@ -564,14 +576,15 @@ export const dbExecuteResultSchema = resultSchema(
   })
 );
 
-export const dbListTablesRequestSchema = z.object({ dbConnectionId: z.string().min(1) });
+export const dbListTablesRequestSchema = z.object({ dbConnectionId: z.string().min(1), signal: z.any().optional() });
 export const dbListTablesResultSchema = resultSchema(
   z.object({ tables: z.array(z.string()) })
 );
 
 export const dbDescribeTableRequestSchema = z.object({
   dbConnectionId: z.string().min(1),
-  table: z.string().min(1)
+  table: z.string().min(1),
+  signal: z.any().optional()
 });
 export const dbDescribeTableResultSchema = resultSchema(
   z.object({
@@ -609,7 +622,8 @@ export const dbPreviewRequestSchema = z.object({
   dbConnectionId: z.string().min(1),
   table: z.string().min(1),
   limit: z.number().int().min(1).max(200).optional(),
-  offset: z.number().int().min(0).optional()
+  offset: z.number().int().min(0).optional(),
+  signal: z.any().optional()
 });
 export const dbPreviewResultSchema = resultSchema(
   z.object({
@@ -627,13 +641,14 @@ export const dbPreviewResultSchema = resultSchema(
 export const dbExplainRequestSchema = z.object({
   dbConnectionId: z.string().min(1),
   sql: z.string().min(1),
-  params: z.array(z.any()).optional()
+  params: z.array(z.any()).optional(),
+  signal: z.any().optional()
 });
 export const dbExplainResultSchema = resultSchema(
   z.object({ plan: z.any() })
 );
 
-export const dbTxBeginRequestSchema = z.object({ dbConnectionId: z.string().min(1) });
+export const dbTxBeginRequestSchema = z.object({ dbConnectionId: z.string().min(1), signal: z.any().optional() });
 export const dbTxBeginResultSchema = resultSchema(
   z.object({ txId: z.string(), dbConnectionId: z.string() })
 );
@@ -641,7 +656,8 @@ export const dbTxBeginResultSchema = resultSchema(
 export const dbTxExecuteRequestSchema = z.object({
   txId: z.string().min(1),
   sql: z.string().min(1),
-  params: z.array(z.any()).optional()
+  params: z.array(z.any()).optional(),
+  signal: z.any().optional()
 });
 export const dbTxExecuteResultSchema = resultSchema(
   z.object({
@@ -653,12 +669,12 @@ export const dbTxExecuteResultSchema = resultSchema(
   })
 );
 
-export const dbTxCommitRequestSchema = z.object({ txId: z.string().min(1) });
+export const dbTxCommitRequestSchema = z.object({ txId: z.string().min(1), signal: z.any().optional() });
 export const dbTxCommitResultSchema = resultSchema(
   z.object({ txId: z.string(), finished: z.boolean(), committed: z.boolean() })
 );
 
-export const dbTxRollbackRequestSchema = z.object({ txId: z.string().min(1) });
+export const dbTxRollbackRequestSchema = z.object({ txId: z.string().min(1), signal: z.any().optional() });
 export const dbTxRollbackResultSchema = resultSchema(
   z.object({ txId: z.string(), finished: z.boolean(), rolledBack: z.boolean() })
 );
@@ -672,11 +688,12 @@ export const dbRunRequestSchema = z.object({
   filter: z.any().optional(),
   document: z.any().optional(),
   update: z.any().optional(),
-  options: z.any().optional()
+  options: z.any().optional(),
+  signal: z.any().optional()
 });
 export const dbRunResultSchema = resultSchema(z.object({ result: z.any() }));
 
-export const dbDisconnectRequestSchema = z.object({ dbConnectionId: z.string().min(1) });
+export const dbDisconnectRequestSchema = z.object({ dbConnectionId: z.string().min(1), signal: z.any().optional() });
 export const dbDisconnectResultSchema = resultSchema(
   z.object({ dbConnectionId: z.string(), disconnected: z.boolean() })
 );
