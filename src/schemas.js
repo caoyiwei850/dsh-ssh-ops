@@ -184,7 +184,8 @@ export const groupDeleteResultSchema = resultSchema(z.object({ deleted: z.boolea
 export const openSessionRequestSchema = z.object({
   connectionId: z.string().min(1),
   cols: z.number().int().min(2).max(500).optional(),
-  rows: z.number().int().min(1).max(200).optional()
+  rows: z.number().int().min(1).max(200).optional(),
+  origin: z.enum(["workbench-ui", "agent", "plugin-ui", "unknown"]).optional()
 });
 
 export const sessionInfoSchema = z.object({
@@ -196,6 +197,14 @@ export const sessionInfoSchema = z.object({
 });
 
 export const openSessionResultSchema = resultSchema(sessionInfoSchema);
+
+export const observableSessionSchema = z.object({
+  sessionId: z.string(), connectionId: z.string(), name: z.string().optional(), host: z.string(), port: z.number(),
+  openedAt: z.string(), origin: z.enum(["workbench-ui", "agent", "plugin-ui", "unknown"]), alive: z.boolean(),
+  journalStartOffset: z.number().int().nonnegative(), journalEndOffset: z.number().int().nonnegative()
+});
+export const listObservableSessionsRequestSchema = z.object({});
+export const listObservableSessionsResultSchema = resultSchema(z.object({ sessions: z.array(observableSessionSchema) }));
 
 // ── write ───────────────────────────────────────────────────────────────────
 
@@ -287,6 +296,16 @@ export const readResultSchema = resultSchema(
     exit: z.union([z.object({ code: z.number(), signal: z.number().optional() }), z.null()])
   })
 );
+
+export const readObservableSessionRequestSchema = z.object({
+  sessionId: z.string().min(1), after: z.number().int().nonnegative().safe().optional(),
+  maxBytes: z.number().int().min(1024).max(131072).optional()
+});
+export const readObservableSessionResultSchema = resultSchema(z.object({
+  sessionId: z.string(), data: z.string(), journalStartOffset: z.number().int().nonnegative(), journalEndOffset: z.number().int().nonnegative(),
+  startOffset: z.number().int().nonnegative(), nextOffset: z.number().int().nonnegative(), cursorClamped: z.boolean(), hasMore: z.boolean(), alive: z.boolean(),
+  exit: z.union([z.object({ code: z.number(), signal: z.number().optional() }), z.null()]), redacted: z.boolean()
+}));
 
 // ── resize ──────────────────────────────────────────────────────────────────
 

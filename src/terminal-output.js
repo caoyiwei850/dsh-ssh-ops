@@ -19,6 +19,26 @@ export function createTerminalOutput(initial = '', maxBytes = 1024 * 1024) {
       const code = text.charCodeAt(from - start);
       if (code >= 0xdc00 && code <= 0xdfff) from++;
       return { data: text.slice(from - start), startOffset: from, offset: end };
+    },
+    readRange(after, maxBytes) {
+      const start = end - text.length;
+      const bounded = Number.isSafeInteger(maxBytes) ? maxBytes : 32768;
+      let from = Number.isSafeInteger(after) ? Math.max(start, Math.min(end, after)) : start;
+      const cursorClamped = Number.isSafeInteger(after) && after < start;
+      let available = text.slice(from - start);
+      let bytes = Buffer.from(available, 'utf8');
+      if (!Number.isSafeInteger(after) && bytes.length > bounded) {
+        bytes = bytes.subarray(bytes.length - bounded);
+        while (bytes.length > 0 && (bytes[0] & 0xc0) === 0x80) bytes = bytes.subarray(1);
+        available = bytes.toString('utf8');
+        from = end - available.length;
+      } else if (bytes.length > bounded) {
+        bytes = bytes.subarray(0, bounded);
+        while (bytes.length > 0 && (bytes[bytes.length - 1] & 0xc0) === 0x80) bytes = bytes.subarray(0, bytes.length - 1);
+        available = bytes.toString('utf8');
+      }
+      const nextOffset = from + available.length;
+      return { data: available, journalStartOffset: start, journalEndOffset: end, startOffset: from, nextOffset, cursorClamped, hasMore: nextOffset < end };
     }
   };
   journal.append(initial);
