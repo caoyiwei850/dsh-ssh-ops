@@ -92,6 +92,22 @@ const MAX_FILE_READ_BYTES = 4 * 1024 * 1024;
 // Late readers can still see the exit status of the N most recently exited
 // sessions (session tombstones).
 const MAX_EXIT_TOMBSTONES = 64;
+const DEFAULT_DB_ROWS = 200;
+const HARD_MAX_DB_ROWS = 5000;
+
+function parseDbRows(raw = process.env.DSH_SSH_OPS_MAX_DB_ROWS) {
+  if (raw === undefined) return DEFAULT_DB_ROWS;
+  if (!/^[1-9][0-9]*$/.test(raw)) throw new Error("DSH_SSH_OPS_MAX_DB_ROWS must be a positive integer <= 5000");
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value > HARD_MAX_DB_ROWS) throw new Error("DSH_SSH_OPS_MAX_DB_ROWS must be a positive integer <= 5000");
+  return value;
+}
+
+function parseDbToolRegistration(raw = process.env.DSH_SSH_OPS_REGISTER_DB_TOOLS) {
+  if (raw === undefined || raw === "1" || raw?.toLowerCase() === "true") return true;
+  if (raw === "0" || raw?.toLowerCase() === "false") return false;
+  throw new Error("DSH_SSH_OPS_REGISTER_DB_TOOLS must be 0, 1, true, or false");
+}
 
 const profileRecordSchema = z.object({
   name: z.string(),
@@ -251,6 +267,8 @@ export default class SshOpsService extends TypertRemoteService {
       maxCommandOutputBytes: MAX_COMMAND_OUTPUT_BYTES,
       maxCaptureBytes: MAX_CAPTURE_BYTES,
       streamHeartbeatMs: STREAM_HEARTBEAT_MS,
+      registerDbAgentTools: parseDbToolRegistration(),
+      maxDbRows: parseDbRows(),
       ...config
     };
     // Tear down all connections when the plugin fiber unloads.
@@ -268,7 +286,7 @@ export default class SshOpsService extends TypertRemoteService {
       this.activeConnectionId = null;
       try { this.dbOps?.closeAll().catch(() => {}); } catch {}
     }, "ssh-ops: cleanup");
-    this.dbOps = new DbOpsManager(this);
+    this.dbOps = new DbOpsManager(this, this.config.maxDbRows);
     this.registerTools(ctx);
   }
 
@@ -2569,7 +2587,7 @@ export default class SshOpsService extends TypertRemoteService {
     registerSftpTools(ctx, this);
     registerTunnelTools(ctx, this);
     registerBatchTools(ctx, this);
-    registerDbTools(ctx, this);
+    if (this.config.registerDbAgentTools !== false) registerDbTools(ctx, this);
   }
 
   // ── internals ──────────────────────────────────────────────────────────────

@@ -621,7 +621,7 @@ export const dbDescribeTableResultSchema = resultSchema(
 export const dbPreviewRequestSchema = z.object({
   dbConnectionId: z.string().min(1),
   table: z.string().min(1),
-  limit: z.number().int().min(1).max(200).optional(),
+  limit: z.number().int().min(1).max(5000).optional(),
   offset: z.number().int().min(0).optional(),
   signal: z.any().optional()
 });
