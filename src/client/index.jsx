@@ -27,6 +27,7 @@ import { SshDrawer } from "./SshDrawer.jsx";
 import { SshSidebarBody } from "./SshSidebarBody.jsx";
 import { SshResources } from "./SshResources.jsx";
 import { getSshUiSnapshot, sshUiSetOpen, useSshUi } from "./store.js";
+import { activateSidebarWhenAvailable } from "./sidebar-lifecycle.js";
 import TYPERT_REMOTE from "../remote.js";
 
 const NS = "ssh-ops";
@@ -75,102 +76,16 @@ export async function apply(ctx) {
 
   const t = ctx.locale.bind(NS);
 
-  // ── Environment detection ──────────────────────────────────────────────────
-  // The official Sidebar's faces are read with ctx.get (never inject) so the
-  // same client bundle keeps working on DSH builds without them: absent faces
-  // mean drawer mode, not a stalled plugin. Bundle order puts this plugin
-  // after the base bundle, so the faces are provided by the time apply runs.
-  const sidebarRightTabs = ctx.get("sidebarRightTabs");
-  const sidebarRight = ctx.get("sidebarRight");
-  const sidebarMode = Boolean(sidebarRightTabs && sidebarRight);
-
-  // Guide-entry icon: the official primitives set has no terminal glyph (and
-  // its code glyph reads as a bare `#` beside the Files folder), so this plugin
-  // ships its own outline-style terminal icon (IconTerminal16.jsx) drawn to the
-  // official 16px conventions. Local, so it needs no host-module fallback.
-
-  let sidebarRegistered = false;
-
-  if (sidebarMode) {
-    // ── Stage one: the tab type ─────────────────────────────────────────────
-    // A page type: opened by kind via ctx.sidebarRight.openTab, no address
-    // patterns. `extension` band, matching a type shipped from outside the
-    // product. A kind collision (another extension already owns "ssh") is a
-    // wiring mistake we do not want to turn into a broken plugin load — fall
-    // back to the drawer so SSH stays usable.
-    try {
-      own(sidebarRightTabs.register({
-        id: SSH_TAB_ID,
-        kind: SSH_TAB_KIND,
-        priority: "extension",
-        title: () => t("sidebarTabTitle"),
-        guide: [{
-          order: 20,
-          title: () => t("guideTitle"),
-          description: () => t("guideDescription"),
-          icon: IconTerminal16
-        }]
-      }));
-
-      // ── Stage two: the tab body under the same id ──────────────────────────
-      own(ctx.slots.inject("sidebar.right.pane.tab", () =>
-        ctx.slots.register(
-          {
-            name: "sidebar.right.pane.tab",
-            key: SSH_TAB_ID,
-            locale: NS,
-            inject: () => ({ api, credentials: ctx.remote?.credentials })
-          },
-          SshSidebarBody
-        )
-      ));
-
-      // The session-header SSH button: open or focus the Sidebar tab. openTab
-      // is idempotent (an open SSH tab is focused, not duplicated) and reveals
-      // a collapsed Sidebar in the same step.
-      own(ctx.slots.inject("conversation.session.header.actions", () =>
-        ctx.slots.register(
-          {
-            name: "conversation.session.header.actions",
-            id: "ssh-ops-tab-action",
-            order: 90,
-            locale: NS
-          },
-          function SshSidebarTabAction() {
-            return React.createElement(SshTabButtonHost, {
-              press: () => {
-                try {
-                  sidebarRight.openTab(SSH_TAB_KIND);
-                } catch (error) {
-                  // No session surface mounted yet (e.g. clicked before the
-                  // conversation seat ever opened): nothing to act on.
-                  console.warn("[dsh-ssh-ops] openTab failed:", error?.message ?? error);
-                }
-              },
-              isActive: () => {
-                try {
-                  if (!sidebarRight.isExpanded()) return false;
-                  return sidebarRight.active()?.kind === SSH_TAB_KIND;
-                } catch {
-                  return false;
-                }
-              },
-              title: t("openSidebarTab"),
-              ariaLabel: t("sidebarTabTitle"),
-              watchActive: true
-            });
-          }
-        )
-      ));
-      sidebarRegistered = true;
-    } catch (error) {
-      console.error("[dsh-ssh-ops] sidebar tab registration failed, falling back to drawer:", error);
+  // Start with the legacy drawer so older DSH releases remain usable. Newer
+  // hosts provide their Sidebar faces asynchronously; a one-time ctx.get()
+  // snapshot here races that startup and permanently selects the drawer.
+  own(activateSidebarWhenAvailable(ctx, {
+    registerLegacy: (legacyCtx) => applyLegacyRegistrations(legacyCtx, { api }),
+    registerSidebar: (sidebarCtx) => applySidebarRegistrations(sidebarCtx, { api, t }),
+    onSidebarError: (error) => {
+      console.error("[dsh-ssh-ops] sidebar tab registration failed; keeping legacy drawer:", error);
     }
-  }
-
-  if (!sidebarRegistered) {
-    applyLegacyRegistrations(ctx, { api, own });
-  }
+  }));
 
   // A real settings tab owns the durable server resource inventory, in both
   // modes. The header SSH button remains only a terminal visibility toggle.
@@ -193,8 +108,85 @@ export async function apply(ctx) {
   };
 }
 
+/** Official Sidebar registrations: both stages live under one disposable scope. */
+function applySidebarRegistrations(ctx, { api, t }) {
+  const disposers = [];
+  const own = (dispose) => {
+    if (typeof dispose === "function") disposers.push(dispose);
+    return dispose;
+  };
+  try {
+    own(ctx.sidebarRightTabs.register({
+      id: SSH_TAB_ID,
+      kind: SSH_TAB_KIND,
+      priority: "extension",
+      title: () => t("sidebarTabTitle"),
+      guide: [{
+        order: 20,
+        title: () => t("guideTitle"),
+        description: () => t("guideDescription"),
+        icon: IconTerminal16
+      }]
+    }));
+    own(ctx.slots.inject("sidebar.right.pane.tab", () =>
+      ctx.slots.register(
+        {
+          name: "sidebar.right.pane.tab",
+          key: SSH_TAB_ID,
+          locale: NS,
+          inject: () => ({ api, credentials: ctx.remote?.credentials })
+        },
+        SshSidebarBody
+      )
+    ));
+    own(ctx.slots.inject("conversation.session.header.actions", () =>
+      ctx.slots.register(
+        {
+          name: "conversation.session.header.actions",
+          id: "ssh-ops-tab-action",
+          order: 90,
+          locale: NS
+        },
+        function SshSidebarTabAction() {
+          return React.createElement(SshTabButtonHost, {
+            press: () => {
+              try {
+                ctx.sidebarRight.openTab(SSH_TAB_KIND);
+              } catch (error) {
+                console.warn("[dsh-ssh-ops] openTab failed:", error?.message ?? error);
+              }
+            },
+            isActive: () => {
+              try {
+                if (!ctx.sidebarRight.isExpanded()) return false;
+                return ctx.sidebarRight.active()?.kind === SSH_TAB_KIND;
+              } catch {
+                return false;
+              }
+            },
+            title: t("openSidebarTab"),
+            ariaLabel: t("sidebarTabTitle"),
+            watchActive: true
+          });
+        }
+      )
+    ));
+    return () => {
+      for (const dispose of disposers.reverse()) dispose();
+    };
+  } catch (error) {
+    for (const dispose of disposers.reverse()) dispose();
+    throw error;
+  }
+}
+
 /** Drawer-mode registrations (legacy DSH): toggle button + shell.overlay panel. */
-function applyLegacyRegistrations(ctx, { api, own }) {
+function applyLegacyRegistrations(ctx, { api }) {
+  const disposers = [];
+  const own = (dispose) => {
+    if (typeof dispose === "function") disposers.push(dispose);
+    return dispose;
+  };
   // DSH does not expose an additive slot inside the session tab strip.  This
   // session-scoped contribution mounts a native button beside the existing
   // Conversation/Trajectory tabs, while preserving the current chat view and
@@ -226,6 +218,9 @@ function applyLegacyRegistrations(ctx, { api, own }) {
       SshDrawer
     )
   ));
+  return () => {
+    for (const dispose of disposers.reverse()) dispose();
+  };
 }
 
 const SSH_TAB_SELECTOR = '[data-dsh-ssh-ops-tab="true"]';

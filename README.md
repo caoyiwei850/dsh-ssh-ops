@@ -8,7 +8,7 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.3.1-blue)
+![version](https://img.shields.io/badge/version-0.3.2-blue)
 
 > **v0.3.0 新增**：接入 DSH 新版官方右侧边栏——SSH 成为与「文件」并列的官方标签页，宽度、分栏、收起与全屏全部由官方侧栏统一管理，不再有浮动面板遮挡与聊天列留白；连接生命周期与标签显示彻底分离，切换标签 / 收起侧栏 / 切换聊天都不会断开 SSH，重新打开完整恢复终端回看（含隐藏期间在宿主侧缓冲的输出）。旧版 DSH 自动回退为原有可拖宽的浮动面板。桌面版安装说明见 **[INSTALL.md](./INSTALL.md)**。
 
@@ -63,7 +63,7 @@ Agent 命中上述黑名单时不会被静默拒绝：插件会创建一条一�
 ### 从 GitHub 安装（推荐）
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.1
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.2
 ```
 
 安装后重启 DSH Web：
@@ -76,14 +76,14 @@ dsh web
 
 ### 从发布压缩包安装
 
-从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.1) 下载 `dsh-ssh-ops-0.3.1.tgz` 后：
+从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.2) 下载 `dsh-ssh-ops-0.3.2.tgz` 后：
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.1.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.2.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.3.1.zip` 适用于离线审阅或二次开发；解压后可在目录中执行 `npm install && npm run build`。
+`dsh-ssh-ops-0.3.2.zip` 适用于离线审阅或二次开发；解压后可在目录中执行 `npm install && npm run build`。
 
 ## 使用方式
 
@@ -169,8 +169,8 @@ npm run pack:release
 
 生成物位于 `release/`：
 
-- `dsh-ssh-ops-0.3.1.tgz`：可直接被 DSH 安装。
-- `dsh-ssh-ops-0.3.1.zip`：完整离线源码包。
+- `dsh-ssh-ops-0.3.2.tgz`：可直接被 DSH 安装。
+- `dsh-ssh-ops-0.3.2.zip`：完整离线源码包。
 
 ## 许可
 

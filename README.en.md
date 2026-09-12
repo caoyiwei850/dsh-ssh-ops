@@ -8,7 +8,7 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.3.1-blue)
+![version](https://img.shields.io/badge/version-0.3.2-blue)
 
 > **New in v0.3.0**: the SSH terminal is now a **tab of the official right Sidebar** (next to the built-in Files tab) on current DSH builds — width, split, collapse, and fullscreen are managed by the official sidebar, with no floating-panel overlap and no chat-column margin. Connection lifetime is fully decoupled from the tab display: switching tabs, collapsing the sidebar, closing the tab, or switching chats never disconnects SSH, and reopening restores the full terminal scrollback (including output the host buffered while hidden). Older DSH builds automatically fall back to the previous floating panel. See **[INSTALL.md](./INSTALL.md)** for desktop install instructions.
 
@@ -62,7 +62,7 @@ The same model covers `sftp_delete` (the agent no longer deletes directly; inste
 ### From GitHub (recommended)
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.1
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.2
 ```
 
 Then restart DSH Web:
@@ -75,14 +75,14 @@ Open any session, click the top **SSH** tab, and use the right-side panel to con
 
 ### From a release archive
 
-Download `dsh-ssh-ops-0.3.1.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.1), then:
+Download `dsh-ssh-ops-0.3.2.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.2), then:
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.1.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.2.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.3.1.zip` is for offline review or further development; extract it and run `npm install && npm run build` in the directory.
+`dsh-ssh-ops-0.3.2.zip` is for offline review or further development; extract it and run `npm install && npm run build` in the directory.
 
 ## Usage
 
@@ -168,8 +168,8 @@ Pushing a `vX.Y.Z` tag that matches `package.json.version` runs tests, builds th
 
 Artifacts are written to `release/`:
 
-- `dsh-ssh-ops-0.3.1.tgz`: installable directly by DSH.
-- `dsh-ssh-ops-0.3.1.zip`: full offline source archive.
+- `dsh-ssh-ops-0.3.2.tgz`: installable directly by DSH.
+- `dsh-ssh-ops-0.3.2.zip`: full offline source archive.
 
 ## License
 

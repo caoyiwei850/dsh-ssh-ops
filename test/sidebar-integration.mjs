@@ -24,8 +24,14 @@ assert.match(entry, /kind: SSH_TAB_KIND/, "the type declares its kind");
 assert.doesNotMatch(entry, /patterns:\s*\[/, "a page type opened by openTab declares no address patterns");
 assert.match(entry, /openTab\(SSH_TAB_KIND\)/, "the SSH button opens/focuses the tab by kind");
 
-// ── drawer fallback for old DSH ──
-assert.match(entry, /get\("sidebarRightTabs"\)/, "detection reads the Sidebar faces without hard-injecting them");
+// ── late Sidebar services and old-DSH drawer fallback ──
+// The right-Sidebar's services may be provided after an extension bundle is
+// evaluated.  Waiting on them prevents a one-time `ctx.get()` snapshot from
+// incorrectly selecting the legacy drawer in a host that does support tabs.
+assert.match(entry, /activateSidebarWhenAvailable\(/,
+  "new DSH delegates Sidebar readiness to the delayed-service lifecycle");
+assert.doesNotMatch(entry, /ctx\.get\("sidebarRightTabs"\)/,
+  "the Sidebar decision is not frozen before the host has finished registering services");
 assert.match(entry, /shell\.overlay/, "legacy DSH keeps the floating drawer");
 assert.match(drawer, /sshUiSetOpen\(false\)/, "drawer × only hides, never disconnects");
 assert.match(entry, /applyLegacyRegistrations/, "drawer-mode registrations remain wired");

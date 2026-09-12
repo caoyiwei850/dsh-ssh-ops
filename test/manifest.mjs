@@ -23,4 +23,8 @@ assert.ok(
 );
 assert.equal(manifest.exports?.["."]?.default, "./lib/index.js", 'exports["."] must map the host entry (exports wins over main)');
 assert.equal(manifest.exports?.["./client"]?.default, "./lib/client.js", 'exports["./client"] must map the browser bundle');
+assert.ok(manifest.files.includes("lib"), "the npm package keeps generated runtime artifacts");
+assert.ok(manifest.files.includes("scripts"), "the npm package keeps its declared install helper");
+assert.ok(!manifest.files.includes("src") && !manifest.files.includes("assets"),
+  "source and documentation screenshots stay in Git/GitHub release archives, not the runtime npm package");
 console.log("manifest: dsh bundle+client declarations intact");
