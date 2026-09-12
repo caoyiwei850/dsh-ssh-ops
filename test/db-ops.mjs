@@ -284,6 +284,7 @@ function makeTimeoutManager(errorProps, suffix) {
         stream: () => {
           const s = new EventEmitter();
           s.destroy = () => {};
+          s.resume = () => {};
           setImmediate(() => {
             const err = new Error(suffix);
             Object.assign(err, errorProps);
