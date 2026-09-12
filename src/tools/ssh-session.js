@@ -7,6 +7,47 @@ import { defineTool } from "@deepseek-ai/dsh-tools";
 
 export function registerSshSessionTools(ctx, service) {
   ctx.tools.register(defineTool({
+    name: "ssh_session_list",
+    description: "List live SSH PTY sessions shared by the SSH panel and agent. Returns metadata only (origin, host, offsets and liveness); never terminal output or credentials.",
+    parameters: {},
+    output: { schema: { type: "object", additionalProperties: false, properties: {
+      sessions: { type: "array", required: true, items: { type: "object", additionalProperties: false, properties: {
+        sessionId: { type: "string", required: true }, connectionId: { type: "string", required: true }, name: { type: "string" }, host: { type: "string", required: true }, port: { type: "integer", required: true }, openedAt: { type: "string", required: true }, origin: { type: "string", required: true }, alive: { type: "boolean", required: true }, journalStartOffset: { type: "integer", required: true }, journalEndOffset: { type: "integer", required: true }
+      } } }
+    } } },
+    async execute() {
+      const result = service.listObservableSessions();
+      if (!result.ok) throw new Error(`ssh_session_list failed: ${result.error.message}`);
+      return result.value;
+    }
+  }));
+
+  ctx.tools.register(defineTool({
+    name: "ssh_session_read",
+    description: "Read a bounded range of a shared SSH PTY journal after user approval. Defaults to the latest 32 KiB and never exceeds 128 KiB; this is read-only and does not consume other readers.",
+    parameters: {
+      session_id: { type: "string", required: true },
+      after: { type: "integer", description: "Optional journal cursor, clamped when older than retention." },
+      max_bytes: { type: "integer", description: "Optional byte window, 1024..131072; defaults to 32768." }
+    },
+    output: { schema: { type: "object", additionalProperties: false, properties: {
+      sessionId: { type: "string", required: true }, data: { type: "string", required: true }, journalStartOffset: { type: "integer", required: true }, journalEndOffset: { type: "integer", required: true }, startOffset: { type: "integer", required: true }, nextOffset: { type: "integer", required: true }, cursorClamped: { type: "boolean", required: true }, hasMore: { type: "boolean", required: true }, alive: { type: "boolean", required: true }, exit: { oneOf: [{ type: "object", additionalProperties: false }, { type: "null" }], required: true }, redacted: { type: "boolean", required: true }
+    } } },
+    async execute(args) {
+      const result = service.readObservableSession({ sessionId: args.session_id, after: args.after, maxBytes: args.max_bytes });
+      if (!result.ok) throw new Error(`ssh_session_read failed: ${result.error.message}`);
+      return result.value;
+    }
+  }));
+
+  if (typeof ctx.on === "function") ctx.on("tools/pre-execute", (...args) => {
+    const exec = args[0];
+    const next = args[1];
+    if (exec?.name !== "ssh_session_read") return typeof next === "function" ? next() : undefined;
+    return { kind: "ask", reason: "Agent 请求读取当前 SSH 终端内容，终端可能包含命令结果或敏感信息。" };
+  });
+
+  ctx.tools.register(defineTool({
     name: "ssh_list",
     description: "List currently open SSH connections and identify the active server. This reports only live connection metadata (name, host, port, username and active state); it never lists saved SSH resources or credentials. Use it only when the user asks which server is connected. For normal server work, ssh_exec/ssh_read/ssh_write already target the active connection automatically.",
     parameters: {},

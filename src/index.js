@@ -92,6 +92,8 @@ const MAX_FILE_READ_BYTES = 4 * 1024 * 1024;
 // Late readers can still see the exit status of the N most recently exited
 // sessions (session tombstones).
 const MAX_EXIT_TOMBSTONES = 64;
+export const SSH_SESSION_READ_DEFAULT_BYTES = 32 * 1024;
+export const SSH_SESSION_READ_MAX_BYTES = 128 * 1024;
 
 const profileRecordSchema = z.object({
   name: z.string(),
@@ -1011,6 +1013,8 @@ export default class SshOpsService extends TypertRemoteService {
     const session = {
       id: sessionId,
       connectionId: request.connectionId,
+      openedAt: new Date().toISOString(),
+      origin: request.origin ?? "plugin-ui",
       cols,
       rows,
       buffer: "",
@@ -1066,6 +1070,35 @@ export default class SshOpsService extends TypertRemoteService {
         alive: true
       }
     };
+  }
+
+  listObservableSessions() {
+    const sessions = [];
+    for (const session of this.sessions.values()) {
+      const connection = this.connections.get(session.connectionId);
+      if (!connection) continue;
+      const bounds = this.terminalOutput(session).readRange(undefined, SSH_SESSION_READ_DEFAULT_BYTES);
+      const item = {
+        sessionId: session.id, connectionId: session.connectionId, host: connection.host, port: connection.port,
+        openedAt: session.openedAt, origin: session.origin, alive: session.exited === null && session.stream !== null,
+        journalStartOffset: bounds.journalStartOffset, journalEndOffset: bounds.journalEndOffset
+      };
+      if (connection.name !== undefined) item.name = connection.name;
+      sessions.push(item);
+    }
+    return { ok: true, value: { sessions } };
+  }
+
+  readObservableSession(request) {
+    const maxBytes = request.maxBytes ?? SSH_SESSION_READ_DEFAULT_BYTES;
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 1024 || maxBytes > SSH_SESSION_READ_MAX_BYTES) {
+      return { ok: false, error: fail("bad-max-bytes", `maxBytes must be between 1024 and ${SSH_SESSION_READ_MAX_BYTES}`) };
+    }
+    const session = this.sessions.get(request.sessionId);
+    if (!session) return { ok: false, error: fail("no-session", `session "${request.sessionId}" does not exist`) };
+    const item = this.terminalOutput(session).readRange(request.after, maxBytes);
+    const safe = redactForModel(item.data);
+    return { ok: true, value: { sessionId: session.id, ...item, data: safe.text, alive: session.exited === null && session.stream !== null, exit: session.exited, redacted: safe.redacted } };
   }
 
   async write(request) {
@@ -2520,7 +2553,7 @@ export default class SshOpsService extends TypertRemoteService {
       return session !== void 0 && session.exited === null && session.stream !== null;
     });
     if (live) return { ok: true, connectionId: selected.connectionId };
-    const opened = await this.openSession({ connectionId: selected.connectionId, cols: 100, rows: 30 });
+    const opened = await this.openSession({ connectionId: selected.connectionId, cols: 100, rows: 30, origin: "agent" });
     if (!opened.ok) return opened;
     return { ok: true, connectionId: selected.connectionId };
   }

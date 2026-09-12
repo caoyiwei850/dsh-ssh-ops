@@ -37,6 +37,8 @@ function def(method, requestSchema, requestType, resultSchema, resultType, optio
 }
 
 export const DESCRIPTORS = [
+  def("listObservableSessions", S.listObservableSessionsRequestSchema, "SshListObservableSessionsRequest", S.listObservableSessionsResultSchema, "SshListObservableSessionsResult"),
+  def("readObservableSession", S.readObservableSessionRequestSchema, "SshReadObservableSessionRequest", S.readObservableSessionResultSchema, "SshReadObservableSessionResult"),
   def("list", S.listRequestSchema, "SshListRequest", S.listResultSchema, "SshListResult"),
   def("connect", S.connectRequestSchema, "SshConnectRequest", S.connectResultSchema, "SshConnectResult"),
   def("profileList", S.profileListRequestSchema, "SshProfileListRequest", S.profileListResultSchema, "SshProfileListResult"),
