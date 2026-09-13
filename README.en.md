@@ -8,9 +8,9 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.3.3-blue)
+![version](https://img.shields.io/badge/version-0.3.4-blue)
 
-> **New in v0.3.3**: **shared SSH credentials** — one password or private key can be referenced by many servers and jump hosts, deletion is refused while anything still references it, and secrets are resolved host-side only, never returned to the browser; **ProxyJump now selects saved servers** so jump hosts and targets draw on the same credential store; connecting to an already-live saved server **joins that transport instead of opening another**; and the terminal **follows DSH's light/dark theme**. This release also fixes **split view** in the official sidebar: each pane keeps its own servers and selection, splitting no longer clears the pane you were in, a new pane starts empty, and the host session is disconnected only when the last pane closes it. Older DSH builds automatically fall back to the previous floating panel. See **[INSTALL.md](./INSTALL.md)** for desktop install instructions.
+> **New in v0.3.4**: **each split pane now gets its own connection** — opening the same server in two panes creates two independent transports, terminals and working directories instead of mirroring one terminal; tick "reuse the open connection" in the connect dialog to share one on purpose. The **pane the agent is acting on is now visible and switchable**, marked with a blue robot badge — click another pane to re-target it. **Peers whose SSH identification string does not follow RFC 4253 can now connect**: when a device writes it malformed (a stray space in `SSH-2.0- OpenSSH`, or `SSH-2.1-`), ssh2 previously failed with a bare `Invalid identification string` that named neither the device nor the reason; the plugin now retries once and normalizes that single line (the peer's software version is preserved and no crypto is weakened), while a genuinely unusable banner reports the peer's own bytes. Also fixes connecting from the settings page not opening or loading the SSH pane. Shared credentials, jump hosts, connection reuse and the terminal theme from 0.3.3 remain. See **[INSTALL.md](./INSTALL.md)** for desktop install instructions.
 
 ## Screenshots
 
@@ -28,7 +28,7 @@ The Files tab provides SFTP management and can `cd` the interactive terminal int
 
 ## What it does
 
-- **Official right-Sidebar integration (current DSH)**: the SSH terminal is a tab of the official right Sidebar, beside the built-in Files tab. The **SSH** button in the conversation header opens or focuses that tab (repeated clicks focus instead of duplicating). Use the official split view to see files and the terminal together; drag-resize, fullscreen, and collapse are the sidebar's, and the terminal re-fits automatically. **Each split pane is independent**: it keeps its own visible servers and selection, a new pane starts empty and never inherits another pane's servers, the same server can be open in both panes over one shared transport, and closing it in one pane leaves the other alone — the host session is disconnected only when the last pane closes it. **Connection lifetime is independent of the tab**: switching tabs, collapsing the sidebar, closing the tab, or switching chats never disconnects SSH; terminal instances live in a client-side pool, so reopening restores the full scrollback while host-buffered output from the hidden period replays on return. Older DSH builds (no `sidebarRightTabs`) fall back to the floating panel unchanged.
+- **Official right-Sidebar integration (current DSH)**: the SSH terminal is a tab of the official right Sidebar, beside the built-in Files tab. The **SSH** button in the conversation header opens or focuses that tab (repeated clicks focus instead of duplicating). Use the official split view to see files and the terminal together; drag-resize, fullscreen, and collapse are the sidebar's, and the terminal re-fits automatically. **Each split pane is independent**: it keeps its own visible servers and selection, a new pane starts empty and never inherits another pane's servers, opening the same server in both panes gives each its own connection (reuse is opt-in), closing it in one pane leaves the other alone, and the host session is disconnected only once no pane shows it any more. The connection the agent is using carries an **Agent** badge — click the other pane to move the agent there. **Connection lifetime is independent of the tab**: switching tabs, collapsing the sidebar, closing the tab, or switching chats never disconnects SSH; terminal instances live in a client-side pool, so reopening restores the full scrollback while host-buffered output from the hidden period replays on return. Older DSH builds (no `sidebarRightTabs`) fall back to the floating panel unchanged.
 - **Terminal follows DSH's theme**: xterm draws to its own canvas and cannot inherit the CSS text color, so the plugin ships complete light and dark palettes (cursor and selection included) and repaints open terminals as soon as the host theme changes.
 - Manage any number of servers and groups under **Settings → Plugins → SSH Resources**; the top **SSH** button only opens or focuses the right-side terminal tab (on older DSH it shows/hides the floating panel — neither disconnects).
 - **Command library**: the SSH panel has a dedicated Command Library tab with system inspection, service, Docker, logs, networking, storage, scheduler, and Ubuntu/RHEL/CentOS install/update templates. Search matches command names and contents. Custom commands are managed inside this tab; they are stored only in browser local storage and must never contain passwords, tokens, or other secrets.
@@ -36,7 +36,8 @@ The Files tab provides SFTP management and can `cd` the interactive terminal int
 - Passwords, PEM private keys, and passphrases are stored **only** in DSH's official local credentials store `~/.dsh/.credentials.yaml` (owner-only permissions). Browser storage, agent context, tool results, and resource lists never read or display secrets.
 - **Shared credentials**: one password or private key can be saved as a shared credential and referenced by many servers and jump hosts (for example one operations key for a whole group, so a change lands everywhere at once). Deletion is refused while any server or jump chain still references it, and the secret is resolved host-side and handed straight to the SSH client — never into browser storage or agent context. Manage them under **Settings → Plugins → SSH Resources**, where you can pick a PEM file or drop one into the dialog. Each server may bind a shared credential or keep its own dedicated one.
 - **ProxyJump**: jump hosts are chosen from your saved servers instead of typed by hand, and passwords/keys/passphrases all come from the credential store; a jump host can reference a shared credential too. Saving and connecting reject a server that jumps through itself, a duplicate hop, or a missing resource. A chain holds up to 8 hops.
-- **Connection reuse**: if a saved server already has a healthy connection, clicking Connect again joins that transport instead of opening a second one, so multiple SSH sessions to the same host no longer interfere.
+- **One channel per pane by default**: opening the same saved server in both split panes creates two independent connections — two channels, two terminals, no interference, each keeping its own working directory. Tick **reuse the open connection** in the connect dialog to share instead: this pane joins the live connection and shares its single terminal (useful when you want to watch the agent work in that same shell).
+- **The agent's target is visible and switchable**: the connection the agent is using carries an **Agent** badge. Click the other pane's server tab or terminal area to move the agent there — agent tools that omit `connection_id` (`ssh_exec`, `sftp_*`, `tunnel_*`, safety confirmation cards) resolve to it. Switching to a connection that is gone is refused and leaves the previous binding intact, so the agent is never silently left with no target.
 - The main conversation auto-detects the currently-connected server on the right; the agent never has to ask the user for an internal connection id.
 - Commands run through `ssh_exec` are echoed in the terminal and return exit code, output, `cwd`, duration, timeout, and truncation state. On Linux, the command inherits the verified directory of one idle POSIX interactive shell. Busy or ambiguous terminals and inaccessible directories are rejected; when no interactive shell is detectable, the login directory is used and clearly reported.
 - Manual terminal output is read on demand via `ssh_read`; it is never silently injected into the conversation context.
@@ -66,7 +67,7 @@ The same model covers `sftp_delete` (the agent no longer deletes directly; inste
 ### From GitHub (recommended)
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.3
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.4
 ```
 
 Then restart DSH Web:
@@ -79,14 +80,14 @@ Open any session, click the top **SSH** tab, and use the right-side panel to con
 
 ### From a release archive
 
-Download `dsh-ssh-ops-0.3.3.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.3), then:
+Download `dsh-ssh-ops-0.3.4.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.4), then:
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.3.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.4.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.3.3.zip` is for offline review or further development; extract it and run `npm install && npm run build` in the directory.
+`dsh-ssh-ops-0.3.4.zip` is for offline review or further development; extract it and run `npm install && npm run build` in the directory.
 
 ## Usage
 
@@ -172,8 +173,8 @@ Pushing a `vX.Y.Z` tag that matches `package.json.version` runs tests, builds th
 
 Artifacts are written to `release/`:
 
-- `dsh-ssh-ops-0.3.3.tgz`: installable directly by DSH.
-- `dsh-ssh-ops-0.3.3.zip`: full offline source archive.
+- `dsh-ssh-ops-0.3.4.tgz`: installable directly by DSH.
+- `dsh-ssh-ops-0.3.4.zip`: full offline source archive.
 
 ## License
 

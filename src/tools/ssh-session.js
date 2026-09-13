@@ -81,15 +81,17 @@ export function registerSshSessionTools(ctx, service) {
           port: { type: "integer", required: true },
           username: { type: "string", required: true },
           legacyFallback: { type: "boolean" },
+          bannerRepair: { type: "boolean" },
           warning: { type: "string" }
         }
       },
       render(args, value) {
         const conn = value ?? {};
         const base = `Connected ${args.username}@${args.host} (id: ${conn.connectionId ?? "?"})`;
-        // A weakened handshake must be visible in the tool result, not only in
-        // the host log — otherwise nobody learns the device needs upgrading.
-        return [{ type: "text", text: conn.legacyFallback ? `${base}\n⚠️ ${conn.warning ?? ""}` : base }];
+        // Anything unusual about the handshake must be visible in the tool
+        // result, not only in the host log — a weakened transport or a rewritten
+        // banner is something the operator has to know about to act on it.
+        return [{ type: "text", text: conn.warning ? `${base}\n⚠️ ${conn.warning}` : base }];
       }
     },
     async execute(args) {

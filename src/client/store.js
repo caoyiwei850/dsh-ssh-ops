@@ -51,6 +51,28 @@ export function sshUiSetOpen(open) {
   set({ open });
 }
 
+/**
+ * How the current host shows the SSH surface, registered by whichever mode is
+ * active: the official Sidebar focuses its tab, while the legacy drawer needs
+ * nothing because it renders off the `open` flag.
+ */
+let surfaceOpener = null;
+
+export function sshUiSetSurfaceOpener(opener) {
+  surfaceOpener = typeof opener === "function" ? opener : null;
+}
+
+/**
+ * Ask the host to show the SSH surface. Callers that do not own a pane — the
+ * resources page, for one — use this instead of reaching for `open`, which only
+ * the legacy drawer reads: in Sidebar mode a bare `sshUiSetOpen(true)` did
+ * nothing at all, so a connect from the settings page never revealed a terminal.
+ */
+export function sshUiRequestSurface() {
+  set({ open: true });
+  surfaceOpener?.();
+}
+
 export function sshUiSetConnections(connections) {
   set({ connections });
 }

@@ -7,10 +7,13 @@ import assert from "node:assert/strict";
 import {
   adoptIntoView,
   anyViewShowsConnections,
+  claimPendingOpens,
   closeInView,
   forgetView,
   openInView,
+  paneOpenRequestsRevision,
   reconcileViews,
+  requestPaneOpen,
   resetPaneSessions,
   resolvePaneActiveConnection,
   selectInView,
@@ -123,4 +126,29 @@ openInView("tab-left", "a");
 assert.equal(notifications, 2, "an unsubscribed pane stops receiving changes");
 resetPaneSessions();
 
-console.log("pane selection: split-pane visibility survives remount, new panes start empty, last close disconnects: passed");
+// ── a surface with no pane of its own hands its connect to exactly one pane ──
+// The resources page connects servers but owns no pane, so it queues them. If
+// every pane claimed the queue the server would appear mirrored everywhere; if
+// none did it would never appear at all — which is the bug this replaced.
+resetPaneSessions();
+const revisionBefore = paneOpenRequestsRevision();
+const idleSnapshot = viewSession("tab-left");
+requestPaneOpen("x");
+assert.notEqual(paneOpenRequestsRevision(), revisionBefore, "queuing advances the revision panes subscribe to");
+assert.equal(viewSession("tab-left"), idleSnapshot, "queuing alone does not touch a view snapshot");
+assert.deepEqual(claimPendingOpens(), ["x"], "the first pane to render claims the connection");
+assert.deepEqual(claimPendingOpens(), [], "the queue is drained, so a second pane gets nothing");
+
+// Two queued connects both land, and the queue is per-request, not per-pane.
+requestPaneOpen("x");
+requestPaneOpen("y");
+assert.deepEqual(claimPendingOpens(), ["x", "y"]);
+assert.deepEqual(claimPendingOpens(), []);
+
+// Teardown must not leave a stale request that the next pane would adopt.
+requestPaneOpen("z");
+resetPaneSessions();
+assert.deepEqual(claimPendingOpens(), []);
+assert.deepEqual(viewSession("tab-left").connectionIds, []);
+
+console.log("pane selection: split-pane visibility survives remount, new panes start empty, last close disconnects, queued connects land in one pane: passed");

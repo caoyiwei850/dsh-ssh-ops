@@ -4,7 +4,8 @@
  * DSH's credentials.set/unset API and are never put in React state after save.
  */
 import * as React from "react";
-import { sshUiSetActiveConnection, sshUiSetConnections, sshUiSetError, sshUiSetOpen } from "./store.js";
+import { sshUiRequestSurface, sshUiSetConnections, sshUiSetError } from "./store.js";
+import { requestPaneOpen } from "./pane-selection.js";
 import { privateKeyProblem } from "./pemkey.js";
 
 const { useEffect, useRef, useState } = React;
@@ -369,11 +370,14 @@ export function SshResources({ api, credentials }) {
       await api.openSession(connection.connectionId, 100, 30);
       const listed = await api.list();
       sshUiSetConnections(listed.connections);
-      sshUiSetActiveConnection(connection.connectionId);
+      // This page owns no pane, so queue the connection for one to pick up and
+      // ask the host to reveal the terminal. Without both halves a connect here
+      // opened nothing and the new server never appeared in the panel.
+      requestPaneOpen(connection.connectionId);
       // A successful connect must clear any stale panel error (e.g. an earlier
       // host-key mismatch) so the error bar doesn't linger after recovery.
       sshUiSetError(null);
-      sshUiSetOpen(true);
+      sshUiRequestSurface();
       await refresh();
     } catch (cause) {
       if (cause?.code === "connect-cancelled") return;

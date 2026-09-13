@@ -26,7 +26,7 @@ import { IconTerminal16 } from "./IconTerminal16.jsx";
 import { SshDrawer } from "./SshDrawer.jsx";
 import { SshSidebarBody } from "./SshSidebarBody.jsx";
 import { SshResources } from "./SshResources.jsx";
-import { getSshUiSnapshot, sshUiSetOpen, useSshUi } from "./store.js";
+import { getSshUiSnapshot, sshUiSetOpen, sshUiSetSurfaceOpener, useSshUi } from "./store.js";
 import { activateSidebarWhenAvailable } from "./sidebar-lifecycle.js";
 import TYPERT_REMOTE from "../remote.js";
 
@@ -116,6 +116,18 @@ function applySidebarRegistrations(ctx, { api, t }) {
     return dispose;
   };
   try {
+    // Surfaces that do not own a pane (the resources page) ask for the
+    // terminal through the shared store; in this mode that means focusing the
+    // Sidebar tab. Cleared on release so a later mode switch cannot keep
+    // calling into a host whose Sidebar is gone.
+    sshUiSetSurfaceOpener(() => {
+      try {
+        ctx.sidebarRight.openTab(SSH_TAB_KIND);
+      } catch (error) {
+        console.warn("[dsh-ssh-ops] openTab failed:", error?.message ?? error);
+      }
+    });
+    own(() => sshUiSetSurfaceOpener(null));
     own(ctx.sidebarRightTabs.register({
       id: SSH_TAB_ID,
       kind: SSH_TAB_KIND,

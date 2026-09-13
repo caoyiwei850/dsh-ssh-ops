@@ -19,6 +19,7 @@ import { EXEC_CWD_ERROR_PREFIX, buildCwdAwareCommand, execEchoWarning, extractEx
 import { scpCommand, scpDownload, scpUpload } from "./scp.js";
 import { redactForModel } from "./redact.js";
 import { isTransientConnectError } from "./net-errors.js";
+import { isIdentMismatchError, withRepairedBanner } from "./ssh-banner.js";
 import { processTerminalInput } from "./terminal-input.js";
 import { fail } from "./envelope.js";
 import { POLICY_NOTICE_PREFIX, DANGEROUS_DEFAULT_REASON } from "./policy-messages.js";
@@ -356,6 +357,25 @@ export default class SshOpsService extends TypertRemoteService {
     return { ok: true, value: { connections, activeConnectionId: this.activeConnectionId } };
   }
 
+  /**
+   * Point the agent at one connection. Split panes are independent, so the
+   * operator's click is what decides which of them an agent tool call targets:
+   * tools that omit `connection_id` resolve `activeConnectionId` at call time.
+   * A refused switch leaves the previous binding intact — clearing it would
+   * strand the agent with no target while the panel still shows one.
+   */
+  async selectConnection(request) {
+    const connection = this.connections.get(request.connectionId);
+    if (connection === void 0) {
+      return { ok: false, error: fail("no-connection", `connection "${request.connectionId}" does not exist`) };
+    }
+    if (connection.dead || connection.closing) {
+      return { ok: false, error: fail("connection-lost", `connection "${request.connectionId}" is not usable`) };
+    }
+    this.activeConnectionId = request.connectionId;
+    return { ok: true, value: { activeConnectionId: this.activeConnectionId } };
+  }
+
   async connect(request) {
     let resolvedRequest = request;
     if (request.credentialId !== undefined) {
@@ -431,6 +451,12 @@ export default class SshOpsService extends TypertRemoteService {
       // the automatic retry, because the user already told us what to use.
       legacyAlgorithms: request.legacy === true,
       legacyFallback: false,
+      // Identification-string repair: ssh2's parser refuses a few banners that
+      // OpenSSH accepts, reporting them as a bare "Invalid identification
+      // string". Set only after such a real rejection, so a healthy peer never
+      // takes that path; `bannerRepairNote` explains what was rewritten.
+      bannerRepair: false,
+      bannerRepairNote: null,
       // `legacy: false` is an explicit "modern only, do NOT downgrade" — the
       // automatic retry is opt-out, not merely opt-in.
       allowLegacyDowngrade: request.legacy === undefined,
@@ -462,13 +488,22 @@ export default class SshOpsService extends TypertRemoteService {
     };
     // See list(): the RPC gateway rejects `undefined` as a JSON value.
     if (request.name !== undefined) value.name = request.name;
-    // Surface a downgraded handshake to the caller: a silently weakened
-    // transport is worse than a slow one, because nobody thinks to upgrade the
-    // device afterwards.
+    // Surface anything unusual about the handshake to the caller. Both warnings
+    // can apply to one connection, so they accumulate rather than overwrite.
+    const warnings = [];
+    // A downgraded handshake must never be silent: a weakened transport is worse
+    // than a slow one, because nobody thinks to upgrade the device afterwards.
     if (record.legacyFallback) {
       value.legacyFallback = true;
-      value.warning = "This server offered no modern SSH key exchange; connected with the legacy diffie-hellman-group14-sha1 algorithm. The transport is weaker than the default — upgrade the device firmware when possible.";
+      warnings.push("This server offered no modern SSH key exchange; connected with the legacy diffie-hellman-group14-sha1 algorithm. The transport is weaker than the default — upgrade the device firmware when possible.");
     }
+    // Nor must a rewritten banner: the peer is off-specification, and the user
+    // should know the connection only exists because the line was repaired.
+    if (record.bannerRepair) {
+      value.bannerRepair = true;
+      warnings.push(`对端的 SSH 横幅不符合 RFC 4253，ssh2 会直接拒绝这条连接；本次已按规范化后的横幅完成握手。${record.bannerRepairNote ?? ""}`);
+    }
+    if (warnings.length > 0) value.warning = warnings.join("\n");
     // A newly connected server is the natural target for the conversation,
     // even if the browser has not rendered its PTY yet.
     this.activeConnectionId = id;
@@ -567,6 +602,21 @@ export default class SshOpsService extends TypertRemoteService {
           continue;
         }
       }
+      // A peer whose banner ssh2 refused gets one more attempt with that line
+      // normalized first (ssh-banner.js). This is reached only after such a real
+      // rejection, so a healthy peer keeps ssh2's own socket handling.
+      if (record.bannerRepair) {
+        try {
+          sock = await this.openRepairedSock(record, sock);
+        } catch (error) {
+          lastError = error;
+          for (const hop of record.hops) { try { hop.end(); } catch {} }
+          record.hops = [];
+          if (record.closing || attempt >= retries) break;
+          await this.sleep(Math.min(2000, 500 * 2 ** attempt));
+          continue;
+        }
+      }
       const client = new Client();
       record.client = client;
       try {
@@ -613,6 +663,19 @@ export default class SshOpsService extends TypertRemoteService {
         // Tear down hops on failure so the retry starts fresh.
         for (const hop of record.hops) { try { hop.end(); } catch {} }
         record.hops = [];
+        // ssh2's ident parser refuses a handful of banners that OpenSSH accepts
+        // and reports them as a bare "Invalid identification string" — naming
+        // neither the peer nor the offending line. Retry ONCE with that line
+        // normalized. Like the KEX downgrade below, this consumes an attempt on
+        // purpose and the loop bound is widened, so a caller that passed
+        // retries:0 still gets the chance; otherwise the device would look
+        // simply unreachable.
+        if (!record.bannerRepair && isIdentMismatchError(error)) {
+          record.bannerRepair = true;
+          this.log(`SSH ${record.host}:${record.port} returned an identification string ssh2 refuses; retrying once with that line normalized so the handshake can proceed.`);
+          if (attempt >= retries) retries += 1;
+          continue;
+        }
         // Only when the user did not ask for legacy explicitly: a shared
         // KEX-less handshake means this peer may be an old VRP switch, so
         // retry ONCE with the legacy algorithm set and remember that we did.
@@ -640,6 +703,41 @@ export default class SshOpsService extends TypertRemoteService {
       ok: false,
       error: fail("connect-failed", `${record.username}@${record.host}:${record.port}: ${lastError?.message ?? "connection failed"}`)
     };
+  }
+
+  /**
+   * Obtain the transport for a banner-repaired attempt: the peer's
+   * identification line has to be read and normalized before ssh2 ever sees it,
+   * which means the plugin owns the byte stream instead of ssh2.
+   *
+   * `upstream` is the jump chain's forwarded stream when there is one — it is
+   * spliced the same way, because a hop stream is just as opaque as a socket to
+   * whatever the final host writes on it. Otherwise the TCP connection is ours,
+   * and a failure here is an ordinary connect failure the caller's retry policy
+   * already knows how to classify.
+   */
+  async openRepairedSock(record, upstream) {
+    let sock = upstream;
+    if (sock === undefined) {
+      const { host, port } = record.connectConfig;
+      sock = net.createConnection({ host, port });
+      // Standing listener first: an 'error' emission with no listener crashes
+      // the DSH process, and pre-handshake failures are surfaced through the
+      // banner read below rather than through this socket.
+      sock.on("error", () => {});
+      await new Promise((resolve, reject) => {
+        const onConnect = () => { sock.off("error", onReject); resolve(); };
+        const onReject = (error) => reject(error);
+        sock.once("connect", onConnect);
+        sock.once("error", onReject);
+      });
+    }
+    const { stream, plan } = await withRepairedBanner(sock, {
+      // Never outlast the handshake budget the user set for this connection.
+      timeoutMs: Math.min(record.connectConfig.readyTimeout ?? 20000, 10000)
+    });
+    record.bannerRepairNote = plan.reason === "" ? null : plan.reason;
+    return stream;
   }
 
   /**

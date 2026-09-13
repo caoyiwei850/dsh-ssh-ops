@@ -85,6 +85,11 @@ export class SshApi {
     return this.call("credentialDelete", typeof input === "string" ? { credentialId: input } : input);
   }
 
+  /** Bind the agent's connection-less tool calls to one connection. */
+  selectConnection(input) {
+    return this.call("selectConnection", typeof input === "string" ? { connectionId: input } : input);
+  }
+
   profileList() {
     return this.call("profileList", {});
   }

@@ -84,6 +84,9 @@ export const connectResultSchema = resultSchema(
     // Set when the handshake needed the legacy KEX set; `warning` carries the
     // user-facing explanation so a weakened transport is never silent.
     legacyFallback: z.boolean().optional(),
+    // Set when the peer's identification string had to be normalized before
+    // ssh2 would accept it (see ssh-banner.js); also explained in `warning`.
+    bannerRepair: z.boolean().optional(),
     warning: z.string().optional()
   })
 );
@@ -211,6 +214,16 @@ export const groupSaveRequestSchema = z.object({ groupId: groupIdSchema.optional
 export const groupSaveResultSchema = resultSchema(z.object({ group: groupInfoSchema }));
 export const groupDeleteRequestSchema = z.object({ groupId: groupIdSchema });
 export const groupDeleteResultSchema = resultSchema(z.object({ deleted: z.boolean(), movedProfiles: z.number().int().nonnegative() }));
+
+// ── select the connection the agent operates on ─────────────────────────────
+
+export const selectConnectionRequestSchema = z.object({
+  connectionId: z.string().min(1)
+});
+
+export const selectConnectionResultSchema = resultSchema(z.object({
+  activeConnectionId: z.string().nullable()
+}));
 
 // ── open shell session ──────────────────────────────────────────────────────
 

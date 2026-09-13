@@ -179,5 +179,37 @@ export function adoptIntoView(viewId, connections) {
 export function resetPaneSessions() {
   views.clear();
   references.clear();
+  pendingOpens.length = 0;
   emit();
+}
+
+/**
+ * Connections an outside surface asked a pane to show. The resources page
+ * connects servers without owning a pane, so it cannot put a connection into
+ * one itself — it queues the request and the first pane to render claims it.
+ * Before this queue existed such a connect stayed invisible: panes only ever
+ * showed what they had opened themselves (plus cold-start adoption).
+ */
+const pendingOpens = [];
+let pendingRevision = 0;
+
+/** Queue one connection for whichever pane renders next. */
+export function requestPaneOpen(connectionId) {
+  pendingOpens.push(connectionId);
+  pendingRevision += 1;
+  emit();
+}
+
+/**
+ * Revision of the pending queue. Panes subscribe to it separately from their
+ * own view snapshot, which is deliberately identity-stable and so would not
+ * re-render just because the queue changed.
+ */
+export function paneOpenRequestsRevision() {
+  return pendingRevision;
+}
+
+/** Take every queued connection; the first pane to call this owns them. */
+export function claimPendingOpens() {
+  return pendingOpens.splice(0, pendingOpens.length);
 }

@@ -22,6 +22,17 @@ import { privateKeyProblem } from "../src/client/pemkey.js";
   assert.deepEqual(calls, [["list", {}], ["save", { name: "shared key", authKind: "key" }], ["delete", { credentialId: "00000000-0000-4000-8000-000000000001" }]]);
 }
 
+// ── SshApi: a pane click takes the plain connection id the panel holds ────
+{
+  const calls = [];
+  const api = new SshApi(() => ({
+    selectConnection: async (arg) => { calls.push(arg); return { ok: true, value: { ok: true, value: { activeConnectionId: "b" } } }; }
+  }));
+  const result = await api.selectConnection("b");
+  assert.deepEqual(calls, [{ connectionId: "b" }], "the wrapper wraps the id instead of sending a bare string");
+  assert.equal(result.activeConnectionId, "b", "both envelopes are unwrapped for the caller");
+}
+
 // ── SshApi: file contents must survive as raw bytes, not UTF-8 text ──
 {
   const captured = [];

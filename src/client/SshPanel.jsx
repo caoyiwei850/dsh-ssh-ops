@@ -18,7 +18,8 @@ import * as React from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { XTERM_CSS } from "./xterm-css.js";
-import { useSshUi, getSshUiSnapshot, sshUiSetActiveConnection, sshUiSetBusy, sshUiSetConnections, sshUiSetError } from "./store.js";
+import { useSshUi, sshUiSetActiveConnection, sshUiSetBusy, sshUiSetConnections, sshUiSetError } from "./store.js";
+import { IconRobot16 } from "./IconRobot16.jsx";
 import { SshFiles } from "./SshFiles.jsx";
 import { SshTunnels } from "./SshTunnels.jsx";
 import { SshDatabase } from "./SshDatabase.jsx";
@@ -29,9 +30,11 @@ import { applyTerminalTheme, createTerminalThemeWatcher, getTerminalTheme } from
 import {
   DRAWER_VIEW_ID,
   adoptIntoView,
+  claimPendingOpens,
   closeInView,
   forgetView,
   openInView,
+  paneOpenRequestsRevision,
   reconcileViews,
   resolvePaneActiveConnection,
   selectInView,
@@ -356,6 +359,11 @@ function ConnectDialog({ api, credentials, onClose, onConnected }) {
   const [profiles, setProfiles] = useState([]);
   const [sharedCredentials, setSharedCredentials] = useState([]);
   const [selectedProfileId, setSelectedProfileId] = useState("");
+  // Off by default: joining a live connection makes this pane share that
+  // connection's single shell, so both panes would mirror each other and the
+  // operator could not work in them independently. Opting in is for deliberately
+  // watching the agent in the same shell.
+  const [reuseExisting, setReuseExisting] = useState(false);
   const keyFileInputRef = useRef(null);
   const [showProxyJump, setShowProxyJump] = useState(false);
   const [proxyJumps, setProxyJumps] = useState([]);
@@ -438,7 +446,7 @@ function ConnectDialog({ api, credentials, onClose, onConnected }) {
     setStatus("正在连接服务器，最多需要 20 秒…");
     try {
       const connection = selectedProfileId
-        ? await api.profileConnect({ profileId: selectedProfileId, readyTimeout: 15000, retries: 0, reuseExisting: proxyJumps.length === 0, ...(proxyJumps.length > 0 ? { proxyJumpProfileIds: proxyJumps.map((hop) => hop.profileId) } : {}) })
+        ? await api.profileConnect({ profileId: selectedProfileId, readyTimeout: 15000, retries: 0, reuseExisting: reuseExisting && proxyJumps.length === 0, ...(proxyJumps.length > 0 ? { proxyJumpProfileIds: proxyJumps.map((hop) => hop.profileId) } : {}) })
         : await api.connect({
             host: form.host.trim(),
             port: Number(form.port) || 22,
@@ -454,14 +462,13 @@ function ConnectDialog({ api, credentials, onClose, onConnected }) {
       // The service returns a live connection, but it is not useful to the
       // panel until it becomes the active record.  Without this, a successful
       // connect looked exactly like "No connections" to the user.
-      sshUiSetActiveConnection(connection.connectionId);
       onConnected?.(connection.connectionId);
-      await refreshConnections(api, { adopt: false });
+      await refreshConnections(api);
       // The panel is a terminal, not merely a connection list: open the PTY
       // immediately so a successful connection is ready to use at once.
       try {
         await api.openSession(connection.connectionId, 100, 30);
-        await refreshConnections(api, { adopt: false });
+        await refreshConnections(api);
       } catch (sessionError) {
         sshUiSetError(`已连接，但无法自动打开终端：${sessionError?.message ?? String(sessionError)}`);
       }
@@ -527,12 +534,11 @@ function ConnectDialog({ api, credentials, onClose, onConnected }) {
       const profileId = saved?.profile?.profileId;
       if (!profileId) throw new Error("保存资源后未能取得 profileId");
       const connection = await api.profileConnect({ profileId, readyTimeout: 15000, retries: 0 });
-      sshUiSetActiveConnection(connection.connectionId);
       onConnected?.(connection.connectionId);
-      await refreshConnections(api, { adopt: false });
+      await refreshConnections(api);
       try {
         await api.openSession(connection.connectionId, 100, 30);
-        await refreshConnections(api, { adopt: false });
+        await refreshConnections(api);
       } catch (sessionError) {
         sshUiSetError(`已连接，但无法自动打开终端：${sessionError?.message ?? String(sessionError)}`);
       }
@@ -592,7 +598,6 @@ function ConnectDialog({ api, credentials, onClose, onConnected }) {
     for (const profileId of ids) {
       try {
         const connection = await api.profileConnect({ profileId, readyTimeout: 15000, retries: 0 });
-        sshUiSetActiveConnection(connection.connectionId);
         onConnected?.(connection.connectionId);
         try {
           await api.openSession(connection.connectionId, 100, 30);
@@ -630,6 +635,12 @@ function ConnectDialog({ api, credentials, onClose, onConnected }) {
                 ))}
               </select>
             </label>
+            {selectedProfileId && (
+              <label style={panelStyles.reuseToggle} title="默认各自一条独立通道；勾选后本栏将加入已打开的那条连接，与另一栏共用同一个终端">
+                <input type="checkbox" checked={reuseExisting} onChange={(event) => setReuseExisting(event.target.checked)} />
+                <span>复用已打开的连接</span>
+              </label>
+            )}
           </div>
         )}
         {!selectedProfileId && <><div style={panelStyles.temporaryTitle}>临时连接（不会保存）</div><div style={panelStyles.formRow}>
@@ -745,19 +756,17 @@ function ConnectDialog({ api, credentials, onClose, onConnected }) {
   );
 }
 
-async function refreshConnections(api, { adopt = true } = {}) {
+/**
+ * Mirror the host's connection list and its current binding. The active
+ * connection is host state, not a client guess: it is what the agent's
+ * connection-less tool calls target, and a page reload must not invent a value
+ * for it. The badge reads this field, so it always reports the host's truth.
+ */
+async function refreshConnections(api) {
   try {
-    const { connections } = await api.list();
+    const { connections, activeConnectionId } = await api.list();
     sshUiSetConnections(connections);
-    // A page reload resets the client-side active binding while connections
-    // keep living server-side. Without re-adoption the panel shows "未连接"
-    // and its × can no longer disconnect anything — the connection becomes a
-    // zombie that outlives the browser. Rebind to the first live connection,
-    // but only for recovery: never during an explicit × disconnect, where
-    // re-adopting another live connection would defeat the operator's intent.
-    if (adopt && connections.length > 0 && getSshUiSnapshot().activeConnectionId === null) {
-      sshUiSetActiveConnection(connections[0].connectionId);
-    }
+    sshUiSetActiveConnection(activeConnectionId ?? null);
   } catch (error) {
     sshUiSetError(`无法刷新 SSH 连接列表：${error?.message ?? String(error)}`);
   }
@@ -1062,6 +1071,16 @@ export function SshPanel({ api, credentials, locale, viewId = DRAWER_VIEW_ID, vi
     adoptIntoView(viewId, ui.connections);
   }, [ui.connections, viewId]);
 
+  // A surface that owns no pane (the resources page) queues what it connected.
+  // The first pane to render claims it, so an operator-initiated connect lands
+  // in exactly one pane — not none, and not mirrored into every pane. This
+  // subscribes to the queue's revision rather than the view snapshot, which is
+  // identity-stable and would not re-render for a queue-only change.
+  const paneOpenRequests = useSyncExternalStore(subscribePaneSessions, paneOpenRequestsRevision);
+  useEffect(() => {
+    for (const connectionId of claimPendingOpens()) openInView(viewId, connectionId);
+  }, [paneOpenRequests, viewId]);
+
   // The host aborts this signal when the tab record disappears (or the plugin
   // unloads). Release the view's references so another pane's later close is
   // still recognized as the last one — closing a view never disconnects.
@@ -1074,6 +1093,31 @@ export function SshPanel({ api, credentials, locale, viewId = DRAWER_VIEW_ID, vi
 
   const openConnectionInPane = (connectionId) => {
     openInView(viewId, connectionId);
+  };
+
+  /**
+   * Hand the agent this pane's connection. Panes are independent, so the agent
+   * needs one answer to "which server am I working on"; the operator's click is
+   * that answer. Clicking the already-bound pane is a no-op rather than a fresh
+   * round trip.
+   *
+   * The report comes back from the host, not from a local guess: writing the
+   * badge optimistically made a failed switch look applied for one poll tick and
+   * then flip back, which reads as the agent wandering off on its own.
+   */
+  const bindAgent = (connectionId) => {
+    if (connectionId === null || connectionId === ui.activeConnectionId) return;
+    api.selectConnection(connectionId)
+      .then(() => refreshConnections(api))
+      .catch((error) => {
+        const message = error?.message ?? String(error);
+        // A missing route means the running host half predates this build:
+        // client code reloads with the page, host code only with a restart.
+        // Say so instead of leaving a bare transport error to decode.
+        sshUiSetError(/404|not mounted|not-mounted/i.test(message)
+          ? "切换 Agent 目标失败：宿主端仍是旧版本（没有 selectConnection 接口），重启 dsh web / DSH.app 后即可生效"
+          : `切换 Agent 目标失败：${message}`);
+      });
   };
   const visibleCommandSnippets = searchCommandSnippets(
     matchingCommandSnippets(availableCommandSnippets(commandSnippets), active, profiles),
@@ -1092,7 +1136,7 @@ export function SshPanel({ api, credentials, locale, viewId = DRAWER_VIEW_ID, vi
     sshUiSetError(null);
     try {
       await api.openSession(active.connectionId, 100, 30);
-      await refreshConnections(api, { adopt: false });
+      await refreshConnections(api);
     } catch (err) {
       sshUiSetError(err?.message ?? String(err));
     } finally {
@@ -1157,7 +1201,7 @@ export function SshPanel({ api, credentials, locale, viewId = DRAWER_VIEW_ID, vi
     if (!closeInView(viewId, connectionId)) return;
     try {
       await api.disconnect(connectionId);
-      await refreshConnections(api, { adopt: false });
+      await refreshConnections(api);
     } catch (error) {
       // The server-side session remains alive when disconnect fails, so put the
       // local tab back rather than pretending it was released.
@@ -1193,16 +1237,31 @@ export function SshPanel({ api, credentials, locale, viewId = DRAWER_VIEW_ID, vi
       <div style={panelStyles.serverTabs}>
         {paneConnections.map((conn) => {
           const isActive = conn.connectionId === resolvedActiveConnectionId;
+          const isAgentTarget = conn.connectionId === ui.activeConnectionId;
           return (
-            <div key={conn.connectionId} style={{ ...panelStyles.serverTab, ...(isActive ? panelStyles.serverTabActive : {}) }}>
+            <div key={conn.connectionId} style={{ ...panelStyles.serverTab, ...(isActive ? panelStyles.serverTabActive : {}), ...(isAgentTarget ? panelStyles.serverTabAgent : {}) }}>
               <button
                 type="button"
                 style={panelStyles.serverTabLabel}
-                onClick={() => selectInView(viewId, conn.connectionId)}
-                title={`${conn.username}@${conn.host}:${conn.port}`}
+                onClick={() => {
+                  selectInView(viewId, conn.connectionId);
+                  bindAgent(conn.connectionId);
+                }}
+                title={`${conn.username}@${conn.host}:${conn.port}${isAgentTarget ? "（Agent 正在使用此连接）" : ""}`}
               >
                 {conn.name || `${conn.username}@${conn.host}`}
               </button>
+              {isAgentTarget && (
+                <span
+                  style={panelStyles.agentBadge}
+                  data-dsh-ssh-ops-agent-target="true"
+                  role="img"
+                  title="Agent 的 ssh_exec / sftp_* / tunnel_* 默认作用于此连接；点击其他栏可切换"
+                  aria-label="Agent 正在使用此连接"
+                >
+                  <IconRobot16 size={15} />
+                </span>
+              )}
               <button
                 type="button"
                 style={panelStyles.serverTabClose}
@@ -1295,6 +1354,10 @@ export function SshPanel({ api, credentials, locale, viewId = DRAWER_VIEW_ID, vi
                   <div
                     key={conn.connectionId}
                     style={{ ...panelStyles.terminalPaneWrap, display: isActive ? "flex" : "none" }}
+                    // Clicking into a pane is the operator saying "work here":
+                    // a text-selection click hits this too, which is why
+                    // bindAgent is idempotent for the already-bound pane.
+                    onMouseDown={() => bindAgent(conn.connectionId)}
                   >
                     {sessionId ? (
                       <XtermView api={api} sessionId={sessionId} connectionId={conn.connectionId} />
@@ -1508,6 +1571,35 @@ const panelStyles = {
     color: "var(--dsh-ssh-ops-text, #d7dbe2)",
     borderBottom: "2px solid #2d6cdf"
   },
+  /**
+   * The connection the agent's connection-less tool calls resolve to.
+   *
+   * RoyalBlue3, picked by the operator. It sits close to the active-tab
+   * underline (#2d6cdf), so the tab outline is only half the signal — the solid
+   * chip with the robot glyph is what actually separates "the agent is here"
+   * from "this tab is selected".
+   *
+   * Solid fill with white ink: royal blue is dark enough for a white glyph
+   * (~5.8:1), and a chip that carries its own fill reads the same on both
+   * Sidebar themes.
+   */
+  serverTabAgent: {
+    borderColor: "#3a5fcd",
+    boxShadow: "inset 0 0 0 1px rgba(58, 95, 205, .9)"
+  },
+  agentBadge: {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    flex: "none",
+    marginRight: 2,
+    padding: "2px 4px",
+    borderRadius: 999,
+    background: "#3a5fcd",
+    border: "1px solid #3a5fcd",
+    color: "#ffffff",
+    cursor: "default"
+  },
   serverTabLabel: {
     background: "transparent",
     border: "none",
@@ -1612,6 +1704,17 @@ const panelStyles = {
   temporaryTitle: { fontSize: 12, color: "var(--dsh-ssh-ops-muted, #9aa3af)", marginTop: 2 },
   field: { display: "flex", flexDirection: "column", gap: 4, fontSize: 12, color: "var(--dsh-ssh-ops-muted, #9aa3af)", minWidth: 0 },
   formRow: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 },
+  savedProfileRow: { display: "flex", alignItems: "flex-end", flexWrap: "wrap", gap: 8 },
+  reuseToggle: {
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
+    paddingBottom: 7,
+    fontSize: 12,
+    color: "var(--dsh-ssh-ops-muted, #9aa3af)",
+    cursor: "pointer",
+    whiteSpace: "nowrap"
+  },
   input: {
     background: "var(--dsh-ssh-ops-input, #101418)",
     border: "1px solid var(--dsh-ssh-ops-border, #2a303a)",
