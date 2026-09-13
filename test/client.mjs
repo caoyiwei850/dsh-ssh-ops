@@ -8,6 +8,20 @@ import { randomBytes } from "node:crypto";
 import { SshApi } from "../src/client/api.js";
 import { privateKeyProblem } from "../src/client/pemkey.js";
 
+// ── SshApi: shared-credential RPC wrappers stay available to settings UI ───
+{
+  const calls = [];
+  const api = new SshApi(() => ({
+    credentialList: async (arg) => { calls.push(["list", arg]); return { ok: true, value: { ok: true, value: { credentials: [] } } }; },
+    credentialSave: async (arg) => { calls.push(["save", arg]); return { ok: true, value: { ok: true, value: { credential: {}, credentialRefs: {} } } }; },
+    credentialDelete: async (arg) => { calls.push(["delete", arg]); return { ok: true, value: { ok: true, value: { deleted: true } } }; }
+  }));
+  await api.credentialList();
+  await api.credentialSave({ name: "shared key", authKind: "key" });
+  await api.credentialDelete("00000000-0000-4000-8000-000000000001");
+  assert.deepEqual(calls, [["list", {}], ["save", { name: "shared key", authKind: "key" }], ["delete", { credentialId: "00000000-0000-4000-8000-000000000001" }]]);
+}
+
 // ── SshApi: file contents must survive as raw bytes, not UTF-8 text ──
 {
   const captured = [];

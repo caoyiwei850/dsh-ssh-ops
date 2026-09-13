@@ -49,7 +49,10 @@ export const connectRequestSchema = z.object({
   host: z.string().min(1),
   port: z.number().int().min(1).max(65535).default(22),
   username: z.string().min(1),
-  auth: authSchema,
+  // A temporary connection may reference a saved shared credential.  In that
+  // case the secret is resolved only in the service, never returned to React.
+  auth: authSchema.optional(),
+  credentialId: z.string().uuid().optional(),
   readyTimeout: z.number().int().min(1000).max(120000).optional(),
   // Legacy KEX opt-in for old VRP/IOS devices that only offer SHA-1 group14.
   // Omitted → the plugin retries once automatically when the handshake fails
@@ -65,7 +68,10 @@ export const connectRequestSchema = z.object({
     auth: authSchema,
     readyTimeout: z.number().int().min(1000).max(120000).optional(),
     hostKeyMode: hostKeyModeSchema.optional()
-  })).optional()
+  })).optional(),
+  proxyJumpProfileIds: z.array(z.string().uuid()).max(8).optional()
+}).refine((request) => request.auth !== undefined || request.credentialId !== undefined, {
+  message: "auth or credentialId is required"
 });
 
 export const connectResultSchema = resultSchema(
@@ -107,7 +113,14 @@ export const listResultSchema = resultSchema(
 
 const profileIdSchema = z.string().uuid();
 const groupIdSchema = z.string().uuid();
+const credentialIdSchema = z.string().uuid();
 export const profileAuthKindSchema = z.enum(["password", "key"]);
+const legacySavedJumpSchema = z.object({
+  host: z.string().min(1).max(255), port: z.number().int().min(1).max(65535).default(22),
+  username: z.string().min(1).max(128), authKind: z.enum(["credential", "password", "key"]).default("credential"), credentialId: credentialIdSchema.optional(),
+  hostKeyMode: hostKeyModeSchema.optional()
+});
+const savedJumpSchema = z.union([z.object({ profileId: profileIdSchema }), legacySavedJumpSchema]);
 
 const profileMetadataSchema = z.object({
   name: z.string().min(1).max(120),
@@ -120,13 +133,18 @@ const profileMetadataSchema = z.object({
 
 export const profileSaveRequestSchema = profileMetadataSchema.extend({
   profileId: profileIdSchema.optional(),
-  groupId: groupIdSchema.nullable().optional()
+  groupId: groupIdSchema.nullable().optional(),
+  credentialId: credentialIdSchema.nullable().optional(),
+  proxyJump: z.array(savedJumpSchema).max(8).optional()
 });
 
 export const profileCredentialRefsSchema = z.object({
   password: z.string(),
   privateKey: z.string(),
-  passphrase: z.string()
+  passphrase: z.string(),
+  proxyJumpPasswords: z.array(z.string()).optional(),
+  proxyJumpPrivateKeys: z.array(z.string()).optional(),
+  proxyJumpPassphrases: z.array(z.string()).optional()
 });
 
 export const profileInfoSchema = profileMetadataSchema.extend({
@@ -136,7 +154,18 @@ export const profileInfoSchema = profileMetadataSchema.extend({
   credentialConfigured: z.boolean(),
   passphraseConfigured: z.boolean(),
   connected: z.boolean()
+  ,credentialId: credentialIdSchema.nullable(),
+  credentialName: z.string().nullable(),
+  proxyJump: z.array(savedJumpSchema)
 });
+
+const credentialInfoSchema = z.object({ credentialId: credentialIdSchema, name: z.string(), authKind: profileAuthKindSchema, credentialConfigured: z.boolean(), passphraseConfigured: z.boolean() });
+export const credentialListRequestSchema = z.object({});
+export const credentialListResultSchema = resultSchema(z.object({ credentials: z.array(credentialInfoSchema) }));
+export const credentialSaveRequestSchema = z.object({ credentialId: credentialIdSchema.optional(), name: z.string().min(1).max(120), authKind: profileAuthKindSchema });
+export const credentialSaveResultSchema = resultSchema(z.object({ credential: credentialInfoSchema, credentialRefs: profileCredentialRefsSchema }));
+export const credentialDeleteRequestSchema = z.object({ credentialId: credentialIdSchema });
+export const credentialDeleteResultSchema = resultSchema(z.object({ deleted: z.boolean() }));
 
 export const profileSaveResultSchema = resultSchema(
   z.object({
@@ -158,9 +187,13 @@ export const profileDisconnectResultSchema = resultSchema(z.object({ disconnecte
 
 export const profileConnectRequestSchema = z.object({
   profileId: profileIdSchema,
+  /** Join an already-live connection for this saved server when possible. */
+  reuseExisting: z.boolean().optional(),
   /** UI connects pass a shorter handshake budget and zero retries to fail fast. */
   readyTimeout: z.number().int().positive().max(120000).optional(),
-  retries: z.number().int().min(0).max(5).optional()
+  retries: z.number().int().min(0).max(5).optional(),
+  /** When supplied, override this saved resource's jump chain for one connect only. */
+  proxyJumpProfileIds: z.array(profileIdSchema).max(8).optional()
 });
 export const profileConnectResultSchema = connectResultSchema;
 

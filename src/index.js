@@ -6,6 +6,7 @@
  */
 import { createTerminalOutput } from "./terminal-output.js";
 import { randomUUID } from "node:crypto";
+import { findReusableProfileConnection } from "./profile-connection.js";
 import net from "node:net";
 import { Client } from "ssh2";
 import { Service } from "@deepseek-ai/cordis";
@@ -103,6 +104,20 @@ const profileRecordSchema = z.object({
   // Host-key TOFU mode persisted per saved server; optional so records saved
   // before this feature existed still load (treated as the accept-new default).
   hostKeyMode: z.string().optional(),
+  // Optional shared credential and jump chain.  Both are optional so the
+  // domain can read every pre-0.3.3 resource without migration.
+  credentialId: z.string().uuid().nullable().optional(),
+  proxyJump: z.array(z.union([z.object({ profileId: z.string().uuid() }), z.object({
+    host: z.string(), port: z.number().int(), username: z.string(),
+    authKind: z.enum(["credential", "password", "key"]).optional(), credentialId: z.string().uuid().optional(), hostKeyMode: z.string().optional()
+  })])).optional(),
+  createdAt: z.string(),
+  updatedAt: z.string()
+});
+
+const credentialRecordSchema = z.object({
+  name: z.string(),
+  authKind: z.enum(["password", "key"]),
   createdAt: z.string(),
   updatedAt: z.string()
 });
@@ -120,6 +135,15 @@ const profileDomainSpec = defineDomain({
     profiles: domainTable(profileRecordSchema),
     groups: domainTable(groupRecordSchema)
   }
+});
+
+// Keep shared credentials in a new unit rather than bumping the established
+// profile unit. DSH's JSON storage rejects in-place unit-version changes, and
+// users' existing server profiles must never prevent the host from booting.
+const credentialDomainSpec = defineDomain({
+  name: "ssh_ops_credentials",
+  version: 1,
+  tables: { credentials: domainTable(credentialRecordSchema) }
 });
 
 const dbProfileRecordSchema = z.object({
@@ -167,6 +191,27 @@ function profileCredentialRefs(profileId) {
     privateKey: `DSH_SSH_OPS_${stem}_PRIVATE_KEY`,
     passphrase: `DSH_SSH_OPS_${stem}_PASSPHRASE`
   };
+}
+
+function sharedCredentialRefs(credentialId) {
+  const stem = credentialId.replaceAll("-", "").toUpperCase();
+  return {
+    password: `DSH_SSH_OPS_SHARED_${stem}_PASSWORD`,
+    privateKey: `DSH_SSH_OPS_SHARED_${stem}_PRIVATE_KEY`,
+    passphrase: `DSH_SSH_OPS_SHARED_${stem}_PASSPHRASE`
+  };
+}
+
+function profileJumpPasswordRef(profileId, index) {
+  return `DSH_SSH_OPS_${profileId.replaceAll("-", "").toUpperCase()}_JUMP_${index}_PASSWORD`;
+}
+
+function profileJumpPrivateKeyRef(profileId, index) {
+  return `DSH_SSH_OPS_${profileId.replaceAll("-", "").toUpperCase()}_JUMP_${index}_PRIVATE_KEY`;
+}
+
+function profileJumpPassphraseRef(profileId, index) {
+  return `DSH_SSH_OPS_${profileId.replaceAll("-", "").toUpperCase()}_JUMP_${index}_PASSPHRASE`;
 }
 
 function dbProfileCredentialRefs(dbProfileId) {
@@ -238,6 +283,7 @@ export default class SshOpsService extends TypertRemoteService {
   activeConnectionId = null;
   profileTable = null;
   groupTable = null;
+  credentialTable = null;
   /** known_hosts table (host:port → fingerprint record); null until [Service.init]. */
   knownHostTable = null;
   /** KnownHosts adapter over `knownHostTable`; null until [Service.init]. */
@@ -277,6 +323,9 @@ export default class SshOpsService extends TypertRemoteService {
     this.profileTable = domain.table("profiles");
     this.groupTable = domain.table("groups");
     this.ctx.effect(() => () => domain.close(), "ssh-ops: profile domain close");
+    const credentialDomain = await this.ctx.storageDomain.open(credentialDomainSpec);
+    this.credentialTable = credentialDomain.table("credentials");
+    this.ctx.effect(() => () => credentialDomain.close(), "ssh-ops: credential domain close");
     const dbDomain = await this.ctx.storageDomain.open(dbProfileDomainSpec);
     this.dbProfileTable = dbDomain.table("profiles");
     this.ctx.effect(() => () => dbDomain.close(), "ssh-ops: db profile domain close");
@@ -308,7 +357,42 @@ export default class SshOpsService extends TypertRemoteService {
   }
 
   async connect(request) {
-    return this.connectInternal(request);
+    let resolvedRequest = request;
+    if (request.credentialId !== undefined) {
+      try {
+        const credential = this.requireCredentialTable().get(request.credentialId);
+        if (credential === undefined) return { ok: false, error: fail("no-credential", `SSH credential "${request.credentialId}" does not exist`) };
+        const refs = sharedCredentialRefs(request.credentialId);
+        const primary = await this.ctx.credentials.resolve(credentialRef(credential.authKind === "password" ? refs.password : refs.privateKey));
+        if (primary === undefined) return { ok: false, error: fail("credential-missing", `shared credential "${credential.name}" has no saved ${credential.authKind === "password" ? "password" : "private key"}`) };
+        const passphrase = credential.authKind === "key" ? await this.ctx.credentials.resolve(credentialRef(refs.passphrase)) : undefined;
+        resolvedRequest = {
+          ...request,
+          auth: credential.authKind === "password"
+            ? { kind: "password", password: primary.value }
+            : { kind: "key", privateKey: primary.value, ...(passphrase === undefined ? {} : { passphrase: passphrase.value }) }
+        };
+      } catch (error) { return { ok: false, error: fail("credential-connect-failed", error.message) }; }
+    }
+    if (Array.isArray(resolvedRequest.proxyJumpProfileIds) && resolvedRequest.proxyJumpProfileIds.length > 0) {
+      try {
+        const seen = new Set();
+        const proxyJump = [];
+        for (const profileId of request.proxyJumpProfileIds) {
+          if (seen.has(profileId)) return { ok: false, error: fail("jump-duplicate", "同一条跳板链不能重复选择同一台服务器") };
+          seen.add(profileId);
+          const profile = this.requireProfileTable().get(profileId);
+          if (profile === undefined) return { ok: false, error: fail("no-profile", `jump-host profile "${profileId}" does not exist`) };
+          const refs = profile.credentialId ? sharedCredentialRefs(profile.credentialId) : profileCredentialRefs(profileId);
+          const primary = await this.ctx.credentials.resolve(credentialRef(profile.authKind === "password" ? refs.password : refs.privateKey));
+          if (primary === undefined) return { ok: false, error: fail("credential-missing", `jump host "${profile.name}" has no saved credential`) };
+          const passphrase = profile.authKind === "key" ? await this.ctx.credentials.resolve(credentialRef(refs.passphrase)) : undefined;
+          proxyJump.push({ host: profile.host, port: profile.port, username: profile.username, hostKeyMode: profile.hostKeyMode, auth: profile.authKind === "password" ? { kind: "password", password: primary.value } : { kind: "key", privateKey: primary.value, ...(passphrase === undefined ? {} : { passphrase: passphrase.value }) } });
+        }
+        return await this.connectInternal({ ...resolvedRequest, proxyJump });
+      } catch (error) { return { ok: false, error: fail("profile-jump-connect-failed", error.message) }; }
+    }
+    return this.connectInternal(resolvedRequest);
   }
 
   async connectInternal(request, profileId = undefined) {
@@ -743,13 +827,62 @@ export default class SshOpsService extends TypertRemoteService {
     return this.groupTable;
   }
 
+  requireCredentialTable() {
+    if (this.credentialTable === null) throw new Error("SSH credential storage is not ready");
+    return this.credentialTable;
+  }
+
+  async credentialPublic(credentialId, record) {
+    const refs = sharedCredentialRefs(credentialId);
+    const primaryRef = record.authKind === "password" ? refs.password : refs.privateKey;
+    const [primary, passphrase] = await Promise.all([
+      this.ctx.credentials.describe(credentialRef(primaryRef)),
+      this.ctx.credentials.describe(credentialRef(refs.passphrase))
+    ]);
+    return { credentialId, name: record.name, authKind: record.authKind, credentialConfigured: primary.configured, passphraseConfigured: passphrase.configured };
+  }
+
+  async credentialList() {
+    try {
+      const credentials = await Promise.all([...this.requireCredentialTable().entries()].map(async ([id, record]) => await this.credentialPublic(id, record)));
+      credentials.sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"));
+      return { ok: true, value: { credentials } };
+    } catch (error) { return { ok: false, error: fail("credential-list-failed", error.message) }; }
+  }
+
+  async credentialSave(request) {
+    try {
+      const table = this.requireCredentialTable();
+      const credentialId = request.credentialId ?? randomUUID();
+      const previous = table.get(credentialId);
+      if (request.credentialId !== undefined && previous === undefined) return { ok: false, error: fail("no-credential", `SSH credential "${credentialId}" does not exist`) };
+      const now = new Date().toISOString();
+      const record = { name: request.name.trim(), authKind: request.authKind, createdAt: previous?.createdAt ?? now, updatedAt: now };
+      await table.put(credentialId, record);
+      return { ok: true, value: { credential: await this.credentialPublic(credentialId, record), credentialRefs: sharedCredentialRefs(credentialId) } };
+    } catch (error) { return { ok: false, error: fail("credential-save-failed", error.message) }; }
+  }
+
+  async credentialDelete(request) {
+    try {
+      const table = this.requireCredentialTable();
+      if (table.get(request.credentialId) === undefined) return { ok: true, value: { deleted: false } };
+      const usedBy = [...this.requireProfileTable().entries()].find(([, profile]) => profile.credentialId === request.credentialId || profile.proxyJump?.some((hop) => hop.credentialId === request.credentialId));
+      if (usedBy) return { ok: false, error: fail("credential-in-use", "此凭据仍被 SSH 资源或跳板机引用；请先改用其他凭据") };
+      await Promise.all(Object.values(sharedCredentialRefs(request.credentialId)).map(async (ref) => await this.ctx.credentials.unset(credentialRef(ref))));
+      await table.delete(request.credentialId);
+      return { ok: true, value: { deleted: true } };
+    } catch (error) { return { ok: false, error: fail("credential-delete-failed", error.message) }; }
+  }
+
   groupPublic(groupId, record) {
     const profileCount = [...this.requireProfileTable().entries()].filter(([, profile]) => profile.groupId === groupId).length;
     return { groupId, name: record.name, profileCount };
   }
 
   async profilePublic(profileId, record) {
-    const refs = profileCredentialRefs(profileId);
+    const shared = record.credentialId ? this.requireCredentialTable().get(record.credentialId) : undefined;
+    const refs = shared ? sharedCredentialRefs(record.credentialId) : profileCredentialRefs(profileId);
     const primaryRef = record.authKind === "password" ? refs.password : refs.privateKey;
     const [primary, passphrase] = await Promise.all([
       this.ctx.credentials.describe(credentialRef(primaryRef)),
@@ -765,6 +898,9 @@ export default class SshOpsService extends TypertRemoteService {
       username: record.username,
       authKind: record.authKind,
       hostKeyMode: record.hostKeyMode ?? DEFAULT_HOST_KEY_MODE,
+      credentialId: shared ? record.credentialId : null,
+      credentialName: shared?.name ?? null,
+      proxyJump: record.proxyJump ?? [],
       groupId: group === undefined ? null : record.groupId,
       groupName: group?.name ?? null,
       credentialConfigured: primary.configured,
@@ -798,6 +934,23 @@ export default class SshOpsService extends TypertRemoteService {
       if (groupId !== null && this.requireGroupTable().get(groupId) === undefined) {
         return { ok: false, error: fail("no-group", `SSH group "${groupId}" does not exist`) };
       }
+      if (request.credentialId !== null && request.credentialId !== undefined) {
+        const credential = this.requireCredentialTable().get(request.credentialId);
+        if (credential === undefined) return { ok: false, error: fail("no-credential", `SSH credential "${request.credentialId}" does not exist`) };
+        if (credential.authKind !== request.authKind) return { ok: false, error: fail("credential-auth-mismatch", "所选共享凭据的认证方式与服务器不一致") };
+      }
+      const proxyJump = request.proxyJump ?? previous?.proxyJump ?? [];
+      const seenJumpProfiles = new Set();
+      for (const hop of proxyJump) {
+        if (hop.profileId) {
+          if (hop.profileId === profileId) return { ok: false, error: fail("jump-cycle", "服务器不能把自己设为跳板机") };
+          if (seenJumpProfiles.has(hop.profileId)) return { ok: false, error: fail("jump-duplicate", "同一条跳板链不能重复选择同一台服务器") };
+          seenJumpProfiles.add(hop.profileId);
+          if (this.requireProfileTable().get(hop.profileId) === undefined) return { ok: false, error: fail("no-profile", `jump-host profile "${hop.profileId}" does not exist`) };
+          continue;
+        }
+        if ((hop.authKind ?? "credential") !== "password" && this.requireCredentialTable().get(hop.credentialId) === undefined) return { ok: false, error: fail("no-credential", `jump-host credential "${hop.credentialId}" does not exist`) };
+      }
       const record = {
         name: request.name.trim(),
         host: request.host.trim(),
@@ -805,6 +958,11 @@ export default class SshOpsService extends TypertRemoteService {
         username: request.username.trim(),
         authKind: request.authKind,
         hostKeyMode: request.hostKeyMode ?? DEFAULT_HOST_KEY_MODE,
+        // An explicit null detaches a shared credential and restores the
+        // server's legacy dedicated credential slot; only an omitted field
+        // preserves old records for backwards-compatible callers.
+        credentialId: Object.hasOwn(request, "credentialId") ? request.credentialId : (previous?.credentialId ?? null),
+        proxyJump,
         groupId,
         createdAt: previous?.createdAt ?? now,
         updatedAt: now
@@ -814,7 +972,7 @@ export default class SshOpsService extends TypertRemoteService {
         ok: true,
         value: {
           profile: await this.profilePublic(profileId, record),
-          credentialRefs: profileCredentialRefs(profileId)
+          credentialRefs: { ...(record.credentialId ? sharedCredentialRefs(record.credentialId) : profileCredentialRefs(profileId)), proxyJumpPasswords: (record.proxyJump ?? []).map((_, index) => profileJumpPasswordRef(profileId, index)), proxyJumpPrivateKeys: (record.proxyJump ?? []).map((_, index) => profileJumpPrivateKeyRef(profileId, index)), proxyJumpPassphrases: (record.proxyJump ?? []).map((_, index) => profileJumpPassphraseRef(profileId, index)) }
         }
       };
     } catch (error) {
@@ -830,7 +988,7 @@ export default class SshOpsService extends TypertRemoteService {
       const refs = profileCredentialRefs(request.profileId);
       // Only names derived from this resource id are ever removed. A live SSH
       // transport keeps running; deletion only forgets future quick-connect.
-      await Promise.all(Object.values(refs).map(async (ref) => await this.ctx.credentials.unset(credentialRef(ref))));
+      await Promise.all([...Object.values(refs), ...Array.from({ length: 8 }, (_, index) => [profileJumpPasswordRef(request.profileId, index), profileJumpPrivateKeyRef(request.profileId, index), profileJumpPassphraseRef(request.profileId, index)]).flat()].map(async (ref) => await this.ctx.credentials.unset(credentialRef(ref))));
       await table.delete(request.profileId);
       return { ok: true, value: { deleted: true } };
     } catch (error) {
@@ -857,7 +1015,16 @@ export default class SshOpsService extends TypertRemoteService {
     try {
       const record = this.requireProfileTable().get(request.profileId);
       if (record === undefined) return { ok: false, error: fail("no-profile", `SSH resource "${request.profileId}" does not exist`) };
-      const refs = profileCredentialRefs(request.profileId);
+      const reusable = findReusableProfileConnection([...this.connections.values()], request.profileId, {
+        reuseExisting: request.reuseExisting,
+        hasProxyJumpOverride: request.proxyJumpProfileIds?.length > 0
+      });
+      if (reusable) {
+        const value = { connectionId: reusable.id, host: reusable.host, port: reusable.port, username: reusable.username };
+        if (reusable.name !== undefined) value.name = reusable.name;
+        return { ok: true, value };
+      }
+      const refs = record.credentialId ? sharedCredentialRefs(record.credentialId) : profileCredentialRefs(request.profileId);
       const primaryRef = record.authKind === "password" ? refs.password : refs.privateKey;
       const primary = await this.ctx.credentials.resolve(credentialRef(primaryRef));
       if (primary === undefined) {
@@ -866,6 +1033,42 @@ export default class SshOpsService extends TypertRemoteService {
       const passphrase = record.authKind === "key"
         ? await this.ctx.credentials.resolve(credentialRef(refs.passphrase))
         : undefined;
+      const proxyJump = [];
+      const configuredHops = request.proxyJumpProfileIds?.map((profileId) => ({ profileId })) ?? record.proxyJump ?? [];
+      const seenHops = new Set();
+      for (const [index, hop] of configuredHops.entries()) {
+        if (hop.profileId) {
+          if (hop.profileId === request.profileId || seenHops.has(hop.profileId)) return { ok: false, error: fail("jump-cycle", "跳板链不能包含当前服务器或重复服务器") };
+          seenHops.add(hop.profileId);
+          const jump = this.requireProfileTable().get(hop.profileId);
+          if (jump === undefined) return { ok: false, error: fail("no-profile", `jump-host profile "${hop.profileId}" does not exist`) };
+          const jumpRefs = jump.credentialId ? sharedCredentialRefs(jump.credentialId) : profileCredentialRefs(hop.profileId);
+          const secret = await this.ctx.credentials.resolve(credentialRef(jump.authKind === "password" ? jumpRefs.password : jumpRefs.privateKey));
+          if (secret === undefined) return { ok: false, error: fail("credential-missing", `jump host "${jump.name}" has no saved credential`) };
+          const passphrase = jump.authKind === "key" ? await this.ctx.credentials.resolve(credentialRef(jumpRefs.passphrase)) : undefined;
+          proxyJump.push({ host: jump.host, port: jump.port, username: jump.username, hostKeyMode: jump.hostKeyMode, auth: jump.authKind === "password" ? { kind: "password", password: secret.value } : { kind: "key", privateKey: secret.value, ...(passphrase === undefined ? {} : { passphrase: passphrase.value }) } });
+          continue;
+        }
+        if ((hop.authKind ?? "credential") === "password") {
+          const secret = await this.ctx.credentials.resolve(credentialRef(profileJumpPasswordRef(request.profileId, index)));
+          if (secret === undefined) return { ok: false, error: fail("credential-missing", `jump host "${hop.host}" has no saved password`) };
+          proxyJump.push({ host: hop.host, port: hop.port, username: hop.username, hostKeyMode: hop.hostKeyMode, auth: { kind: "password", password: secret.value } });
+          continue;
+        }
+        if (hop.authKind === "key") {
+          const privateKey = await this.ctx.credentials.resolve(credentialRef(profileJumpPrivateKeyRef(request.profileId, index)));
+          if (privateKey === undefined) return { ok: false, error: fail("credential-missing", `jump host "${hop.host}" has no saved private key`) };
+          const passphrase = await this.ctx.credentials.resolve(credentialRef(profileJumpPassphraseRef(request.profileId, index)));
+          proxyJump.push({ host: hop.host, port: hop.port, username: hop.username, hostKeyMode: hop.hostKeyMode, auth: { kind: "key", privateKey: privateKey.value, ...(passphrase === undefined ? {} : { passphrase: passphrase.value }) } });
+          continue;
+        }
+        const credential = this.requireCredentialTable().get(hop.credentialId);
+        const hopRefs = sharedCredentialRefs(hop.credentialId);
+        const secret = await this.ctx.credentials.resolve(credentialRef(credential.authKind === "password" ? hopRefs.password : hopRefs.privateKey));
+        if (secret === undefined) return { ok: false, error: fail("credential-missing", `jump host "${hop.host}" has no saved credential`) };
+        const phrase = credential.authKind === "key" ? await this.ctx.credentials.resolve(credentialRef(hopRefs.passphrase)) : undefined;
+        proxyJump.push({ host: hop.host, port: hop.port, username: hop.username, hostKeyMode: hop.hostKeyMode, auth: credential.authKind === "password" ? { kind: "password", password: secret.value } : { kind: "key", privateKey: secret.value, ...(phrase === undefined ? {} : { passphrase: phrase.value }) } });
+      }
       return await this.connectInternal({
         name: record.name,
         host: record.host,
@@ -876,7 +1079,8 @@ export default class SshOpsService extends TypertRemoteService {
         retries: request.retries,
         auth: record.authKind === "password"
           ? { kind: "password", password: primary.value }
-          : { kind: "key", privateKey: primary.value, ...(passphrase === undefined ? {} : { passphrase: passphrase.value }) }
+          : { kind: "key", privateKey: primary.value, ...(passphrase === undefined ? {} : { passphrase: passphrase.value }) },
+        ...(proxyJump.length > 0 ? { proxyJump } : {})
       }, request.profileId);
     } catch (error) {
       return { ok: false, error: fail("profile-connect-failed", error.message) };

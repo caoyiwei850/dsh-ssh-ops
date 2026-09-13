@@ -25,8 +25,21 @@ import { SshDatabase } from "./SshDatabase.jsx";
 import { privateKeyProblem } from "./pemkey.js";
 import { availableCommandSnippets, loadCommandSnippets, matchingCommandSnippets, saveCommandSnippets, searchCommandSnippets } from "./command-snippets.js";
 import { createTerminalPool } from "./terminal-pool.js";
+import { applyTerminalTheme, createTerminalThemeWatcher, getTerminalTheme } from "./terminal-theme.js";
+import {
+  DRAWER_VIEW_ID,
+  adoptIntoView,
+  closeInView,
+  forgetView,
+  openInView,
+  reconcileViews,
+  resolvePaneActiveConnection,
+  selectInView,
+  subscribePaneSessions,
+  viewSession
+} from "./pane-selection.js";
 
-const { useEffect, useRef, useState, Component } = React;
+const { useEffect, useRef, useState, useSyncExternalStore, Component } = React;
 
 /** Error boundary so a crash in one tab (Files/Tunnels) never closes the panel. */
 class TabErrorBoundary extends Component {
@@ -96,6 +109,7 @@ function ensureStyles() {
   const style = document.createElement("style");
   style.textContent = XTERM_CSS + PANEL_CSS;
   document.head.appendChild(style);
+  ensureTerminalThemeWatcher();
 }
 
 /**
@@ -116,7 +130,7 @@ const terminalPool = createTerminalPool({
       // Some remote commands produce LF-only text. Treat it as a normal
       // terminal newline so rows do not continue at the previous column.
       convertEol: true,
-      theme: { background: "#101418" }
+      theme: getTerminalTheme()
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -124,6 +138,26 @@ const terminalPool = createTerminalPool({
   },
   max: 8
 });
+
+let stopTerminalThemeWatcher = null;
+
+function ensureTerminalThemeWatcher() {
+  if (stopTerminalThemeWatcher !== null || typeof document === "undefined") return;
+  stopTerminalThemeWatcher = createTerminalThemeWatcher({
+    apply: (theme) => {
+      applyWorkspaceTheme(theme);
+      terminalPool.forEachTerm((term) => applyTerminalTheme(term, theme));
+    }
+  });
+}
+
+function applyWorkspaceTheme(theme) {
+  const light = theme.background === "#f7f8fa";
+  const colors = light
+    ? { bg: "#f7f8fa", surface: "#ffffff", input: "#ffffff", border: "#d9dee7", text: "#1d2128", muted: "#667085", tab: "#eef1f5" }
+    : { bg: "#101418", surface: "#161b21", input: "#101418", border: "#3a414b", text: "#d7dbe2", muted: "#8b93a1", tab: "#1a1f26" };
+  for (const [name, value] of Object.entries(colors)) document.documentElement.style.setProperty(`--dsh-ssh-ops-${name}`, value);
+}
 
 /** One xterm view bound to one host session via long-poll reads / stream push. */
 function XtermView({ api, sessionId, connectionId }) {
@@ -303,13 +337,14 @@ function XtermView({ api, sessionId, connectionId }) {
   );
 }
 
-function ConnectDialog({ api, credentials, onClose }) {
+function ConnectDialog({ api, credentials, onClose, onConnected }) {
   const [form, setForm] = useState({
     name: "",
     host: "",
     port: "22",
     username: "root",
     authKind: "password",
+    credentialId: "",
     password: "",
     privateKey: "",
     passphrase: ""
@@ -319,6 +354,7 @@ function ConnectDialog({ api, credentials, onClose }) {
   const [status, setStatus] = useState(null);
   const [keyFileName, setKeyFileName] = useState(null);
   const [profiles, setProfiles] = useState([]);
+  const [sharedCredentials, setSharedCredentials] = useState([]);
   const [selectedProfileId, setSelectedProfileId] = useState("");
   const keyFileInputRef = useRef(null);
   const [showProxyJump, setShowProxyJump] = useState(false);
@@ -326,17 +362,17 @@ function ConnectDialog({ api, credentials, onClose }) {
 
   useEffect(() => {
     let alive = true;
-    api.profileList().then((value) => {
-      if (alive) setProfiles(value.profiles);
+    Promise.all([api.profileList(), api.credentialList?.() ?? { credentials: [] }]).then(([profileResult, credentialResult]) => {
+      if (!alive) return;
+      setProfiles(profileResult.profiles);
+      setSharedCredentials(credentialResult.credentials ?? []);
     }).catch(() => {});
     return () => { alive = false; };
   }, [api]);
 
   const set = (key) => (event) => setForm((f) => ({ ...f, [key]: event.target.value }));
 
-  const addProxyJump = () => {
-    setProxyJumps((hops) => [...hops, { host: "", port: 22, username: "root", authKind: "password", password: "", privateKey: "", passphrase: "" }]);
-  };
+  const addProxyJump = () => setProxyJumps((hops) => [...hops, { profileId: "" }]);
   const removeProxyJump = (index) => {
     setProxyJumps((hops) => hops.filter((_, i) => i !== index));
   };
@@ -383,8 +419,12 @@ function ConnectDialog({ api, credentials, onClose }) {
     // Temporary connections carry the key inline: reject a truncated or
     // empty-shell paste up front instead of surfacing it as a bare auth
     // failure 20 seconds later. Saved profiles keep their keys server-side.
-    if (!selectedProfileId) {
-      for (const secret of [form.privateKey, ...proxyJumps.map((hop) => hop.privateKey)]) {
+    if (proxyJumps.some((hop) => !hop.profileId)) {
+      setError("请选择每台跳板服务器");
+      return;
+    }
+    if (!selectedProfileId && !form.credentialId) {
+      for (const secret of [form.privateKey]) {
         const problem = privateKeyProblem(secret);
         if (problem) {
           setError(problem);
@@ -398,28 +438,24 @@ function ConnectDialog({ api, credentials, onClose }) {
     setStatus("正在连接服务器，最多需要 20 秒…");
     try {
       const connection = selectedProfileId
-        ? await api.profileConnect({ profileId: selectedProfileId, readyTimeout: 15000, retries: 0 })
+        ? await api.profileConnect({ profileId: selectedProfileId, readyTimeout: 15000, retries: 0, reuseExisting: proxyJumps.length === 0, ...(proxyJumps.length > 0 ? { proxyJumpProfileIds: proxyJumps.map((hop) => hop.profileId) } : {}) })
         : await api.connect({
             host: form.host.trim(),
             port: Number(form.port) || 22,
             username: form.username.trim(),
-            auth: form.authKind === "password"
-              ? { kind: "password", password: form.password }
-              : { kind: "key", privateKey: form.privateKey, ...(form.passphrase ? { passphrase: form.passphrase } : {}) },
+            ...(form.credentialId
+              ? { credentialId: form.credentialId }
+              : { auth: form.authKind === "password"
+                ? { kind: "password", password: form.password }
+                : { kind: "key", privateKey: form.privateKey, ...(form.passphrase ? { passphrase: form.passphrase } : {}) } }),
             name: form.name.trim() || undefined,
-            ...(proxyJumps.length > 0 ? [{ proxyJump: proxyJumps.map((hop) => ({
-              host: hop.host.trim(),
-              port: Number(hop.port) || 22,
-              username: hop.username.trim(),
-              auth: hop.authKind === "password"
-                ? { kind: "password", password: hop.password }
-                : { kind: "key", privateKey: hop.privateKey, ...(hop.passphrase ? { passphrase: hop.passphrase } : {}) }
-            })) }] : [])
+            ...(proxyJumps.length > 0 ? { proxyJumpProfileIds: proxyJumps.map((hop) => hop.profileId) } : {})
           });
       // The service returns a live connection, but it is not useful to the
       // panel until it becomes the active record.  Without this, a successful
       // connect looked exactly like "No connections" to the user.
       sshUiSetActiveConnection(connection.connectionId);
+      onConnected?.(connection.connectionId);
       await refreshConnections(api, { adopt: false });
       // The panel is a terminal, not merely a connection list: open the PTY
       // immediately so a successful connection is ready to use at once.
@@ -451,6 +487,10 @@ function ConnectDialog({ api, credentials, onClose }) {
       setError("请填写名称、主机和用户名（名称会用于保存的资源）");
       return;
     }
+    if (proxyJumps.some((hop) => !hop.profileId)) {
+      setError("请选择每台跳板服务器");
+      return;
+    }
     if (form.authKind === "key") {
       const problem = privateKeyProblem(form.privateKey);
       if (problem) {
@@ -470,7 +510,8 @@ function ConnectDialog({ api, credentials, onClose }) {
         username: form.username.trim(),
         authKind: form.authKind,
         hostKeyMode: "accept-new",
-        groupId: null
+        groupId: null,
+        proxyJump: proxyJumps.map((hop) => ({ profileId: hop.profileId }))
       });
       const primaryRef = form.authKind === "password" ? saved.credentialRefs.password : saved.credentialRefs.privateKey;
       const secret = form.authKind === "password" ? form.password : form.privateKey;
@@ -487,6 +528,7 @@ function ConnectDialog({ api, credentials, onClose }) {
       if (!profileId) throw new Error("保存资源后未能取得 profileId");
       const connection = await api.profileConnect({ profileId, readyTimeout: 15000, retries: 0 });
       sshUiSetActiveConnection(connection.connectionId);
+      onConnected?.(connection.connectionId);
       await refreshConnections(api, { adopt: false });
       try {
         await api.openSession(connection.connectionId, 100, 30);
@@ -551,6 +593,7 @@ function ConnectDialog({ api, credentials, onClose }) {
       try {
         const connection = await api.profileConnect({ profileId, readyTimeout: 15000, retries: 0 });
         sshUiSetActiveConnection(connection.connectionId);
+        onConnected?.(connection.connectionId);
         try {
           await api.openSession(connection.connectionId, 100, 30);
         } catch {}
@@ -589,30 +632,41 @@ function ConnectDialog({ api, credentials, onClose }) {
             </label>
           </div>
         )}
-        {!selectedProfileId && <><div style={panelStyles.temporaryTitle}>临时连接（不会保存）</div><label style={panelStyles.field}>
-          <span>名称（可选）</span>
-          <input value={form.name} onChange={set("name")} placeholder="my-server" style={panelStyles.input} />
-        </label>
-        <label style={panelStyles.field}>
-          <span>主机</span>
-          <input value={form.host} onChange={set("host")} placeholder="192.168.1.100" style={panelStyles.input} />
-        </label>
-        <label style={panelStyles.field}>
-          <span>端口</span>
-          <input value={form.port} onChange={set("port")} style={panelStyles.input} />
-        </label>
-        <label style={panelStyles.field}>
-          <span>用户名</span>
-          <input value={form.username} onChange={set("username")} style={panelStyles.input} />
-        </label>
-        <label style={panelStyles.field}>
-          <span>认证方式</span>
-          <select value={form.authKind} onChange={set("authKind")} style={panelStyles.input}>
-            <option value="password">密码</option>
-            <option value="key">私钥</option>
-          </select>
-        </label>
-        {form.authKind === "password" ? (
+        {!selectedProfileId && <><div style={panelStyles.temporaryTitle}>临时连接（不会保存）</div><div style={panelStyles.formRow}>
+          <label style={panelStyles.field}>
+            <span>名称（可选）</span>
+            <input value={form.name} onChange={set("name")} placeholder="my-server" style={panelStyles.input} />
+          </label>
+          <label style={panelStyles.field}>
+            <span>主机</span>
+            <input value={form.host} onChange={set("host")} placeholder="192.168.1.100" style={panelStyles.input} />
+          </label>
+        </div><div style={panelStyles.formRow}>
+          <label style={panelStyles.field}>
+            <span>端口</span>
+            <input value={form.port} onChange={set("port")} style={panelStyles.input} />
+          </label>
+          <label style={panelStyles.field}>
+            <span>用户名</span>
+            <input value={form.username} onChange={set("username")} style={panelStyles.input} />
+          </label>
+        </div><div style={panelStyles.formRow}>
+          <label style={panelStyles.field}>
+            <span>认证方式</span>
+            <select value={form.authKind} onChange={(event) => setForm((current) => ({ ...current, authKind: event.target.value, credentialId: "" }))} style={panelStyles.input}>
+              <option value="password">密码</option>
+              <option value="key">私钥</option>
+            </select>
+          </label>
+          <label style={panelStyles.field}>
+            <span>复用共享凭据（可选）</span>
+            <select value={form.credentialId} onChange={set("credentialId")} style={panelStyles.input}>
+              <option value="">不复用，临时输入{form.authKind === "password" ? "密码" : "私钥"}</option>
+              {sharedCredentials.filter((credential) => credential.authKind === form.authKind && credential.credentialConfigured).map((credential) => <option key={credential.credentialId} value={credential.credentialId}>{credential.name}</option>)}
+            </select>
+          </label>
+        </div>
+        {!form.credentialId && (form.authKind === "password" ? (
           <label style={panelStyles.field}>
             <span>密码</span>
             <input type="password" value={form.password} onChange={set("password")} style={panelStyles.input} />
@@ -641,27 +695,20 @@ function ConnectDialog({ api, credentials, onClose }) {
               <input type="password" value={form.passphrase} onChange={set("passphrase")} style={panelStyles.input} />
             </label>
           </>
-        )}</>}
-        {!selectedProfileId && (
+        ))}</>}
+        {(
           <div style={panelStyles.proxyJumpSection}>
             <button type="button" onClick={() => setShowProxyJump(!showProxyJump)} style={panelStyles.proxyJumpToggle}>
-              {showProxyJump ? "▼" : "▶"} 跳板机（ProxyJump）
+              {showProxyJump ? "▼" : "▶"} 跳板机（ProxyJump）{selectedProfileId ? " · 留空沿用已保存配置" : ""}
             </button>
             {showProxyJump && (
               <div style={panelStyles.proxyJumpList}>
                 {proxyJumps.map((hop, index) => (
                   <div key={index} style={panelStyles.proxyJumpRow}>
-                    <input value={hop.host} onChange={(e) => updateProxyJump(index, "host", e.target.value)} placeholder="跳板主机" style={panelStyles.input} />
-                    <input value={hop.username} onChange={(e) => updateProxyJump(index, "username", e.target.value)} placeholder="用户名" style={panelStyles.input} />
-                    <select value={hop.authKind} onChange={(e) => updateProxyJump(index, "authKind", e.target.value)} style={panelStyles.input}>
-                      <option value="password">密码</option>
-                      <option value="key">私钥</option>
+                    <select value={hop.profileId} onChange={(e) => updateProxyJump(index, "profileId", e.target.value)} style={panelStyles.input}>
+                      <option value="">选择已保存服务器</option>
+                      {profiles.map((profile) => <option key={profile.profileId} value={profile.profileId}>{profile.name} · {profile.username}@{profile.host}:{profile.port}</option>)}
                     </select>
-                    {hop.authKind === "password" ? (
-                      <input type="password" value={hop.password} onChange={(e) => updateProxyJump(index, "password", e.target.value)} placeholder="密码" style={panelStyles.input} />
-                    ) : (
-                      <input value={hop.privateKey} onChange={(e) => updateProxyJump(index, "privateKey", e.target.value)} placeholder="私钥内容" style={panelStyles.input} />
-                    )}
                     <button type="button" onClick={() => removeProxyJump(index)} style={panelStyles.btnSmall}>✕</button>
                   </div>
                 ))}
@@ -867,7 +914,7 @@ function BatchDialog({ api, task, onDone }) {
   );
 }
 
-export function SshPanel({ api, credentials, locale }) {
+export function SshPanel({ api, credentials, locale, viewId = DRAWER_VIEW_ID, viewSignal }) {
   const ui = useSshUi();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [tab, setTab] = useState("terminal");
@@ -891,6 +938,8 @@ export function SshPanel({ api, credentials, locale }) {
   // id re-opens the interruptive popup, so deferring one is not undone by the
   // next poll tick.
   const seenPendingIdsRef = useRef(null);
+  /** Whether this mount already offered to adopt the live host connections. */
+  const adoptedRef = useRef(false);
   const snippetSearchRef = useRef(null);
   const t = zhDict;
 
@@ -990,7 +1039,42 @@ export function SshPanel({ api, credentials, locale }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [pendingModalOpen]);
 
-  const active = ui.connections.find((c) => c.connectionId === ui.activeConnectionId);
+  // Split panes are sibling trees over one connection list, and the dock kit
+  // remounts this body when the layout root turns into a split. Which servers
+  // this pane shows therefore lives in the shared pane store, keyed by the
+  // host's tab id, so a split carries the pane's servers across the remount.
+  const view = useSyncExternalStore(subscribePaneSessions, () => viewSession(viewId));
+  const paneConnections = ui.connections.filter((connection) => view.connectionIds.includes(connection.connectionId));
+  const resolvedActiveConnectionId = resolvePaneActiveConnection(paneConnections, view.activeConnectionId);
+  const active = paneConnections.find((c) => c.connectionId === resolvedActiveConnectionId);
+
+  useEffect(() => {
+    reconcileViews(ui.connections);
+  }, [ui.connections]);
+
+  // Host-side sessions outlive a page reload; without adopting them into the
+  // first pane to mount they would be invisible zombies no pane can disconnect.
+  // One attempt per mount only: re-adopting on every poll would hand back a
+  // server the operator just closed, which is the one thing a close must not do.
+  useEffect(() => {
+    if (adoptedRef.current || ui.connections.length === 0) return;
+    adoptedRef.current = true;
+    adoptIntoView(viewId, ui.connections);
+  }, [ui.connections, viewId]);
+
+  // The host aborts this signal when the tab record disappears (or the plugin
+  // unloads). Release the view's references so another pane's later close is
+  // still recognized as the last one — closing a view never disconnects.
+  useEffect(() => {
+    if (viewSignal === undefined) return;
+    const onAbort = () => forgetView(viewId);
+    viewSignal.addEventListener("abort", onAbort);
+    return () => viewSignal.removeEventListener("abort", onAbort);
+  }, [viewSignal, viewId]);
+
+  const openConnectionInPane = (connectionId) => {
+    openInView(viewId, connectionId);
+  };
   const visibleCommandSnippets = searchCommandSnippets(
     matchingCommandSnippets(availableCommandSnippets(commandSnippets), active, profiles),
     snippetQuery
@@ -1064,23 +1148,21 @@ export function SshPanel({ api, credentials, locale }) {
     setCommandSnippets(next);
   };
 
-  /** Disconnect one server from its tab's × button. */
-  const closeConnection = async (connectionId) => {
-    sshUiSetBusy(true);
-    sshUiSetError(null);
+  /**
+   * Hide one server tab from this pane. The host session is disconnected only
+   * when no pane shows it any more, so a server open in both panes survives
+   * closing it in one of them.
+   */
+  const closePaneTab = async (connectionId) => {
+    if (!closeInView(viewId, connectionId)) return;
     try {
       await api.disconnect(connectionId);
-    } catch (err) {
-      sshUiSetError(`断开 SSH 连接失败：${err?.message ?? String(err)}`);
-    } finally {
-      // If the closed tab was the selected one, move selection to a surviving
-      // tab (or none) before the list refresh drops the record.
-      const remaining = ui.connections.filter((c) => c.connectionId !== connectionId);
-      if (getSshUiSnapshot().activeConnectionId === connectionId) {
-        sshUiSetActiveConnection(remaining[0]?.connectionId ?? null);
-      }
       await refreshConnections(api, { adopt: false });
-      sshUiSetBusy(false);
+    } catch (error) {
+      // The server-side session remains alive when disconnect fails, so put the
+      // local tab back rather than pretending it was released.
+      openInView(viewId, connectionId);
+      sshUiSetError(`断开服务器失败：${error?.message ?? String(error)}`);
     }
   };
 
@@ -1109,14 +1191,14 @@ export function SshPanel({ api, credentials, locale }) {
   return (
     <div style={panelStyles.workspace}>
       <div style={panelStyles.serverTabs}>
-        {ui.connections.map((conn) => {
-          const isActive = conn.connectionId === ui.activeConnectionId;
+        {paneConnections.map((conn) => {
+          const isActive = conn.connectionId === resolvedActiveConnectionId;
           return (
             <div key={conn.connectionId} style={{ ...panelStyles.serverTab, ...(isActive ? panelStyles.serverTabActive : {}) }}>
               <button
                 type="button"
                 style={panelStyles.serverTabLabel}
-                onClick={() => sshUiSetActiveConnection(conn.connectionId)}
+                onClick={() => selectInView(viewId, conn.connectionId)}
                 title={`${conn.username}@${conn.host}:${conn.port}`}
               >
                 {conn.name || `${conn.username}@${conn.host}`}
@@ -1124,26 +1206,25 @@ export function SshPanel({ api, credentials, locale }) {
               <button
                 type="button"
                 style={panelStyles.serverTabClose}
-                onClick={() => closeConnection(conn.connectionId)}
-                disabled={ui.busy}
-                title="断开此服务器"
-                aria-label={`断开 ${conn.name || conn.host}`}
+                onClick={() => closePaneTab(conn.connectionId)}
+                title="关闭此栏标签（两栏都关闭后断开服务器）"
+                aria-label={`关闭此栏的 ${conn.name || conn.host} 标签`}
               >
                 ×
               </button>
             </div>
           );
         })}
-        {ui.connections.length === 0 && <span style={panelStyles.connEmpty}>{t.empty}</span>}
+        {paneConnections.length === 0 && <span style={panelStyles.connEmpty}>{t.empty}</span>}
         <button
           type="button"
           className="dsh-ssh-ops-add-btn"
-          style={ui.connections.length === 0 ? panelStyles.serverTabAddLabeled : panelStyles.serverTabAdd}
+          style={paneConnections.length === 0 ? panelStyles.serverTabAddLabeled : panelStyles.serverTabAdd}
           onClick={() => setDialogOpen(true)}
           title={t.connect}
           aria-label="连接新服务器"
         >
-          {ui.connections.length === 0 ? `＋ ${t.connect}` : "＋"}
+          {paneConnections.length === 0 ? `＋ ${t.connect}` : "＋"}
         </button>
       </div>
 
@@ -1206,10 +1287,10 @@ export function SshPanel({ api, credentials, locale }) {
                 />
               </div>
             )}
-            {ui.connections.length > 0 ? (
-              ui.connections.map((conn) => {
+            {paneConnections.length > 0 ? (
+              paneConnections.map((conn) => {
                 const sessionId = conn.sessions?.[0] ?? null;
-                const isActive = conn.connectionId === ui.activeConnectionId;
+                const isActive = conn.connectionId === resolvedActiveConnectionId;
                 return (
                   <div
                     key={conn.connectionId}
@@ -1328,7 +1409,7 @@ export function SshPanel({ api, credentials, locale }) {
         </div>
       )}
 
-      {dialogOpen && <ConnectDialog api={api} credentials={credentials} onClose={() => setDialogOpen(false)} />}
+      {dialogOpen && <ConnectDialog api={api} credentials={credentials} onConnected={openConnectionInPane} onClose={() => setDialogOpen(false)} />}
 
       {batchTask && <BatchDialog api={api} task={batchTask} onDone={() => setBatchTask(null)} />}
     </div>
@@ -1374,14 +1455,14 @@ const panelStyles = {
     display: "flex",
     flexDirection: "column",
     overflow: "hidden",
-    background: "#101418",
+    background: "var(--dsh-ssh-ops-bg, #101418)",
     fontFamily: "var(--dsw-font-family, system-ui, sans-serif)",
-    color: "#d7dbe2"
+    color: "var(--dsh-ssh-ops-text, #d7dbe2)"
   },
   btnSmall: {
     background: "transparent",
-    border: "1px solid #3a414b",
-    color: "#d7dbe2",
+    border: "1px solid var(--dsh-ssh-ops-border, #3a414b)",
+    color: "var(--dsh-ssh-ops-text, #d7dbe2)",
     borderRadius: 6,
     width: 26,
     height: 26,
@@ -1402,7 +1483,7 @@ const panelStyles = {
     display: "flex",
     gap: 2,
     padding: "6px 8px 0",
-    borderBottom: "1px solid #1f242c",
+    borderBottom: "1px solid var(--dsh-ssh-ops-border, #1f242c)",
     flex: "none",
     alignItems: "center",
     flexWrap: "wrap",
@@ -1413,18 +1494,18 @@ const panelStyles = {
     display: "flex",
     alignItems: "center",
     gap: 2,
-    border: "1px solid #3a414b",
+    border: "1px solid var(--dsh-ssh-ops-border, #3a414b)",
     borderBottom: "none",
     borderRadius: "6px 6px 0 0",
-    background: "#1a1f26",
-    color: "#8b93a1",
+    background: "var(--dsh-ssh-ops-tab, #1a1f26)",
+    color: "var(--dsh-ssh-ops-muted, #8b93a1)",
     overflow: "hidden",
     flex: "none",
     maxWidth: 190
   },
   serverTabActive: {
-    background: "#101418",
-    color: "#d7dbe2",
+    background: "var(--dsh-ssh-ops-bg, #101418)",
+    color: "var(--dsh-ssh-ops-text, #d7dbe2)",
     borderBottom: "2px solid #2d6cdf"
   },
   serverTabLabel: {
@@ -1495,16 +1576,16 @@ const panelStyles = {
   tabPane: { flex: 1, minHeight: 0, display: "flex", flexDirection: "column" },
   terminalPaneWrap: { flex: 1, minHeight: 0, display: "flex", flexDirection: "column" },
   tabs: {
-    display: "flex", gap: 4, padding: "0 8px", borderBottom: "1px solid #1f242c",
+    display: "flex", gap: 4, padding: "0 8px", borderBottom: "1px solid var(--dsh-ssh-ops-border, #1f242c)",
     flex: "none", alignItems: "center"
   },
   tab: {
-    background: "transparent", border: "none", color: "#8b93a1",
+    background: "transparent", border: "none", color: "var(--dsh-ssh-ops-muted, #8b93a1)",
     padding: "6px 12px", fontSize: 12, cursor: "pointer",
     borderBottom: "2px solid transparent"
   },
-  tabActive: { color: "#d7dbe2", borderBottomColor: "#2d6cdf" },
-  emptyState: { margin: "auto", fontSize: 12, color: "#8b93a1", textAlign: "center" },
+  tabActive: { color: "var(--dsh-ssh-ops-text, #d7dbe2)", borderBottomColor: "#2d6cdf" },
+  emptyState: { margin: "auto", fontSize: 12, color: "var(--dsh-ssh-ops-muted, #8b93a1)", textAlign: "center" },
   xtermWrap: { flex: 1, minWidth: 0, overflow: "hidden" },
   dialogBackdrop: {
     position: "fixed",
@@ -1518,8 +1599,8 @@ const panelStyles = {
   dialog: {
     width: 360,
     maxWidth: "90vw",
-    background: "#181c22",
-    border: "1px solid #2a303a",
+    background: "var(--dsh-ssh-ops-surface, #181c22)",
+    border: "1px solid var(--dsh-ssh-ops-border, #2a303a)",
     borderRadius: 12,
     padding: 16,
     display: "flex",
@@ -1528,13 +1609,14 @@ const panelStyles = {
     boxShadow: "0 12px 40px rgba(0,0,0,.5)"
   },
   dialogTitle: { fontSize: 14, fontWeight: 600, marginBottom: 2 },
-  temporaryTitle: { fontSize: 12, color: "#9aa3af", marginTop: 2 },
-  field: { display: "flex", flexDirection: "column", gap: 4, fontSize: 12, color: "#9aa3af" },
+  temporaryTitle: { fontSize: 12, color: "var(--dsh-ssh-ops-muted, #9aa3af)", marginTop: 2 },
+  field: { display: "flex", flexDirection: "column", gap: 4, fontSize: 12, color: "var(--dsh-ssh-ops-muted, #9aa3af)", minWidth: 0 },
+  formRow: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 },
   input: {
-    background: "#101418",
-    border: "1px solid #2a303a",
+    background: "var(--dsh-ssh-ops-input, #101418)",
+    border: "1px solid var(--dsh-ssh-ops-border, #2a303a)",
     borderRadius: 6,
-    color: "#d7dbe2",
+    color: "var(--dsh-ssh-ops-text, #d7dbe2)",
     padding: "6px 8px",
     fontSize: 13,
     outline: "none"

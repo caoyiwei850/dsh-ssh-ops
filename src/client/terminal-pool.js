@@ -39,6 +39,7 @@
  *   drop: (sessionId: string) => void,
  *   get: (sessionId: string) => { term: object, fit: object, closed: boolean } | undefined,
  *   setClosed: (sessionId: string, closed: boolean) => void,
+ *   forEachTerm: (callback: (term: object) => void) => void,
  *   size: () => number,
  *   disposeAll: () => void
  * }}
@@ -151,6 +152,12 @@ export function createTerminalPool({ create, max = 8 }) {
 
     size() {
       return entries.size;
+    },
+
+    /** Visit pooled plus split-view terminals; used for visual-only updates. */
+    forEachTerm(callback) {
+      for (const entry of entries.values()) callback(entry.term);
+      for (const lease of leases.values()) callback(lease.term);
     },
 
     /** Test/plugin-teardown helper: dispose every pooled terminal. */

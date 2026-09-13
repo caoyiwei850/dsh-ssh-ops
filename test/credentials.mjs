@@ -57,14 +57,17 @@ function fakeTable(entries = []) {
   // The saved record itself must never carry secret material.
   assert.deepEqual(
     Object.keys(table.entries()[0][1]).sort(),
-    ["authKind", "createdAt", "groupId", "host", "hostKeyMode", "name", "port", "updatedAt", "username"].sort(),
+    ["authKind", "createdAt", "credentialId", "groupId", "host", "hostKeyMode", "name", "port", "proxyJump", "updatedAt", "username"].sort(),
     "stored record holds config only, no password/privateKey field"
   );
   const stem = profile.profileId.replaceAll("-", "").toUpperCase();
   assert.deepEqual(credentialRefs, {
     password: `DSH_SSH_OPS_${stem}_PASSWORD`,
     privateKey: `DSH_SSH_OPS_${stem}_PRIVATE_KEY`,
-    passphrase: `DSH_SSH_OPS_${stem}_PASSPHRASE`
+    passphrase: `DSH_SSH_OPS_${stem}_PASSPHRASE`,
+    proxyJumpPasswords: [],
+    proxyJumpPrivateKeys: [],
+    proxyJumpPassphrases: []
   });
   assert.equal(profile.credentialConfigured, false, "nothing configured yet");
 
@@ -129,7 +132,23 @@ function fakeTable(entries = []) {
   assert.equal(called, false, "a missing secret must never reach connectInternal");
 }
 
-// ── profileDelete: clears exactly this profile's three refs ──
+// ── temporary connect: a shared credential is resolved in the service ─────
+{
+  const service = makeService();
+  const credentials = fakeTable();
+  service.requireCredentialTable = () => credentials;
+  const saved = await service.credentialSave({ name: "shared-password", authKind: "password" });
+  const credentialId = saved.value.credential.credentialId;
+  await service.ctx.credentials.set(service.storeKey(saved.value.credentialRefs.password), "shared-secret");
+  let captured = null;
+  service.connectInternal = async (request) => { captured = request; return { ok: true, value: {} }; };
+  const connected = await service.connect({ host: "10.0.0.8", username: "root", credentialId });
+  assert.equal(connected.ok, true);
+  assert.deepEqual(captured.auth, { kind: "password", password: "shared-secret" });
+  assert.equal(captured.credentialId, credentialId, "only the credential id crosses the client RPC boundary");
+}
+
+// ── profileDelete: clears this profile's own and reserved jump-password refs ──
 {
   const service = makeService();
   const table = fakeTable();
@@ -144,7 +163,7 @@ function fakeTable(entries = []) {
   assert.equal(deleted.ok, true);
   assert.equal(deleted.value.deleted, true);
   assert.equal(table.size(), 0);
-  assert.equal(service.unsetCalls.length, 3, "all three refs are unset");
+  assert.equal(service.unsetCalls.length, 27, "three primary plus eight bounded password/key/passphrase jump refs are unset");
   assert.equal(service.store.size, 0);
   // Other profiles' refs are untouched by construction (names derive from id).
   assert.ok(service.unsetCalls.every((ref) => ref.includes(saved.value.profile.profileId.replaceAll("-", "").toUpperCase())));

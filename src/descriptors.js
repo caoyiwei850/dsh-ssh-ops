@@ -39,6 +39,9 @@ function def(method, requestSchema, requestType, resultSchema, resultType, optio
 export const DESCRIPTORS = [
   def("list", S.listRequestSchema, "SshListRequest", S.listResultSchema, "SshListResult"),
   def("connect", S.connectRequestSchema, "SshConnectRequest", S.connectResultSchema, "SshConnectResult"),
+  def("credentialList", S.credentialListRequestSchema, "SshCredentialListRequest", S.credentialListResultSchema, "SshCredentialListResult"),
+  def("credentialSave", S.credentialSaveRequestSchema, "SshCredentialSaveRequest", S.credentialSaveResultSchema, "SshCredentialSaveResult"),
+  def("credentialDelete", S.credentialDeleteRequestSchema, "SshCredentialDeleteRequest", S.credentialDeleteResultSchema, "SshCredentialDeleteResult"),
   def("profileList", S.profileListRequestSchema, "SshProfileListRequest", S.profileListResultSchema, "SshProfileListResult"),
   def("profileSave", S.profileSaveRequestSchema, "SshProfileSaveRequest", S.profileSaveResultSchema, "SshProfileSaveResult"),
   def("profileDelete", S.profileDeleteRequestSchema, "SshProfileDeleteRequest", S.profileDeleteResultSchema, "SshProfileDeleteResult"),

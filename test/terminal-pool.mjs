@@ -125,4 +125,17 @@ function makeFactory(log) {
   assert.equal(second.consume("oldnew", 9, 15), "new", "partial overlap uses offsets");
   pool.disposeAll();
 }
+
+// Visual updates reach warm and split-view terminals without recreating them.
+{
+  const pool = createTerminalPool({ create: makeFactory([]), max: 8 });
+  const ownerA = {};
+  const ownerB = {};
+  const pooled = pool.acquire("s1", ownerA).term;
+  const split = pool.acquire("s1", ownerB).term;
+  const seen = [];
+  pool.forEachTerm((term) => seen.push(term.id));
+  assert.deepEqual(seen.sort(), [pooled.id, split.id].sort());
+  pool.disposeAll();
+}
 console.log("terminal pool: ownership, keepalive, eviction, offset replay: passed");

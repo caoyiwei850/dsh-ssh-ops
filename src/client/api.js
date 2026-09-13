@@ -73,6 +73,18 @@ export class SshApi {
     return this.call("connect", input);
   }
 
+  credentialList() {
+    return this.call("credentialList", {});
+  }
+
+  credentialSave(input) {
+    return this.call("credentialSave", input);
+  }
+
+  credentialDelete(input) {
+    return this.call("credentialDelete", typeof input === "string" ? { credentialId: input } : input);
+  }
+
   profileList() {
     return this.call("profileList", {});
   }
