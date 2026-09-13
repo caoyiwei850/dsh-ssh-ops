@@ -214,7 +214,7 @@ function XtermView({ api, sessionId, connectionId }) {
     const inputSubscription = term.onData(onData);
 
     const controller = new AbortController();
-    const NO_SESSION_NOTICE = `\r\n\x1b[31m[终端会话已失效：DSH 服务已重启或该连接已关闭。请到 设置 → 插件 → SSH 资源 重新连接]\x1b[0m\r\n`;
+    const NO_SESSION_NOTICE = `\r\n\x1b[31m[终端会话已失效：DSH 服务已重启或该连接已关闭。请到 设置 → SSH 资源 重新连接]\x1b[0m\r\n`;
     const EXIT_NOTICE = `\r\n\x1b[90m[session exited]\x1b[0m\r\n`;
     const markClosed = () => {
       // The closed flag belongs to the session, not this mount: a remount
@@ -1383,7 +1383,12 @@ export function SshPanel({ api, credentials, locale, viewId = DRAWER_VIEW_ID, vi
           <>
             <TabErrorBoundary key="files">
               <div style={{ ...panelStyles.tabPane, display: tab === "files" ? "flex" : "none" }}>
-                <SshFiles api={api} connectionId={active.connectionId} onCd={cdFromFiles} />
+                <SshFiles
+                  api={api}
+                  connectionId={active.connectionId}
+                  onCd={cdFromFiles}
+                  initialPath={ui.projectTarget?.connectionId === active.connectionId ? ui.projectTarget.path : "/"}
+                />
               </div>
             </TabErrorBoundary>
             <TabErrorBoundary key="tunnels">

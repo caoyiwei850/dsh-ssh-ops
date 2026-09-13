@@ -1,10 +1,10 @@
 /**
- * Durable SSH resource management for Settings → Plugins.  Server coordinates
+ * Durable SSH resource management for its first-class Settings section. Server coordinates
  * live in the host storage domain; secrets only cross the web boundary through
  * DSH's credentials.set/unset API and are never put in React state after save.
  */
 import * as React from "react";
-import { sshUiRequestSurface, sshUiSetConnections, sshUiSetError } from "./store.js";
+import { sshUiRequestSurface, sshUiSetConnections, sshUiSetError, sshUiSetProjectTarget } from "./store.js";
 import { requestPaneOpen } from "./pane-selection.js";
 import { privateKeyProblem } from "./pemkey.js";
 
@@ -28,6 +28,7 @@ function emptyForm() {
     hostKeyMode: "accept-new",
     groupId: "",
     credentialId: "",
+    defaultProjectPath: "",
     proxyJump: [],
     secret: "",
     passphrase: "",
@@ -48,6 +49,7 @@ function profileToForm(profile) {
     hostKeyMode: profile.hostKeyMode ?? "accept-new",
     groupId: profile.groupId ?? "",
     credentialId: profile.credentialId ?? "",
+    defaultProjectPath: profile.defaultProjectPath ?? "",
     proxyJump: (profile.proxyJump ?? []).map((hop) => ({ ...hop, authKind: hop.authKind ?? "credential", password: "", privateKey: "", passphrase: "" }))
   };
 }
@@ -158,6 +160,7 @@ function ResourceEditor({ initial, groups, profiles, sharedCredentials = [], cre
         hostKeyMode: form.hostKeyMode,
         groupId: form.groupId || null,
         credentialId: form.credentialId || null,
+        defaultProjectPath: form.defaultProjectPath.trim() || null,
         proxyJump: form.proxyJump.map((hop) => ({ profileId: hop.profileId }))
       });
       const primaryRef = form.authKind === "password" ? saved.credentialRefs.password : saved.credentialRefs.privateKey;
@@ -204,6 +207,9 @@ function ResourceEditor({ initial, groups, profiles, sharedCredentials = [], cre
             <option value="">未分组</option>
             {groups.map((group) => <option key={group.groupId} value={group.groupId}>{group.name}</option>)}
           </select>
+        </Field>
+        <Field label="默认项目目录">
+          <input value={form.defaultProjectPath} onChange={set("defaultProjectPath")} placeholder="例如 /srv/apps/my-service" style={styles.input} />
         </Field>
         <Field label="主机指纹校验">
           <select value={form.hostKeyMode} onChange={set("hostKeyMode")} style={styles.input}>
@@ -310,6 +316,9 @@ export function SshResources({ api, credentials }) {
   const [sharedCredentials, setSharedCredentials] = useState([]);
   const [credentialEditor, setCredentialEditor] = useState(null);
   const [groups, setGroups] = useState([]);
+  // Resource groups begin collapsed, keeping a long server list compact until
+  // the user opens the group they need. This is display-only state.
+  const [expandedGroups, setExpandedGroups] = useState(() => new Set());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [editor, setEditor] = useState(null);
@@ -367,7 +376,11 @@ export function SshResources({ api, credentials }) {
       // error instead of a minute of silent retrying; the user can also
       // cancel the pending handshake explicitly.
       const connection = await api.profileConnect({ profileId: profile.profileId, readyTimeout: 15000, retries: 0 });
-      await api.openSession(connection.connectionId, 100, 30);
+      const session = await api.openSession(connection.connectionId, 100, 30);
+      if (profile.defaultProjectPath) {
+        await api.changeDirectory(session.sessionId, profile.defaultProjectPath);
+        sshUiSetProjectTarget(connection.connectionId, profile.defaultProjectPath);
+      }
       const listed = await api.list();
       sshUiSetConnections(listed.connections);
       // This page owns no pane, so queue the connection for one to pick up and
@@ -478,12 +491,21 @@ export function SshResources({ api, credentials }) {
   const matchedHostKeys = new Set(profiles.map((p) => `${p.host}:${p.port}`));
   const unmatchedKnownHosts = knownHosts.filter((h) => !matchedHostKeys.has(`${h.host}:${h.port}`));
 
+  const toggleGroup = (key) => {
+    setExpandedGroups((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
   const renderProfiles = (items) => items.length === 0 ? null : <div style={styles.list}>{items.map((profile) => (
     <div key={profile.profileId} style={styles.card}>
       <div style={styles.cardMain}>
         <div style={styles.cardTitle}>{profile.name}{profile.connected && <span style={styles.connected}>已连接</span>}</div>
         <div style={styles.address}>{profile.username}@{profile.host}:{profile.port}</div>
-        <div style={styles.meta}>{profile.authKind === "password" ? "密码认证" : "PEM / 私钥认证"} · {profile.credentialConfigured ? "凭据已保存" : "未保存凭据"}{profile.authKind === "key" && profile.passphraseConfigured ? " · 已保存私钥口令" : ""} · 指纹校验：{HOST_KEY_MODE_LABELS[profile.hostKeyMode] ?? HOST_KEY_MODE_LABELS["accept-new"]}</div>
+        {profile.defaultProjectPath && <div style={styles.meta}>项目：{profile.defaultProjectPath}</div>}
       </div>
       <div style={styles.cardActions}>
         {(() => {
@@ -493,7 +515,7 @@ export function SshResources({ api, credentials }) {
           );
         })()}
         {profile.connected && <button type="button" onClick={() => disconnectProfile(profile)} title="断开连接" aria-label={`断开 ${profile.name}`} style={styles.actionTextButton}>断开</button>}
-        <button type="button" disabled={connecting === profile.profileId || !profile.credentialConfigured} onClick={() => connect(profile)} title={connecting === profile.profileId ? "连接中" : "连接并打开终端"} aria-label={`连接 ${profile.name}`} style={{ ...styles.actionTextButton, ...styles.actionTextPrimary }}>{connecting === profile.profileId ? "连接中" : "连接"}</button>
+        <button type="button" disabled={connecting === profile.profileId || !profile.credentialConfigured} onClick={() => connect(profile)} title={connecting === profile.profileId ? "连接中" : profile.defaultProjectPath ? `进入项目 ${profile.defaultProjectPath}` : "连接并打开终端"} aria-label={profile.defaultProjectPath ? `进入 ${profile.name} 的项目目录` : `连接 ${profile.name}`} style={{ ...styles.actionTextButton, ...styles.actionTextPrimary }}>{connecting === profile.profileId ? "连接中" : profile.defaultProjectPath ? "进入项目" : "连接"}</button>
         {connecting === profile.profileId && <button type="button" onClick={() => cancelConnect(profile)} title="取消连接" aria-label={`取消连接 ${profile.name}`} style={styles.iconButton}><ActionIcon kind="disconnect" /></button>}
         <button type="button" onClick={() => setEditor({ mode: "edit", profile })} title="编辑服务器" aria-label={`编辑 ${profile.name}`} style={styles.iconButton}><ActionIcon kind="edit" /></button>
         <button type="button" onClick={() => remove(profile)} title="删除服务器" aria-label={`删除 ${profile.name}`} style={{ ...styles.iconButton, ...styles.iconDanger }}><ActionIcon kind="delete" /></button>
@@ -516,7 +538,26 @@ export function SshResources({ api, credentials }) {
         <section style={{ ...styles.groupPanel, marginBottom: 0 }}><div style={styles.groupTitle}>共享 SSH 凭据</div><button type="button" onClick={() => setCredentialEditor({})} style={styles.secondary}>新增共享凭据</button>{sharedCredentials.length > 0 && <div style={styles.credentialList}>{sharedCredentials.map((item) => <div key={item.credentialId} style={styles.credentialRow}><span title={item.name} style={styles.credentialLabel}>{item.name} · {item.authKind === "key" ? "私钥" : "密码"} · {item.credentialConfigured ? "已保存" : "未配置"}</span><span style={styles.credentialActions}><button type="button" onClick={() => setCredentialEditor(item)} title={`编辑共享凭据 ${item.name}`} aria-label={`编辑共享凭据 ${item.name}`} style={styles.iconButton}>✎</button><button type="button" onClick={async () => { if (!window.confirm(`删除共享凭据“${item.name}”？仍被服务器或跳板机引用时不会删除。`)) return; try { await api.credentialDelete(item.credentialId); await refresh({ showLoading: false }); } catch (cause) { setError(cause?.message ?? String(cause)); } }} title={`删除共享凭据 ${item.name}`} aria-label={`删除共享凭据 ${item.name}`} style={{ ...styles.iconButton, color: "#f07171" }}>×</button></span></div>)}</div>}</section>
       </div>
       {error && <div style={styles.error} role="alert">{error}</div>}
-      {loading ? <div style={styles.empty}>加载 SSH 资源中…</div> : profiles.length === 0 ? <div style={styles.empty}>还没有保存的服务器。新增后可一键连接并打开右侧终端。</div> : <div style={styles.groupedList}>{groups.map((group) => <section key={group.groupId}><h3 style={styles.groupHeading}>{group.name}</h3>{renderProfiles(groupedProfiles.get(group.groupId) ?? []) || <div style={styles.groupEmpty}>这个分组还没有服务器。</div>}</section>)}{ungrouped.length > 0 && <section><h3 style={styles.groupHeading}>未分组</h3>{renderProfiles(ungrouped)}</section>}</div>}
+      {loading ? <div style={styles.empty}>加载 SSH 资源中…</div> : profiles.length === 0 ? <div style={styles.empty}>还没有保存的服务器。新增后可一键连接并打开右侧终端。</div> : <div style={styles.groupedList}>{groups.map((group) => {
+        const key = `group:${group.groupId}`;
+        const collapsed = !expandedGroups.has(key);
+        const items = groupedProfiles.get(group.groupId) ?? [];
+        return <section key={group.groupId}>
+          <button type="button" onClick={() => toggleGroup(key)} aria-expanded={!collapsed} style={styles.groupHeadingButton}>
+            <span style={styles.groupHeading}>{collapsed ? "▸" : "▾"} {group.name} <span style={styles.groupCount}>（{items.length}）</span></span>
+          </button>
+          {!collapsed && (renderProfiles(items) || <div style={styles.groupEmpty}>这个分组还没有服务器。</div>)}
+        </section>;
+      })}{ungrouped.length > 0 && (() => {
+        const key = "ungrouped";
+        const collapsed = !expandedGroups.has(key);
+        return <section>
+          <button type="button" onClick={() => toggleGroup(key)} aria-expanded={!collapsed} style={styles.groupHeadingButton}>
+            <span style={styles.groupHeading}>{collapsed ? "▸" : "▾"} 未分组 <span style={styles.groupCount}>（{ungrouped.length}）</span></span>
+          </button>
+          {!collapsed && renderProfiles(ungrouped)}
+        </section>;
+      })()}</div>}
       {unmatchedKnownHosts.length > 0 && (
         <section style={styles.groupPanel}>
           <div style={styles.groupTitle}>已信任主机（未保存为资源）</div>
@@ -555,12 +596,12 @@ const styles = {
   heading: { margin: 0, fontSize: 18 }, description: { margin: "6px 0 0", fontSize: 13, color: "inherit", opacity: 0.76, lineHeight: 1.5 },
   list: { display: "grid", gap: 10 }, card: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, padding: 14, border: "1px solid var(--dsw-alias-border-l2, #d8dce3)", borderRadius: 10 },
   cardMain: { minWidth: 0 }, cardTitle: { fontWeight: 650, fontSize: 14, display: "flex", gap: 8, alignItems: "center" }, address: { marginTop: 4, fontSize: 13, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }, meta: { marginTop: 5, fontSize: 12, color: "inherit", opacity: 0.76 },
-  connected: { fontSize: 11, color: "#32c56c", background: "rgba(50,197,108,.16)", padding: "2px 6px", borderRadius: 99 }, cardActions: { display: "flex", flexWrap: "wrap", justifyContent: "flex-end", gap: 7 },
+  connected: { fontSize: 11, color: "#32c56c", background: "rgba(50,197,108,.16)", padding: "2px 6px", borderRadius: 99 }, cardActions: { display: "flex", flexWrap: "nowrap", flexShrink: 0, justifyContent: "flex-end", gap: 7 },
   // Keep the label paired with DSH's primary fill.  In the default dark theme
   // the fill is light, so a hard-coded white label becomes invisible.
   primary: { border: 0, borderRadius: 7, padding: "7px 11px", background: "var(--dsw-alias-button-primary-fill, #2d6cdf)", color: "var(--dsw-alias-label-primary-foreground, #fff)", cursor: "pointer", fontSize: 13, whiteSpace: "nowrap" }, secondary: { border: "1px solid rgba(127,127,127,.55)", borderRadius: 7, padding: "6px 10px", background: "transparent", color: "inherit", cursor: "pointer", fontSize: 13, whiteSpace: "nowrap" }, iconButton: { border: "1px solid rgba(127,127,127,.48)", borderRadius: 8, width: 30, height: 30, padding: 0, display: "inline-flex", alignItems: "center", justifyContent: "center", background: "rgba(127,127,127,.05)", color: "inherit", cursor: "pointer", lineHeight: 1 }, iconPrimary: { borderColor: "rgba(55,115,230,.45)", background: "rgba(55,115,230,.12)", color: "#3b75d9" }, iconDanger: { borderColor: "rgba(240,113,113,.38)", background: "rgba(240,113,113,.08)", color: "#e06060" }, actionTextButton: { border: "1px solid rgba(127,127,127,.48)", borderRadius: 7, padding: "5px 8px", background: "rgba(127,127,127,.05)", color: "inherit", cursor: "pointer", fontSize: 12, whiteSpace: "nowrap" }, actionTextPrimary: { borderColor: "rgba(55,115,230,.45)", background: "rgba(55,115,230,.12)", color: "#3b75d9" }, danger: { border: 0, borderRadius: 7, padding: "6px 8px", background: "transparent", color: "#f07171", cursor: "pointer", fontSize: 13 },
   empty: { padding: 28, border: "1px dashed rgba(127,127,127,.55)", borderRadius: 10, color: "inherit", opacity: 0.76, textAlign: "center" },
-  groupPanel: { border: "1px solid rgba(127,127,127,.55)", borderRadius: 10, padding: 12, marginBottom: 16, minWidth: 0 }, setupGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: 12, marginBottom: 16 }, groupTitle: { fontSize: 13, fontWeight: 650, marginBottom: 8 }, groupCreate: { display: "flex", gap: 8, flexWrap: "nowrap", alignItems: "center" }, groupChips: { display: "flex", gap: 7, flexWrap: "wrap", marginTop: 10 }, groupChip: { display: "inline-flex", alignItems: "center", gap: 5, padding: "4px 7px", borderRadius: 99, background: "rgba(127,127,127,.16)", fontSize: 12 }, chipDelete: { border: 0, background: "transparent", color: "#f07171", cursor: "pointer", padding: 0, fontSize: 15, lineHeight: 1 }, credentialList: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 6, maxHeight: 112, overflowY: "auto", marginTop: 8, paddingRight: 2 }, credentialRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 5, minWidth: 0 }, credentialActions: { display: "flex", alignItems: "center", gap: 2 }, credentialLabel: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12 }, groupedList: { display: "grid", gap: 18 }, groupHeading: { margin: "0 0 8px", fontSize: 14 }, groupEmpty: { padding: 12, color: "inherit", opacity: 0.76, border: "1px dashed rgba(127,127,127,.55)", borderRadius: 8, fontSize: 12 },
+  groupPanel: { border: "1px solid rgba(127,127,127,.55)", borderRadius: 10, padding: 12, marginBottom: 16, minWidth: 0 }, setupGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: 12, marginBottom: 16 }, groupTitle: { fontSize: 13, fontWeight: 650, marginBottom: 8 }, groupCreate: { display: "flex", gap: 8, flexWrap: "nowrap", alignItems: "center" }, groupChips: { display: "flex", gap: 7, flexWrap: "wrap", marginTop: 10 }, groupChip: { display: "inline-flex", alignItems: "center", gap: 5, padding: "4px 7px", borderRadius: 99, background: "rgba(127,127,127,.16)", fontSize: 12 }, chipDelete: { border: 0, background: "transparent", color: "#f07171", cursor: "pointer", padding: 0, fontSize: 15, lineHeight: 1 }, credentialList: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 6, maxHeight: 112, overflowY: "auto", marginTop: 8, paddingRight: 2 }, credentialRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 5, minWidth: 0 }, credentialActions: { display: "flex", alignItems: "center", gap: 2 }, credentialLabel: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12 }, groupedList: { display: "grid", gap: 18 }, groupHeadingButton: { border: 0, padding: 0, margin: "0 0 8px", background: "transparent", color: "inherit", cursor: "pointer", textAlign: "left" }, groupHeading: { fontSize: 14, fontWeight: 650 }, groupCount: { fontWeight: 400, opacity: 0.72 }, groupEmpty: { padding: 12, color: "inherit", opacity: 0.76, border: "1px dashed rgba(127,127,127,.55)", borderRadius: 8, fontSize: 12 },
   snippetForm: { display: "grid", gridTemplateColumns: "minmax(100px,.8fr) minmax(180px,2fr) minmax(110px,.7fr) auto", gap: 8, marginTop: 10, alignItems: "center" }, snippetList: { display: "grid", gap: 7, marginTop: 10 }, snippetItem: { display: "flex", justifyContent: "space-between", gap: 12, padding: "8px 10px", border: "1px solid rgba(127,127,127,.4)", borderRadius: 7, fontSize: 12 }, snippetScope: { marginLeft: 7, opacity: .7 }, snippetCommand: { marginTop: 4, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", opacity: .82, overflowWrap: "anywhere" }, fingerprint: { marginTop: 8, maxWidth: 560, overflowWrap: "anywhere", fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", fontSize: 12, lineHeight: 1.45, opacity: 0.86 }, backdrop: { position: "fixed", inset: 0, zIndex: 2000, background: "rgba(0,0,0,.42)", display: "flex", alignItems: "center", justifyContent: "center" }, dialog: { width: 440, maxWidth: "calc(100vw - 32px)", maxHeight: "calc(100vh - 32px)", overflow: "auto", background: "var(--dsw-alias-bg-overlay, #fff)", color: "inherit", borderRadius: 12, padding: 18, boxShadow: "0 20px 60px rgba(0,0,0,.28)", display: "flex", flexDirection: "column", gap: 11 }, dialogTitle: { fontSize: 16, fontWeight: 650 },
   field: { display: "flex", flexDirection: "column", gap: 5, fontSize: 13 }, hint: { color: "inherit", opacity: 0.76, fontWeight: 400 }, input: { width: "100%", boxSizing: "border-box", border: "1px solid rgba(127,127,127,.55)", borderRadius: 7, padding: "7px 8px", background: "transparent", color: "inherit", fontSize: 13 }, twoColumns: { display: "grid", gridTemplateColumns: "110px 1fr", gap: 10 }, credentialColumns: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10 }, jumpRow: { display: "grid", gridTemplateColumns: "1fr auto", gap: 5, alignItems: "center", marginBottom: 6 }, check: { display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#f07171" }, actions: { display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 }, error: { padding: "8px 10px", borderRadius: 7, background: "rgba(240,113,113,.15)", color: "#ff8a8a", fontSize: 13 }
 };

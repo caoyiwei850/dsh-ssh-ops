@@ -108,6 +108,9 @@ const profileRecordSchema = z.object({
   // Optional shared credential and jump chain.  Both are optional so the
   // domain can read every pre-0.3.3 resource without migration.
   credentialId: z.string().uuid().nullable().optional(),
+  // Optional so already-saved resources load without a storage migration.
+  // This is metadata only; it never contains credentials or shell syntax.
+  defaultProjectPath: z.string().optional(),
   proxyJump: z.array(z.union([z.object({ profileId: z.string().uuid() }), z.object({
     host: z.string(), port: z.number().int(), username: z.string(),
     authKind: z.enum(["credential", "password", "key"]).optional(), credentialId: z.string().uuid().optional(), hostKeyMode: z.string().optional()
@@ -999,6 +1002,7 @@ export default class SshOpsService extends TypertRemoteService {
       credentialId: shared ? record.credentialId : null,
       credentialName: shared?.name ?? null,
       proxyJump: record.proxyJump ?? [],
+      defaultProjectPath: record.defaultProjectPath ?? null,
       groupId: group === undefined ? null : record.groupId,
       groupName: group?.name ?? null,
       credentialConfigured: primary.configured,
@@ -1038,6 +1042,9 @@ export default class SshOpsService extends TypertRemoteService {
         if (credential.authKind !== request.authKind) return { ok: false, error: fail("credential-auth-mismatch", "所选共享凭据的认证方式与服务器不一致") };
       }
       const proxyJump = request.proxyJump ?? previous?.proxyJump ?? [];
+      const defaultProjectPath = Object.hasOwn(request, "defaultProjectPath")
+        ? request.defaultProjectPath
+        : (previous?.defaultProjectPath ?? null);
       const seenJumpProfiles = new Set();
       for (const hop of proxyJump) {
         if (hop.profileId) {
@@ -1060,6 +1067,7 @@ export default class SshOpsService extends TypertRemoteService {
         // server's legacy dedicated credential slot; only an omitted field
         // preserves old records for backwards-compatible callers.
         credentialId: Object.hasOwn(request, "credentialId") ? request.credentialId : (previous?.credentialId ?? null),
+        defaultProjectPath,
         proxyJump,
         groupId,
         createdAt: previous?.createdAt ?? now,

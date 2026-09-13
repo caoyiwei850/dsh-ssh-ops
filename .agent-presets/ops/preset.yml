@@ -1,2 +1,0 @@
-name: 运维模式
-description: SSH-only 运维助手：无本地 shell，云服务器操作经 dsh-ssh-ops 的 SSH/SFTP/DB 工具完成，保留本地文件编辑，附带 test-op 测试技能。

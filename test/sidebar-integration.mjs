@@ -24,6 +24,13 @@ assert.match(entry, /kind: SSH_TAB_KIND/, "the type declares its kind");
 assert.doesNotMatch(entry, /patterns:\s*\[/, "a page type opened by openTab declares no address patterns");
 assert.match(entry, /openTab\(SSH_TAB_KIND\)/, "the SSH button opens/focuses the tab by kind");
 
+// ── settings navigation: resources are not hidden behind Plugins ──
+assert.match(entry, /slots\.inject\("settings\.section"/, "SSH resources register as a first-class Settings section");
+assert.match(entry, /name: "settings\.section"/, "the registration targets the official Settings-section slot");
+assert.match(entry, /id: "ssh-ops-resources"/, "the Settings section keeps a stable identity");
+assert.match(entry, /icon: "terminal"/, "the Settings menu receives the terminal icon");
+assert.doesNotMatch(entry, /settings\.plugins\.tab/, "resources no longer appear as a Plugins sub-tab");
+
 // ── late Sidebar services and old-DSH drawer fallback ──
 // The right-Sidebar's services may be provided after an extension bundle is
 // evaluated.  Waiting on them prevents a one-time `ctx.get()` snapshot from

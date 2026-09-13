@@ -118,6 +118,14 @@ const profileIdSchema = z.string().uuid();
 const groupIdSchema = z.string().uuid();
 const credentialIdSchema = z.string().uuid();
 export const profileAuthKindSchema = z.enum(["password", "key"]);
+// A saved project directory is deliberately an absolute POSIX path.  It is
+// passed to SFTP and to the guarded `changeDirectory` RPC, so accepting shell
+// syntax, relative paths, or control characters here would create two subtly
+// different meanings for one saved value.
+const projectDirectorySchema = z.string().min(1).max(1024).refine(
+  (path) => path.startsWith("/") && !/[\x00-\x1f\x7f]/.test(path),
+  "项目目录必须是绝对路径，且不能包含控制字符"
+);
 const legacySavedJumpSchema = z.object({
   host: z.string().min(1).max(255), port: z.number().int().min(1).max(65535).default(22),
   username: z.string().min(1).max(128), authKind: z.enum(["credential", "password", "key"]).default("credential"), credentialId: credentialIdSchema.optional(),
@@ -138,7 +146,8 @@ export const profileSaveRequestSchema = profileMetadataSchema.extend({
   profileId: profileIdSchema.optional(),
   groupId: groupIdSchema.nullable().optional(),
   credentialId: credentialIdSchema.nullable().optional(),
-  proxyJump: z.array(savedJumpSchema).max(8).optional()
+  proxyJump: z.array(savedJumpSchema).max(8).optional(),
+  defaultProjectPath: projectDirectorySchema.nullable().optional()
 });
 
 export const profileCredentialRefsSchema = z.object({
@@ -159,7 +168,8 @@ export const profileInfoSchema = profileMetadataSchema.extend({
   connected: z.boolean()
   ,credentialId: credentialIdSchema.nullable(),
   credentialName: z.string().nullable(),
-  proxyJump: z.array(savedJumpSchema)
+  proxyJump: z.array(savedJumpSchema),
+  defaultProjectPath: projectDirectorySchema.nullable()
 });
 
 const credentialInfoSchema = z.object({ credentialId: credentialIdSchema, name: z.string(), authKind: profileAuthKindSchema, credentialConfigured: z.boolean(), passphraseConfigured: z.boolean() });

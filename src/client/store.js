@@ -21,6 +21,9 @@ let snapshot = {
   open: initialOpen(),
   connections: [],
   activeConnectionId: null,
+  // A settings-page "进入项目" request gives the first mounted SSH pane a
+  // starting SFTP directory matching the guarded terminal cd.
+  projectTarget: null,
   busy: false,
   error: null
 };
@@ -80,6 +83,10 @@ export function sshUiSetConnections(connections) {
 /** Select the active connection (the tab whose terminal/files/tunnels show). */
 export function sshUiSetActiveConnection(connectionId) {
   set({ activeConnectionId: connectionId });
+}
+
+export function sshUiSetProjectTarget(connectionId, path) {
+  set({ projectTarget: connectionId && path ? { connectionId, path } : null });
 }
 
 export function sshUiSetBusy(busy) {

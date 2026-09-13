@@ -17,7 +17,7 @@ function dirnameOf(path) {
   return path.slice(0, idx);
 }
 
-export function SshFiles({ api, connectionId, onCd }) {
+export function SshFiles({ api, connectionId, onCd, initialPath = "/" }) {
   const [cwd, setCwd] = useState("/");
   const [entries, setEntries] = useState(null);
   const [error, setError] = useState(null);
@@ -74,9 +74,9 @@ export function SshFiles({ api, connectionId, onCd }) {
     setScpUploadFile(null);
     setScpUploadPath("");
     setScpDownloadPath("");
-    if (connectionId) load("/");
+    if (connectionId) load(initialPath);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connectionId]);
+  }, [connectionId, initialPath]);
 
   const goUp = () => {
     if (cwd !== "/") load(dirnameOf(cwd));

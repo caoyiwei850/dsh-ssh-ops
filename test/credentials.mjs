@@ -47,17 +47,19 @@ function fakeTable(entries = []) {
   service.requireProfileTable = () => table;
 
   const saved = await service.profileSave({
-    name: "  web-1  ", host: " 10.0.0.5 ", username: "root", authKind: "password"
+    name: "  web-1  ", host: " 10.0.0.5 ", username: "root", authKind: "password", defaultProjectPath: "/srv/apps/web-1"
   });
   assert.equal(saved.ok, true);
   const { profile, credentialRefs } = saved.value;
   assert.equal(profile.name, "web-1", "name is trimmed");
   assert.equal(profile.host, "10.0.0.5");
   assert.equal(profile.port, 22, "port defaults to 22");
+  assert.equal(profile.defaultProjectPath, "/srv/apps/web-1", "project entry is returned without touching credentials");
+  assert.equal(table.entries()[0][1].defaultProjectPath, "/srv/apps/web-1", "project entry persists as ordinary profile metadata");
   // The saved record itself must never carry secret material.
   assert.deepEqual(
     Object.keys(table.entries()[0][1]).sort(),
-    ["authKind", "createdAt", "credentialId", "groupId", "host", "hostKeyMode", "name", "port", "proxyJump", "updatedAt", "username"].sort(),
+    ["authKind", "createdAt", "credentialId", "defaultProjectPath", "groupId", "host", "hostKeyMode", "name", "port", "proxyJump", "updatedAt", "username"].sort(),
     "stored record holds config only, no password/privateKey field"
   );
   const stem = profile.profileId.replaceAll("-", "").toUpperCase();

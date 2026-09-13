@@ -11,7 +11,7 @@ const stage = join(release, archiveRoot);
 rmSync(release, { recursive: true, force: true });
 mkdirSync(stage, { recursive: true });
 
-for (const entry of [".agent-presets", "assets", "lib", "src", "scripts", "test", "package.json", "package-lock.json", "cordis.patch.yml", "README.md", "LICENSE", "CHANGELOG.md"]) {
+for (const entry of ["assets", "lib", "src", "scripts", "test", "package.json", "package-lock.json", "cordis.patch.yml", "README.md", "LICENSE", "CHANGELOG.md"]) {
   const source = join(root, entry);
   if (existsSync(source)) cpSync(source, join(stage, basename(entry)), { recursive: true });
 }

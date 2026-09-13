@@ -87,15 +87,18 @@ export async function apply(ctx) {
     }
   }));
 
-  // A real settings tab owns the durable server resource inventory, in both
-  // modes. The header SSH button remains only a terminal visibility toggle.
-  own(ctx.slots.inject("settings.plugins.tab", () =>
+  // SSH resources are a first-class settings section, beside General and
+  // Models. Keeping them under Settings → Plugins made an operational
+  // inventory look like implementation detail and forced an extra tab click.
+  // The header SSH button remains only a terminal visibility toggle.
+  own(ctx.slots.inject("settings.section", () =>
     ctx.slots.register(
       {
-        name: "settings.plugins.tab",
+        name: "settings.section",
         id: "ssh-ops-resources",
-        order: 80,
+        order: 35,
         label: "SSH 资源",
+        icon: "terminal",
         locale: NS,
         inject: () => ({ api, credentials: ctx.remote?.credentials })
       },
