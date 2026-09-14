@@ -240,7 +240,8 @@ export const selectConnectionResultSchema = resultSchema(z.object({
 export const openSessionRequestSchema = z.object({
   connectionId: z.string().min(1),
   cols: z.number().int().min(2).max(500).optional(),
-  rows: z.number().int().min(1).max(200).optional()
+  rows: z.number().int().min(1).max(200).optional(),
+  openedBy: z.enum(["panel", "agent"]).optional()
 });
 
 export const sessionInfoSchema = z.object({
@@ -252,6 +253,19 @@ export const sessionInfoSchema = z.object({
 });
 
 export const openSessionResultSchema = resultSchema(sessionInfoSchema);
+
+export const terminalContextSessionSchema = z.object({
+  sessionId: z.string(), connectionId: z.string(), name: z.string().optional(), host: z.string(), port: z.number().int(),
+  openedAt: z.string(), openedBy: z.enum(["panel", "agent"]), alive: z.boolean(), historyStart: z.number().int().nonnegative(), historyEnd: z.number().int().nonnegative()
+});
+export const terminalContextListRequestSchema = z.object({});
+export const terminalContextListResultSchema = resultSchema(z.object({ sessions: z.array(terminalContextSessionSchema) }));
+export const terminalContextReadRequestSchema = z.object({
+  sessionId: z.string().min(1), after: z.number().int().nonnegative().safe().optional(), maxBytes: z.number().int().min(1024).max(98304).optional()
+});
+export const terminalContextReadResultSchema = resultSchema(z.object({
+  sessionId: z.string(), data: z.string(), historyStart: z.number().int().nonnegative(), historyEnd: z.number().int().nonnegative(), offset: z.number().int().nonnegative(), nextOffset: z.number().int().nonnegative(), wasClamped: z.boolean(), hasMore: z.boolean(), alive: z.boolean(), exit: z.union([z.object({ code: z.number(), signal: z.number().optional() }), z.null()]), redacted: z.boolean()
+}));
 
 // ── write ───────────────────────────────────────────────────────────────────
 

@@ -1364,6 +1364,8 @@ export default class SshOpsService extends TypertRemoteService {
     const session = {
       id: sessionId,
       connectionId: request.connectionId,
+      openedAt: new Date().toISOString(),
+      openedBy: request.openedBy ?? "panel",
       cols,
       rows,
       buffer: "",
@@ -1558,6 +1560,36 @@ export default class SshOpsService extends TypertRemoteService {
       const waiter = { resolve: finish, timer };
       session.waiters.push(waiter);
     });
+  }
+
+  listTerminalContexts() {
+    const sessions = [];
+    for (const session of this.sessions.values()) {
+      const connection = this.connections.get(session.connectionId);
+      if (!connection) continue;
+      const history = this.terminalContextHistory(session);
+      const item = { sessionId: session.id, connectionId: session.connectionId, host: connection.host, port: connection.port, openedAt: session.openedAt, openedBy: session.openedBy ?? "panel", alive: session.exited === null && session.stream !== null, historyStart: history.start, historyEnd: history.end };
+      if (connection.name !== undefined) item.name = connection.name;
+      sessions.push(item);
+    }
+    return { ok: true, value: { sessions } };
+  }
+
+  readTerminalContext(request) {
+    const session = this.sessions.get(request.sessionId);
+    if (!session) return { ok: false, error: fail("no-session", `session "${request.sessionId}" does not exist`) };
+    const maxBytes = request.maxBytes ?? 24 * 1024;
+    const history = this.terminalContextHistory(session);
+    const relativeAfter = request.after === undefined ? undefined : request.after - history.start;
+    const window = history.journal.readWindow(relativeAfter, maxBytes);
+    return { ok: true, value: { sessionId: session.id, ...window, historyStart: history.start, historyEnd: history.end, offset: history.start + window.offset, nextOffset: history.start + window.nextOffset, alive: session.exited === null && session.stream !== null, exit: session.exited, redacted: history.redacted } };
+  }
+
+  terminalContextHistory(session) {
+    const raw = this.terminalOutput(session).read();
+    const safe = redactForModel(raw.data);
+    const journal = createTerminalOutput(safe.text, Number.MAX_SAFE_INTEGER);
+    return { journal, start: raw.startOffset, end: raw.startOffset + safe.text.length, redacted: safe.redacted };
   }
 
   /**
@@ -3348,7 +3380,7 @@ export default class SshOpsService extends TypertRemoteService {
       return session !== void 0 && session.exited === null && session.stream !== null;
     });
     if (live) return { ok: true, connectionId: selected.connectionId };
-    const opened = await this.openSession({ connectionId: selected.connectionId, cols: 100, rows: 30 });
+    const opened = await this.openSession({ connectionId: selected.connectionId, cols: 100, rows: 30, openedBy: "agent" });
     if (!opened.ok) return opened;
     return { ok: true, connectionId: selected.connectionId };
   }

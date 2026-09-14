@@ -101,7 +101,7 @@ dsh web
 5. For databases, have the agent call `db_connect` (or create a connection yourself in the Database tab), then query/execute from the conversation.
 ### Agent tools
 
-There are 29 agent tools. Omitting `connection_id` / `db_connection_id` targets the active connection — **no need to call `ssh_list` / `db_list_connections` first**.
+There are 31 agent tools. Omitting `connection_id` / `db_connection_id` targets the active connection — **no need to call `ssh_list` / `db_list_connections` first**.
 
 #### SSH (6)
 
@@ -113,6 +113,13 @@ There are 29 agent tools. Omitting `connection_id` / `db_connection_id` targets 
 | `ssh_read` | Read buffered output from the right-side terminal on demand (never silently injected) |
 | `ssh_write` | Send interactive input to a terminal; `press_enter` (default true) appends Enter so prompts are submitted like a real keypress (use `connection_id` to target a specific server's terminal) |
 | `ssh_disconnect` | Close the current connection and its shell sessions |
+
+#### Manual terminal context (2)
+
+| Tool | Purpose |
+| --- | --- |
+| `ssh_terminal_sessions` | List low-sensitivity metadata and cursors for open terminals; never returns terminal content or credentials |
+| `ssh_terminal_context` | After per-read user approval, read a bounded, redacted history range from a selected manually operated terminal without affecting the visible terminal scrollback |
 
 #### SFTP (6)
 

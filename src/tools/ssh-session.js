@@ -7,6 +7,27 @@ import { defineTool } from "@deepseek-ai/dsh-tools";
 
 export function registerSshSessionTools(ctx, service) {
   ctx.tools.register(defineTool({
+    name: "ssh_terminal_sessions",
+    description: "List open SSH terminal sessions so you can identify a terminal the user operated manually. Returns metadata and history cursors only; never returns terminal output, saved resources, or credentials.",
+    parameters: {},
+    output: { schema: { type: "object", additionalProperties: false, properties: { sessions: { type: "array", required: true, items: { type: "object", additionalProperties: true } } } } },
+    async execute() { const result = service.listTerminalContexts(); if (!result.ok) throw new Error(`ssh_terminal_sessions failed: ${result.error.message}`); return result.value; }
+  }));
+
+  ctx.tools.register(defineTool({
+    name: "ssh_terminal_context",
+    description: "Read a bounded, redacted range from a user-operated SSH terminal after approval. Use ssh_terminal_sessions first to select a session. This does not consume or alter the visible terminal history.",
+    parameters: { session_id: { type: "string", required: true }, after: { type: "integer", description: "Optional cursor from a previous read." }, max_bytes: { type: "integer", description: "1024..98304 bytes; defaults to 24576." } },
+    output: { schema: { type: "object", additionalProperties: true } },
+    async execute(args) { const result = service.readTerminalContext({ sessionId: args.session_id, after: args.after, maxBytes: args.max_bytes }); if (!result.ok) throw new Error(`ssh_terminal_context failed: ${result.error.message}`); return result.value; }
+  }));
+
+  if (typeof ctx.on === "function") ctx.on("tools/pre-execute", (execution, next) => {
+    if (execution?.name !== "ssh_terminal_context") return typeof next === "function" ? next() : undefined;
+    return { kind: "ask", reason: "Agent requests recent manual SSH terminal activity, which may contain sensitive output." };
+  });
+
+  ctx.tools.register(defineTool({
     name: "ssh_list",
     description: "List currently open SSH connections and identify the active server. This reports only live connection metadata (name, host, port, username and active state); it never lists saved SSH resources or credentials. Use it only when the user asks which server is connected. For normal server work, ssh_exec/ssh_read/ssh_write already target the active connection automatically.",
     parameters: {},

@@ -102,7 +102,7 @@ dsh web
 5. 需要数据库时，让 Agent 调 `db_connect`（或自己在「数据库」页签新建连接），随后即可在对话中查询/执行。
 ### Agent 工具
 
-共 29 个 Agent 工具，省略 `connection_id` / `db_connection_id` 时默认作用于当前活动连接，**无需先调 `ssh_list` / `db_list_connections`**。
+共 31 个 Agent 工具，省略 `connection_id` / `db_connection_id` 时默认作用于当前活动连接，**无需先调 `ssh_list` / `db_list_connections`**。
 
 #### SSH（6）
 
@@ -114,6 +114,13 @@ dsh web
 | `ssh_read` | 按需读取右侧终端缓冲输出（不静默塞入对话） |
 | `ssh_write` | 向指定终端写入交互输入；`press_enter`（默认 true）自动补回车提交（可传 `connection_id` 指定目标服务器的终端） |
 | `ssh_disconnect` | 断开当前连接及其 shell 会话 |
+
+#### 手动终端上下文（2）
+
+| 工具 | 用途 |
+| --- | --- |
+| `ssh_terminal_sessions` | 列出已打开终端的低敏元数据与读取游标，不返回终端内容或凭据 |
+| `ssh_terminal_context` | 经每次用户确认后，按游标读取指定手动终端的有限、脱敏历史；不会影响右侧终端回看 |
 
 #### SFTP（6）
 
