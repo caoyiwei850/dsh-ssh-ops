@@ -649,6 +649,8 @@ export class DbOpsManager {
           once(() => reject(err));
         });
         stream.on("end", () => once(resolve));
+        // Drain mysql2 ResultsStream so its end event fires even without a consumer.
+        stream.resume();
       });
       await raceDeadline(streamed, {
         signal: opts.signal, timeoutMs: this.dl("op"), label,
