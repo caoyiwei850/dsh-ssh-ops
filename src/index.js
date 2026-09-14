@@ -2497,7 +2497,12 @@ export default class SshOpsService extends TypertRemoteService {
       if (req.method === "GET") return this.streamGuard(res, this.streamDownloadFile(req, res, url, connectionId));
       if (req.method === "PUT") return this.streamGuard(res, this.streamUploadFile(req, res, url, connectionId));
     } else if (url.pathname === `${STREAM_ROUTE_PREFIX}/archive` && req.method === "GET") {
-      return this.streamGuard(res, this.streamDownloadArchive(req, res, url, connectionId));
+      // SFTP and SSH exec can resolve the same absolute spelling in different
+      // filesystem namespaces (for example, a chrooted SFTP account). Until
+      // archive generation is implemented solely through the SFTP namespace,
+      // never hand an SFTP path to an SSH shell command.
+      this.streamJson(res, 501, "archive-unavailable", "archive streaming is disabled until SFTP namespace-safe archiving is available");
+      return;
     }
     this.streamJson(res, 405, "method-not-allowed", `${req.method} ${url.pathname} is not served`, { allow: "GET, PUT" });
   }
