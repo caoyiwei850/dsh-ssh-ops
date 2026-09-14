@@ -53,7 +53,7 @@
   - 支持 `db_connect` 自动 SSH 隧道：连了服务器后，回环地址（127.0.0.1 / localhost / ::1）的数据库自动经当前服务器隧道访问内网库；`via_ssh` 可选 `auto`（默认）/`yes`/`no`，显式 `ssh_connection_id` 优先级最高。
   - 支持 SSL 三档（`disabled` 不加密 / `preferred` 加密不验证 / `verify` 加密+验证 CA）适配云托管数据库。
   - 数据库连接可保存为资源（profile），重启后一键重连；密码加密存储于 DSH 凭据库；已保存资源支持重命名与折叠分组。
-  - **工程化闭环**：`db_query` 词法级真只读闸（只放行 SELECT/SHOW/DESCRIBE/EXPLAIN/纯查询 WITH，拦截写动词子查询、PG 数据修改 CTE、`SELECT INTO`、`FOR UPDATE` 锁读）；查询流式截断 200 行 + 30s 超时（MySQL destroy 池连接、PG 用 cursor 分批取）；交互式事务工作流 `db_tx_begin/execute/commit/rollback`（独占连接、变更后验证、闲置 5 分钟自动回滚）；`db_describe_table` 带索引/外键/DDL/行数与容量估计；`db_preview` 分页采样、`db_explain` 执行计划。数据库面板含表树、预览视图、一键导出 CSV（含 BOM，Excel 中文兼容）、查询历史（localStorage 50 条）。DB 传输层意外断开不再崩进程（四类客户端统一处理，绝不 throw）。
+  - **工程化闭环**：`db_query` 词法级真只读闸（只放行 SELECT/SHOW/DESCRIBE/EXPLAIN/纯查询 WITH，拦截写动词子查询、PG 数据修改 CTE、`SELECT INTO`、`FOR UPDATE` 锁读）；查询流式截断默认 200 行 + 30s 超时（可用环境变量 `DSH_SSH_OPS_MAX_DB_ROWS` 调整，最大 5000；生产环境应按最小必要值配置；MySQL destroy 池连接、PG 用 cursor 分批取）；交互式事务工作流 `db_tx_begin/execute/commit/rollback`（独占连接、变更后验证、闲置 5 分钟自动回滚）；`db_describe_table` 带索引/外键/DDL/行数与容量估计；`db_preview` 分页采样、`db_explain` 执行计划。数据库面板含表树、预览视图、一键导出 CSV（含 BOM，Excel 中文兼容）、查询历史（localStorage 50 条）。DB 传输层意外断开不再崩进程（四类客户端统一处理，绝不 throw）。
   - 高危 SQL（`DROP DATABASE`/`SCHEMA`/`TABLE`、`TRUNCATE`、`SHUTDOWN`）自动拦截，按**语句动词**识别（跳过字符串/注释、支持多语句），不会误杀字符串字面量里的关键字。
 
 ## 安全边界
@@ -146,7 +146,7 @@ dsh web
 | --- | --- |
 | `db_connect` | 连接 MySQL / PostgreSQL / Redis / MongoDB；回环地址自动经当前 SSH 服务器隧道，SSL 三档可选 |
 | `db_list_connections` | 列出已打开的数据库连接（仅用户询问时用） |
-| `db_query` | 在 MySQL/PostgreSQL 上跑**词法级强制只读**查询（仅放行 SELECT/SHOW/DESCRIBE/EXPLAIN/纯查询 WITH；拒绝写动词、`SELECT INTO`、`FOR UPDATE` 锁读、数据修改 CTE）；结果流式截断 200 行，30s 超时；支持 `?` / `$1` 占位符 |
+| `db_query` | 在 MySQL/PostgreSQL 上跑**词法级强制只读**查询（仅放行 SELECT/SHOW/DESCRIBE/EXPLAIN/纯查询 WITH；拒绝写动词、`SELECT INTO`、`FOR UPDATE` 锁读、数据修改 CTE）；结果默认流式截断 200 行，30s 超时；`DSH_SSH_OPS_MAX_DB_ROWS` 可调整为最多 5000 行；支持 `?` / `$1` 占位符 |
 | `db_execute` | 执行写语句（INSERT/UPDATE/DELETE/CREATE/ALTER）；高危 SQL（DROP/TRUNCATE/SHUTDOWN）不执行，返回可复制卡片 |
 | `db_list_tables` | 列出 MySQL/PostgreSQL 当前 schema 的表 |
 | `db_describe_table` | 完整表结构：列、索引、外键、行数/容量估计、MySQL 附 `SHOW CREATE TABLE` DDL |
