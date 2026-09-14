@@ -18,7 +18,6 @@ import { failResult as fail } from "./envelope.js";
 
 const Cursor = pgCursorModule.default ?? pgCursorModule;
 
-const MAX_DB_ROWS = 200;
 const DB_QUERY_TIMEOUT_MS = 30000;
 /** Idle transactions are rolled back and released after this long. */
 const DB_TX_IDLE_MS = 5 * 60 * 1000;
@@ -206,8 +205,9 @@ function serializeDbValue(value) {
 
 export class DbOpsManager {
   /** @param {import("./index.js").default} sshOpsService */
-  constructor(sshOpsService) {
+  constructor(sshOpsService, maxDbRows = 200) {
     this.sshOpsService = sshOpsService;
+    this.maxDbRows = maxDbRows;
     this.dbConnections = new Map();
     /** txId -> interactive transaction { txId, dbId, kind, handle, timer, createdAt } */
     this.dbTransactions = new Map();
@@ -629,7 +629,7 @@ export class DbOpsManager {
           if (fields?.length) fieldNames = fields.map((f) => f.name);
         });
         stream.on("result", (row) => {
-          if (rows.length >= MAX_DB_ROWS) {
+          if (rows.length >= this.maxDbRows) {
             truncated = true;
             killed = true;
             once(resolve);
@@ -691,13 +691,13 @@ export class DbOpsManager {
       try {
         await raceDeadline(new Promise((resolve, reject) => {
           const readBatch = () => {
-            cursor.read(MAX_DB_ROWS + 1 - rows.length, (err, batch) => {
+            cursor.read(this.maxDbRows + 1 - rows.length, (err, batch) => {
               if (err) { reject(err); return; }
               if (batch.length === 0) { resolve(); return; }
               rows.push(...batch);
-              if (rows.length > MAX_DB_ROWS) {
+              if (rows.length > this.maxDbRows) {
                 truncated = true;
-                rows.length = MAX_DB_ROWS;
+                rows.length = this.maxDbRows;
                 resolve();
                 return;
               }
@@ -908,7 +908,9 @@ export class DbOpsManager {
     if (record.type !== "mysql" && record.type !== "postgresql") {
       return fail("unsupported-op", `db_preview only supports mysql/postgresql, use db_run for ${record.type}`);
     }
-    const limit = Math.max(1, Math.min(MAX_DB_ROWS, Math.floor(Number(request.limit) || 50)));
+    const requestedLimit = Math.floor(Number(request.limit) || 50);
+    if (requestedLimit > this.maxDbRows) return fail("db-limit-too-high", `requested limit ${requestedLimit} exceeds configured max ${this.maxDbRows}`);
+    const limit = Math.max(1, requestedLimit);
     const offset = Math.max(0, Math.floor(Number(request.offset) || 0));
     const built = buildPreviewSql(record.type, request.table, limit, offset);
     if (!built.ok) return fail("bad-request", built.error);
@@ -1022,8 +1024,8 @@ export class DbOpsManager {
           onLose: () => this.killTransaction(tx)
         });
         if (Array.isArray(r)) {
-          const truncated = r.length > MAX_DB_ROWS;
-          const rows = truncated ? r.slice(0, MAX_DB_ROWS) : r;
+          const truncated = r.length > this.maxDbRows;
+          const rows = truncated ? r.slice(0, this.maxDbRows) : r;
           value = { affectedRows: 0, rowCount: rows.length, truncated, rows: rows.map(serializeDbValue) };
         } else {
           value = { affectedRows: r.affectedRows ?? 0, rowCount: 0, truncated: false, rows: [] };
@@ -1035,8 +1037,8 @@ export class DbOpsManager {
           onLose: () => this.killTransaction(tx)
         });
         const allRows = r.rows ?? [];
-        const truncated = allRows.length > MAX_DB_ROWS;
-        const rows = truncated ? allRows.slice(0, MAX_DB_ROWS) : allRows;
+        const truncated = allRows.length > this.maxDbRows;
+        const rows = truncated ? allRows.slice(0, this.maxDbRows) : allRows;
         value = { affectedRows: r.rowCount ?? allRows.length, rowCount: rows.length, truncated, rows: rows.map(serializeDbValue) };
       }
       this.touchTransaction(tx);
