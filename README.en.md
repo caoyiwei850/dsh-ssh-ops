@@ -8,11 +8,21 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.3.5-blue)
+![version](https://img.shields.io/badge/version-0.3.6-blue)
+
+> **v0.3.6**: fixes MySQL streamed-query completion; adds bounded SFTP upload/download byte routes and explicitly disables directory archives with an unsafe SFTP-to-SSH filesystem-namespace bridge; makes the database-agent row cap configurable; and lets the agent read a bounded, redacted range of manually operated terminal history only after approval for each read.
 
 > **v0.3.5**: removes the no-longer-maintained Operations preset installer so npm no longer creates an invalid command entry; saved SSH resources can now open a default remote project directory in both the terminal and SFTP.
 
 > **New in v0.3.4**: **each split pane now gets its own connection** — opening the same server in two panes creates two independent transports, terminals and working directories instead of mirroring one terminal; tick "reuse the open connection" in the connect dialog to share one on purpose. The **pane the agent is acting on is now visible and switchable**, marked with a blue robot badge — click another pane to re-target it. **Peers whose SSH identification string does not follow RFC 4253 can now connect**: when a device writes it malformed (a stray space in `SSH-2.0- OpenSSH`, or `SSH-2.1-`), ssh2 previously failed with a bare `Invalid identification string` that named neither the device nor the reason; the plugin now retries once and normalizes that single line (the peer's software version is preserved and no crypto is weakened), while a genuinely unusable banner reports the peer's own bytes. Also fixes connecting from the settings page not opening or loading the SSH pane. Shared credentials, jump hosts, connection reuse and the terminal theme from 0.3.3 remain. See **[INSTALL.md](./INSTALL.md)** for desktop install instructions.
+
+## Compatibility
+
+- **Target host**: the DSH Desktop / Web Profile `0.1.5` line; the current development environment runs `0.1.5-rc.2`. The plugin uses DSH's bundled Node.js runtime and does not require a system `ssh`, `sftp`, or standalone Node.js installation.
+- **Current right Sidebar**: when the host supplies both `sidebarRightTabs` and `sidebarRight`, SSH runs as an official right-Sidebar tab and uses the host's split, resize, and fullscreen behavior.
+- **Older-host fallback**: if those Sidebar APIs are absent, the plugin automatically keeps the earlier floating SSH panel. Terminal, SFTP, tunnels, databases, and agent tools remain available, but there is no official Sidebar-tab or split-pane experience.
+- **File byte streaming**: browser upload/download routes register only when the Web Profile exposes both `webServer` and the request-origin guard; hosts without them retain the existing SFTP operations. Directory archive download returns `501 archive-unavailable` on every host, preventing traversal across differing SFTP-chroot and SSH-shell filesystem namespaces.
+- **Upgrades**: fully quit and restart the affected DSH Profile after installing or upgrading. SSH resources, known hosts, and credentials live in DSH-owned local storage outside the plugin package, so a normal upgrade does not remove them.
 
 ## Screenshots
 
@@ -70,7 +80,7 @@ The same model covers `sftp_delete` (the agent no longer deletes directly; inste
 ### From GitHub (recommended)
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.5
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.6
 ```
 
 Then restart DSH Web:
@@ -83,14 +93,14 @@ Open any session, click the top **SSH** tab, and use the right-side panel to con
 
 ### From a release archive
 
-Download `dsh-ssh-ops-0.3.5.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.5), then:
+Download `dsh-ssh-ops-0.3.6.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.6), then:
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.5.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.6.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.3.5.zip` is for offline review or further development; extract it and run `npm install && npm run build` in the directory.
+`dsh-ssh-ops-0.3.6.zip` is for offline review or further development; extract it and run `npm install && npm run build` in the directory.
 
 ## Usage
 
@@ -177,8 +187,8 @@ Pushing a `vX.Y.Z` tag that matches `package.json.version` runs tests, builds th
 
 Artifacts are written to `release/`:
 
-- `dsh-ssh-ops-0.3.5.tgz`: installable directly by DSH.
-- `dsh-ssh-ops-0.3.5.zip`: full offline source archive.
+- `dsh-ssh-ops-0.3.6.tgz`: installable directly by DSH.
+- `dsh-ssh-ops-0.3.6.zip`: full offline source archive.
 
 ## License
 

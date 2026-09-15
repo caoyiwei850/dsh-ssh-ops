@@ -8,11 +8,21 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.3.5-blue)
+![version](https://img.shields.io/badge/version-0.3.6-blue)
+
+> **v0.3.6**：修复 MySQL 流式查询无法可靠结束的问题；补充受限的大文件 SFTP 上传／下载通道，并明确禁用存在 SFTP 与 SSH 文件系统命名空间边界风险的目录归档；数据库 Agent 工具的行数上限可配置；Agent 可在每次人工批准后读取经过脱敏、有限范围的手动终端历史。
 
 > **v0.3.5**：移除不再维护的「运维模式」预设安装器，避免生成无效的 npm 命令入口；SSH 资源可保存一个默认远程项目目录，点击“进入项目”后终端和 SFTP 会从同一目录开始。
 
 > **v0.3.4 新增**：**分栏各走一条独立通道**——同一台服务器在两个分栏各开一次会各建一条连接，两条通道、两个终端、各自保留自己的当前目录，不再镜像同一个终端；想共用终端可在连接对话框勾选「复用已打开的连接」。**Agent 的作用目标可见、可切换**：正在被 Agent 使用的那一栏带蓝色机器人徽标，点另一栏即把 Agent 切过去。**不符合 RFC 4253 的 SSH 横幅不再连不上**：对端把自我介绍写坏（如 `SSH-2.0- OpenSSH` 多一个空格、`SSH-2.1-`）时，此前 ssh2 只会抛一句不说明任何原因的 `Invalid identification string`，现在仅在它因此拒绝后重试一次并把该行规范化（软件版本原样保留、加密强度不受影响）；确实不可用的横幅会明确报出对端原文。另修复在设置页点「连接」不会打开／载入 SSH 窗口的问题。上一版的共享凭据、跳板机、连接复用与终端主题见 0.3.3。桌面版安装说明见 **[INSTALL.md](./INSTALL.md)**。
+
+## 兼容性
+
+- **目标宿主**：DSH Desktop / Web Profile `0.1.5` 系列；本项目当前开发环境为 `0.1.5-rc.2`。插件使用 DSH 自带的 Node.js 运行时，不要求系统另装 `ssh`、`sftp` 或独立 Node.js。
+- **新版右侧边栏**：宿主同时提供 `sidebarRightTabs` 与 `sidebarRight` 时，SSH 作为官方右侧边栏标签运行，支持宿主分栏、缩放和全屏。
+- **旧版回退**：缺少上述右侧边栏 API 时，插件自动使用原有浮动 SSH 面板；终端、SFTP、隧道、数据库和 Agent 工具仍可用，但不会获得官方边栏标签和分栏体验。
+- **文件字节流**：大文件的浏览器上传／下载路由仅在 Web Profile 同时提供 `webServer` 与请求来源校验服务时注册；不具备该接口的宿主继续使用既有 SFTP 操作。目录归档下载在所有宿主上均返回 `501 archive-unavailable`，避免 SFTP chroot 与 SSH shell 命名空间不一致造成越界。
+- **升级方式**：安装或升级后必须完整退出并重启对应 DSH Profile。SSH 资源、已知主机和凭据位于 DSH 的独立本地存储，不在插件包内；常规升级不会删除它们。
 
 ## 示例
 
@@ -71,7 +81,7 @@ Agent 命中上述黑名单时不会被静默拒绝：插件会创建一条一�
 ### 从 GitHub 安装（推荐）
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.5
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.6
 ```
 
 安装后重启 DSH Web：
@@ -84,14 +94,14 @@ dsh web
 
 ### 从发布压缩包安装
 
-从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.5) 下载 `dsh-ssh-ops-0.3.5.tgz` 后：
+从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.6) 下载 `dsh-ssh-ops-0.3.6.tgz` 后：
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.5.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.6.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.3.5.zip` 适用于离线审阅或二次开发；解压后可在目录中执行 `npm install && npm run build`。
+`dsh-ssh-ops-0.3.6.zip` 适用于离线审阅或二次开发；解压后可在目录中执行 `npm install && npm run build`。
 
 ## 使用方式
 
@@ -178,8 +188,8 @@ npm run pack:release
 
 生成物位于 `release/`：
 
-- `dsh-ssh-ops-0.3.5.tgz`：可直接被 DSH 安装。
-- `dsh-ssh-ops-0.3.5.zip`：完整离线源码包。
+- `dsh-ssh-ops-0.3.6.tgz`：可直接被 DSH 安装。
+- `dsh-ssh-ops-0.3.6.zip`：完整离线源码包。
 
 ## 许可
 
