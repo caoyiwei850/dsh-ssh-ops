@@ -2409,12 +2409,32 @@ export default class SshOpsService extends TypertRemoteService {
           else resolve(list);
         });
       });
-      const items = entries.map((entry) => ({
-        name: entry.filename,
-        isDirectory: (entry.attrs.mode & 0o170000) === 0o040000,
-        size: entry.attrs.size,
-        mtime: entry.attrs.mtime * 1000,
-        mode: entry.attrs.mode
+      const items = await Promise.all(entries.map(async (entry) => {
+        const kind = entry.attrs.mode & 0o170000;
+        let isDirectory = kind === 0o040000;
+        // readdir reports the link itself, so a directory symlink such as
+        // /var/lock appears as a file. Follow it once to give the UI the
+        // target's real type; otherwise it tries to download a directory and
+        // SFTP servers commonly respond with the opaque "Failure".
+        if (kind === 0o120000) {
+          const entryPath = remotePath === "/" ? `/${entry.filename}` : `${remotePath.replace(/\/+$/, "")}/${entry.filename}`;
+          try {
+            const attrs = await new Promise((resolve, reject) => {
+              sftp.sftp.stat(entryPath, (error, value) => (error ? reject(error) : resolve(value)));
+            });
+            isDirectory = (attrs.mode & 0o170000) === 0o040000;
+          } catch {
+            // A broken or inaccessible link remains downloadable as a file;
+            // its later operation can then report the server's exact error.
+          }
+        }
+        return {
+          name: entry.filename,
+          isDirectory,
+          size: entry.attrs.size,
+          mtime: entry.attrs.mtime * 1000,
+          mode: entry.attrs.mode
+        };
       }));
       return { ok: true, value: { path: remotePath, entries: items } };
     } catch (error) {

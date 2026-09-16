@@ -5,11 +5,11 @@
 ## 0. 前置条件
 
 - 已安装并运行 **DSH Desktop**。
-- 已取得成品包 `dsh-ssh-ops-0.3.6.tgz`（来源：GitHub Releases 下载，或源码 `npm run pack:release` 构建产物 `release/` 下）。
+- 已取得成品包 `dsh-ssh-ops-0.3.7.tgz`（来源：GitHub Releases 下载，或源码 `npm run pack:release` 构建产物 `release/` 下）。
 
 ### 兼容性
 
-- 目标为 DSH Desktop / Web Profile `0.1.5` 系列；开发环境为 `0.1.5-rc.2`。
+- 目标为 DSH Desktop / Web Profile `0.1.6` 系列；已验证 `0.1.6-alpha.1`。
 - 提供 `sidebarRightTabs` 和 `sidebarRight` 的宿主使用官方右侧 SSH 标签；旧宿主会自动回退到浮动面板。
 - 上传／下载字节流需要 Web Profile 的 `webServer` 与请求来源校验服务；不具备时保留既有 SFTP 操作。目录归档下载被有意禁用并返回 `501`，防止 SFTP chroot 与 SSH shell 命名空间不一致。
 
@@ -36,13 +36,13 @@ $dsh  = "<INSTALL_DIR>\DSH Desktop\resources\app\node_modules\@deepseek-ai\dsh\l
 把 `<TARBALL>` 替换为 tgz 的绝对路径。
 
 ```powershell
-dsh plugin --profile web add "<TARBALL>\dsh-ssh-ops-0.3.6.tgz"
+dsh plugin --profile web add "<TARBALL>\dsh-ssh-ops-0.3.7.tgz"
 ```
 
 若 `dsh` 不在 PATH，用：
 
 ```powershell
-& $node $dsh plugin --profile web add "<TARBALL>\dsh-ssh-ops-0.3.6.tgz"
+& $node $dsh plugin --profile web add "<TARBALL>\dsh-ssh-ops-0.3.7.tgz"
 ```
 
 ## 3. 校验安装结果
@@ -76,11 +76,11 @@ dsh plugin --profile web remove dsh-ssh-ops
 
 ---
 
-## 附：0.3.6 版本更新内容
+## 附：0.3.7 版本更新内容
 
-1. **流式可靠性与安全**：MySQL 流式查询可正常结束；大文件浏览器上传／下载遵循宿主来源校验；目录归档下载被关闭，避免跨 SFTP 与 SSH 文件系统边界。
-2. **数据库约束可配置**：`DSH_SSH_OPS_MAX_DB_ROWS` 默认 200、最大 5000；`DSH_SSH_OPS_REGISTER_DB_TOOLS=false` 可只关闭 Agent 数据库工具注册，不影响数据库面板。
-3. **人工终端上下文**：新增 `ssh_terminal_sessions` 和 `ssh_terminal_context`；后者每次读取均要求审批，并在脱敏后以游标限制的历史范围返回，绝不消耗可见终端回看。
+1. **DSH 0.1.6 兼容**：已在 `0.1.6-alpha.1` 验证，并声明对应宿主 peerDependencies。
+2. **主题可读性**：浅色模式的文件、转发、数据库、快速连接面板，以及深色模式的 SSH 资源／共享凭据表单均提升文字、输入框和按钮对比度。
+3. **SFTP 符号链接**：指向目录的链接会按目录打开，不再尝试下载并仅显示泛化的 `Failure` 错误。
 
 ## 附：本地模拟测试（无远端服务器时）
 

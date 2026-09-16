@@ -6,6 +6,7 @@ import SshOpsService from "../src/index.js";
 
 const DIR_MODE = 0o040755;
 const FILE_MODE = 0o100644;
+const SYMLINK_MODE = 0o120777;
 
 /** Fake ssh2 sftp subsystem driven by an in-memory tree. */
 function fakeSftp(tree) {
@@ -18,13 +19,30 @@ function fakeSftp(tree) {
     stat(path, cb) {
       const node = tree[path];
       if (!node) { cb(new Error(`${path}: no such file`)); return; }
-      cb(null, { mode: node.mode, size: node.size ?? 0, mtime: 1700000000 });
+      cb(null, { mode: node.statMode ?? node.mode, size: node.size ?? 0, mtime: 1700000000 });
     },
     mkdir(path, cb) { if (tree[path]) { cb(new Error(`${path}: exists`)); return; } tree[path] = { isDirectory: true, mode: DIR_MODE, children: [] }; cb(null); },
     rmdir(path, cb) { if (!tree[path]) { cb(new Error(`${path}: no such file`)); return; } delete tree[path]; cb(null); },
     unlink(path, cb) { if (!tree[path]) { cb(new Error(`${path}: no such file`)); return; } delete tree[path]; cb(null); },
     rename(from, to, cb) { if (!tree[from]) { cb(new Error(`${from}: no such file`)); return; } tree[to] = tree[from]; delete tree[from]; cb(null); }
   };
+}
+
+// ── sftpList: a symlink to a directory must open as a directory. ───────────
+// /var/lock is a common Linux example: it is a short symlink to /run/lock.
+// Treating it as a regular file makes the UI issue createReadStream() on a
+// directory, for which many SFTP servers return only the unhelpful "Failure".
+{
+  const tree = {
+    "/var": { isDirectory: true, mode: DIR_MODE, children: [
+      { filename: "lock", attrs: { mode: SYMLINK_MODE, size: 9, mtime: 1700000000 } }
+    ] },
+    "/var/lock": { mode: SYMLINK_MODE, statMode: DIR_MODE, size: 9 }
+  };
+  const service = makeService(tree);
+  const result = await service.sftpList({ path: "/var" });
+  assert.equal(result.ok, true);
+  assert.equal(result.value.entries[0].isDirectory, true, "directory symlinks open instead of downloading as files");
 }
 
 function makeService(tree) {

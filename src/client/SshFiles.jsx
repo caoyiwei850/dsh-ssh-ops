@@ -399,17 +399,17 @@ function formatSize(bytes) {
 const filesStyles = {
   root: { display: "flex", flexDirection: "column", flex: 1, minHeight: 0, gap: 6 },
   toolbar: { display: "flex", alignItems: "center", gap: 6, flex: "none" },
-  path: { flex: 1, fontSize: 12, color: "#9aa3af", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", direction: "rtl", textAlign: "left" },
+  path: { flex: 1, fontSize: 12, color: "var(--dsw-alias-label-secondary, #9aa3af)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", direction: "rtl", textAlign: "left" },
   btn: {
-    background: "transparent", border: "1px solid #3a414b", color: "#d7dbe2",
+    background: "var(--dsw-alias-bg-layer-1, transparent)", border: "1px solid var(--dsw-alias-border-l4, #3a414b)", color: "var(--dsw-alias-label-primary, #d7dbe2)",
     borderRadius: 6, padding: "3px 8px", fontSize: 12, cursor: "pointer", flex: "none"
   },
   btnTiny: {
-    background: "transparent", border: "1px solid #3a414b", color: "#d7dbe2",
+    background: "var(--dsw-alias-bg-layer-1, transparent)", border: "1px solid var(--dsw-alias-border-l4, #3a414b)", color: "var(--dsw-alias-label-primary, #d7dbe2)",
     borderRadius: 6, padding: "2px 8px", fontSize: 12, cursor: "pointer"
   },
   btnPrimary: {
-    background: "#2d6cdf", color: "#fff", border: "none", borderRadius: 6,
+    background: "var(--dsw-alias-button-primary-fill, #2d6cdf)", color: "var(--dsw-alias-label-primary-foreground, #fff)", border: "none", borderRadius: 6,
     padding: "3px 10px", fontSize: 12, cursor: "pointer"
   },
   btnDanger: {
@@ -418,8 +418,8 @@ const filesStyles = {
   },
   inlineForm: { display: "flex", gap: 6, alignItems: "center", flex: "none" },
   input: {
-    flex: 1, background: "#101418", border: "1px solid #2a303a", borderRadius: 6,
-    color: "#d7dbe2", padding: "4px 8px", fontSize: 12, outline: "none"
+    flex: 1, background: "var(--dsw-alias-bg-layer-1, #101418)", border: "1px solid var(--dsw-alias-border-l4, #2a303a)", borderRadius: 6,
+    color: "var(--dsw-alias-label-primary, #d7dbe2)", padding: "4px 8px", fontSize: 12, outline: "none"
   },
   error: {
     padding: "6px 10px", fontSize: 12, color: "#f85149",
@@ -429,16 +429,16 @@ const filesStyles = {
     padding: "8px 10px", fontSize: 12, color: "#f0c36d",
     background: "rgba(240,195,109,.1)", border: "1px solid rgba(240,195,109,.35)", borderRadius: 6, flex: "none"
   },
-  compatDetail: { marginTop: 4, color: "#9aa3af", wordBreak: "break-word" },
-  scpCard: { display: "flex", flexDirection: "column", gap: 8, padding: 10, border: "1px solid #2a303a", borderRadius: 6, flex: "none" },
-  scpTitle: { fontSize: 13, color: "#d7dbe2", fontWeight: 600 },
-  fileInput: { fontSize: 12, color: "#c8ccd1" },
-  rowSize: { flex: "none", fontSize: 11, color: "#8b93a1" },
+  compatDetail: { marginTop: 4, color: "var(--dsw-alias-label-secondary, #9aa3af)", wordBreak: "break-word" },
+  scpCard: { display: "flex", flexDirection: "column", gap: 8, padding: 10, background: "var(--dsw-alias-bg-layer-1, transparent)", border: "1px solid var(--dsw-alias-border-l3, #2a303a)", borderRadius: 6, flex: "none" },
+  scpTitle: { fontSize: 13, color: "var(--dsw-alias-label-primary, #d7dbe2)", fontWeight: 600 },
+  fileInput: { fontSize: 12, color: "var(--dsw-alias-label-primary, #c8ccd1)" },
+  rowSize: { flex: "none", fontSize: 11, color: "var(--dsw-alias-label-secondary, #8b93a1)" },
   rowActions: { display: "flex", gap: 4, flex: "none", marginLeft: "auto" },
   list: { flex: 1, minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column", gap: 1 },
   row: { display: "flex", alignItems: "center", gap: 8, padding: "5px 8px", borderRadius: 6, cursor: "pointer" },
   rowSelected: { background: "rgba(45,108,223,.18)" },
   icon: { flex: "none", fontSize: 13, display: "inline-flex", alignItems: "center" },
-  rowName: { flex: 1, fontSize: 13, color: "#d7dbe2", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
-  empty: { margin: "auto", fontSize: 12, color: "#8b93a1" }
+  rowName: { flex: 1, fontSize: 13, color: "var(--dsw-alias-label-primary, #d7dbe2)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  empty: { margin: "auto", fontSize: 12, color: "var(--dsw-alias-label-secondary, #8b93a1)" }
 };

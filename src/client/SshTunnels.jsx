@@ -154,24 +154,24 @@ export function SshTunnels({ api, connectionId }) {
 const tunnelStyles = {
   root: { display: "flex", flexDirection: "column", flex: 1, minHeight: 0, gap: 6 },
   toolbar: { display: "flex", alignItems: "center", gap: 6, flex: "none" },
-  title: { flex: 1, fontSize: 12, fontWeight: 600, color: "#d7dbe2" },
+  title: { flex: 1, fontSize: 12, fontWeight: 600, color: "var(--dsw-alias-label-primary, #d7dbe2)" },
   btn: {
-    background: "transparent", border: "1px solid #3a414b", color: "#d7dbe2",
+    background: "var(--dsw-alias-bg-layer-1, transparent)", border: "1px solid var(--dsw-alias-border-l4, #3a414b)", color: "var(--dsw-alias-label-primary, #d7dbe2)",
     borderRadius: 6, padding: "3px 8px", fontSize: 12, cursor: "pointer", flex: "none"
   },
   btnPrimary: {
-    background: "#2d6cdf", color: "#fff", border: "none", borderRadius: 6,
+    background: "var(--dsw-alias-button-primary-fill, #2d6cdf)", color: "var(--dsw-alias-label-primary-foreground, #fff)", border: "none", borderRadius: 6,
     padding: "4px 14px", fontSize: 12, cursor: "pointer"
   },
   btnDanger: {
     background: "transparent", border: "1px solid #f85149", color: "#f85149",
     borderRadius: 6, padding: "2px 8px", fontSize: 12, cursor: "pointer", flex: "none"
   },
-  form: { display: "flex", flexDirection: "column", gap: 6, padding: 8, background: "#181c22", borderRadius: 8, flex: "none" },
+  form: { display: "flex", flexDirection: "column", gap: 6, padding: 8, background: "var(--dsw-alias-bg-layer-1, #181c22)", borderRadius: 8, flex: "none" },
   formRow: { display: "flex", gap: 6 },
   input: {
-    flex: 1, background: "#101418", border: "1px solid #2a303a", borderRadius: 6,
-    color: "#d7dbe2", padding: "5px 8px", fontSize: 12, outline: "none", minWidth: 0
+    flex: 1, background: "var(--dsw-alias-bg-layer-1, #101418)", border: "1px solid var(--dsw-alias-border-l4, #2a303a)", borderRadius: 6,
+    color: "var(--dsw-alias-label-primary, #d7dbe2)", padding: "5px 8px", fontSize: 12, outline: "none", minWidth: 0
   },
   error: {
     padding: "6px 10px", fontSize: 12, color: "#f85149",
@@ -180,13 +180,13 @@ const tunnelStyles = {
   list: { flex: 1, minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column", gap: 6 },
   row: {
     display: "flex", alignItems: "center", gap: 8, padding: "8px 10px",
-    background: "#181c22", border: "1px solid #262b33", borderRadius: 8
+    background: "var(--dsw-alias-bg-layer-1, #181c22)", border: "1px solid var(--dsw-alias-border-l3, #262b33)", borderRadius: 8
   },
   rowBody: { flex: 1, minWidth: 0 },
-  rowTitle: { display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#d7dbe2" },
-  rowAddr: { fontFamily: "monospace", fontSize: 12, color: "#9aa3af" },
-  arrow: { color: "#5b6472" },
+  rowTitle: { display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--dsw-alias-label-primary, #d7dbe2)" },
+  rowAddr: { fontFamily: "monospace", fontSize: 12, color: "var(--dsw-alias-label-secondary, #9aa3af)" },
+  arrow: { color: "var(--dsw-alias-label-tertiary, #5b6472)" },
   dot: { width: 8, height: 8, borderRadius: "50%", flex: "none" },
-  rowId: { fontSize: 10, color: "#5b6472", fontFamily: "monospace", marginTop: 2 },
-  empty: { margin: "auto", fontSize: 12, color: "#8b93a1", textAlign: "center", padding: "0 12px" }
+  rowId: { fontSize: 10, color: "var(--dsw-alias-label-tertiary, #5b6472)", fontFamily: "monospace", marginTop: 2 },
+  empty: { margin: "auto", fontSize: 12, color: "var(--dsw-alias-label-secondary, #8b93a1)", textAlign: "center", padding: "0 12px" }
 };
