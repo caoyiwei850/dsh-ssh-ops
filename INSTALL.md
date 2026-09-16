@@ -5,7 +5,7 @@
 ## 0. 前置条件
 
 - 已安装并运行 **DSH Desktop**。
-- 已取得成品包 `dsh-ssh-ops-0.3.7.tgz`（来源：GitHub Releases 下载，或源码 `npm run pack:release` 构建产物 `release/` 下）。
+- 已取得成品包 `dsh-ssh-ops-0.3.8.tgz`（来源：GitHub Releases 下载，或源码 `npm run pack:release` 构建产物 `release/` 下）。
 
 ### 兼容性
 
@@ -36,13 +36,13 @@ $dsh  = "<INSTALL_DIR>\DSH Desktop\resources\app\node_modules\@deepseek-ai\dsh\l
 把 `<TARBALL>` 替换为 tgz 的绝对路径。
 
 ```powershell
-dsh plugin --profile web add "<TARBALL>\dsh-ssh-ops-0.3.7.tgz"
+dsh plugin --profile web add "<TARBALL>\dsh-ssh-ops-0.3.8.tgz"
 ```
 
 若 `dsh` 不在 PATH，用：
 
 ```powershell
-& $node $dsh plugin --profile web add "<TARBALL>\dsh-ssh-ops-0.3.7.tgz"
+& $node $dsh plugin --profile web add "<TARBALL>\dsh-ssh-ops-0.3.8.tgz"
 ```
 
 ## 3. 校验安装结果
@@ -76,11 +76,11 @@ dsh plugin --profile web remove dsh-ssh-ops
 
 ---
 
-## 附：0.3.7 版本更新内容
+## 附：0.3.8 版本更新内容
 
-1. **DSH 0.1.6 兼容**：已在 `0.1.6-alpha.1` 验证，并声明对应宿主 peerDependencies。
-2. **主题可读性**：浅色模式的文件、转发、数据库、快速连接面板，以及深色模式的 SSH 资源／共享凭据表单均提升文字、输入框和按钮对比度。
-3. **SFTP 符号链接**：指向目录的链接会按目录打开，不再尝试下载并仅显示泛化的 `Failure` 错误。
+1. **兼容性声明规范化**：移除 `engines.dsh`，只通过官方 `@deepseek-ai/*` 包的 `peerDependencies` 声明宿主兼容性。
+2. **覆盖宿主版本线**：显式覆盖 `0.1.2-rc.1`、`0.1.3-alpha.2`、`0.1.5-alpha.1` 和 `0.1.6-alpha.1`。
+3. **保留上一版修复**：包含 SFTP 符号链接下载修复及浅色／深色模式可读性优化。
 
 ## 附：本地模拟测试（无远端服务器时）
 

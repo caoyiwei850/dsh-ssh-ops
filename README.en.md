@@ -8,9 +8,9 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.3.7-blue)
+![version](https://img.shields.io/badge/version-0.3.8-blue)
 
-> **v0.3.7**: formally declares DSH Desktop / Web Profile `0.1.6` compatibility (validated on `0.1.6-alpha.1`); fixes low-contrast text and controls in light-theme Files, Tunnels, Database, and quick-connect views, clarifies dark-theme SSH resource and shared-credential forms, and recognizes directory symlinks such as `/var/lock` so SFTP opens them instead of attempting a download that returns `Failure`.
+> **v0.3.8**: follows the DSH plugin-market convention by declaring host compatibility only through the four official-package `peerDependencies`, covering the `0.1.2-rc.1`, `0.1.3-alpha.2`, `0.1.5-alpha.1`, and validated `0.1.6-alpha.1` prerelease lines; removes the market-unused `engines.dsh` declaration so there is one compatibility contract.
 
 > **v0.3.5**: removes the no-longer-maintained Operations preset installer so npm no longer creates an invalid command entry; saved SSH resources can now open a default remote project directory in both the terminal and SFTP.
 
@@ -80,7 +80,7 @@ The same model covers `sftp_delete` (the agent no longer deletes directly; inste
 ### From GitHub (recommended)
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.7
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.8
 ```
 
 Then restart DSH Web:
@@ -93,14 +93,14 @@ Open any session, click the top **SSH** tab, and use the right-side panel to con
 
 ### From a release archive
 
-Download `dsh-ssh-ops-0.3.7.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.7), then:
+Download `dsh-ssh-ops-0.3.8.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.8), then:
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.7.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.8.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.3.7.zip` is for offline review or further development; extract it and run `npm install && npm run build` in the directory.
+`dsh-ssh-ops-0.3.8.zip` is for offline review or further development; extract it and run `npm install && npm run build` in the directory.
 
 ## Usage
 
@@ -187,8 +187,8 @@ Pushing a `vX.Y.Z` tag that matches `package.json.version` runs tests, builds th
 
 Artifacts are written to `release/`:
 
-- `dsh-ssh-ops-0.3.7.tgz`: installable directly by DSH.
-- `dsh-ssh-ops-0.3.7.zip`: full offline source archive.
+- `dsh-ssh-ops-0.3.8.tgz`: installable directly by DSH.
+- `dsh-ssh-ops-0.3.8.zip`: full offline source archive.
 
 ## License
 

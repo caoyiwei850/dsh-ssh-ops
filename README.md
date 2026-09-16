@@ -8,9 +8,9 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.3.7-blue)
+![version](https://img.shields.io/badge/version-0.3.8-blue)
 
-> **v0.3.7**：正式声明兼容 DSH Desktop / Web Profile `0.1.6`（已在 `0.1.6-alpha.1` 验证）；修复浅色主题下文件、转发、数据库及快速连接面板的低对比度文字与按钮；深色主题下 SSH 资源及共享凭据表单输入框、占位文本和焦点态更清晰；SFTP 会识别指向目录的符号链接（例如 `/var/lock`）并打开目录，不再错误下载后只提示 `Failure`。
+> **v0.3.8**：按 DSH 插件市场惯例将宿主兼容性唯一声明在四个官方包的 `peerDependencies` 中，覆盖 `0.1.2-rc.1`、`0.1.3-alpha.2`、`0.1.5-alpha.1` 与已验证的 `0.1.6-alpha.1` 预发布线；移除不被市场使用的 `engines.dsh`，避免两套版本口径分叉。
 
 > **v0.3.5**：移除不再维护的「运维模式」预设安装器，避免生成无效的 npm 命令入口；SSH 资源可保存一个默认远程项目目录，点击“进入项目”后终端和 SFTP 会从同一目录开始。
 
@@ -81,7 +81,7 @@ Agent 命中上述黑名单时不会被静默拒绝：插件会创建一条一�
 ### 从 GitHub 安装（推荐）
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.7
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.8
 ```
 
 安装后重启 DSH Web：
@@ -94,14 +94,14 @@ dsh web
 
 ### 从发布压缩包安装
 
-从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.7) 下载 `dsh-ssh-ops-0.3.7.tgz` 后：
+从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.8) 下载 `dsh-ssh-ops-0.3.8.tgz` 后：
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.7.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.8.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.3.7.zip` 适用于离线审阅或二次开发；解压后可在目录中执行 `npm install && npm run build`。
+`dsh-ssh-ops-0.3.8.zip` 适用于离线审阅或二次开发；解压后可在目录中执行 `npm install && npm run build`。
 
 ## 使用方式
 
@@ -188,8 +188,8 @@ npm run pack:release
 
 生成物位于 `release/`：
 
-- `dsh-ssh-ops-0.3.7.tgz`：可直接被 DSH 安装。
-- `dsh-ssh-ops-0.3.7.zip`：完整离线源码包。
+- `dsh-ssh-ops-0.3.8.tgz`：可直接被 DSH 安装。
+- `dsh-ssh-ops-0.3.8.zip`：完整离线源码包。
 
 ## 许可
 

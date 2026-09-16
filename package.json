@@ -1,7 +1,7 @@
 {
   "name": "dsh-ssh-ops",
   "description": "SSH ops and database tools for DSH Web UI: connect to remote servers via SSH terminal/SFTP/tunnels, and connect to MySQL/PostgreSQL/Redis/MongoDB databases. Host half manages sessions with ssh2; client half renders the terminal and database panel.",
-  "version": "0.3.7",
+  "version": "0.3.8",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -49,9 +49,6 @@
     "INSTALL.md",
     "LICENSE"
   ],
-  "engines": {
-    "dsh": ">=0.1.2-rc.1"
-  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
