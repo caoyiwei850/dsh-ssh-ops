@@ -191,7 +191,10 @@ const closeSrv = (srv) => new Promise((r) => { try { srv.destroy(); } catch {} s
 /** Bare service instance: no storage or ctx wiring needed for a connect. */
 function makeService(t) {
   const service = Object.create(SshOpsService.prototype);
-  service.config = {};
+  // This test drives the REAL connect/openSession path, so the default
+  // recording would write a session log into the user's log directory on every
+  // run — test residue in a panel meant for the operator's own sessions.
+  service.config = { sessionLogEnabled: false };
   service.connections = new Map();
   service.sessions = new Map();
   service.exitedSessions = new Map();
