@@ -7,16 +7,11 @@
  */
 import net from "node:net";
 import { randomUUID } from "node:crypto";
-import mysql from "mysql2/promise.js";
-import pg from "pg";
-import { createClient as createRedisClient } from "redis";
-import { MongoClient } from "mongodb";
-import pgCursorModule from "pg-cursor";
+// DB drivers are imported on first use (see connect/pgQueryPaged) so loading
+// this module does not pull the whole driver module tree up front.
 import { assessSqlStatement, assessReadOnlySql } from "./db-safety.js";
 // The db layer wraps every failure straight into the full result envelope.
 import { failResult as fail } from "./envelope.js";
-
-const Cursor = pgCursorModule.default ?? pgCursorModule;
 
 const DB_QUERY_TIMEOUT_MS = 30000;
 /** Idle transactions are rolled back and released after this long. */
@@ -264,6 +259,7 @@ export class DbOpsManager {
     let client;
     try {
       if (type === "mysql") {
+        const { default: mysql } = await import("mysql2/promise.js");
         client = mysql.createPool({
           host: connectHost, port: connectPort, user: username, password, database,
           ssl: buildMysqlSsl(ssl), connectionLimit: 4, supportBigNumbers: true,
@@ -272,6 +268,7 @@ export class DbOpsManager {
         const c = await this.mysqlCheckout({ client }, { signal, label: "db_connect", timeoutMs: this.dl("connect") });
         c.release();
       } else if (type === "postgresql") {
+        const { default: pg } = await import("pg");
         client = new pg.Pool({
           host: connectHost, port: connectPort, user: username, password, database,
           ssl: buildPgSsl(ssl), max: 4,
@@ -282,6 +279,7 @@ export class DbOpsManager {
         const c = await this.pgCheckout({ client }, { signal, label: "db_connect", timeoutMs: this.dl("connect") });
         c.release();
       } else if (type === "redis") {
+        const { createClient: createRedisClient } = await import("redis");
         client = createRedisClient({
           socket: { ...buildRedisSocket(ssl, connectHost, connectPort), connectTimeout: this.dl("poolConnection") },
           password,
@@ -292,6 +290,7 @@ export class DbOpsManager {
           onLose: () => { try { client.disconnect(); } catch {} }
         });
       } else if (type === "mongodb") {
+        const { MongoClient } = await import("mongodb");
         const cred = username ? `${encodeURIComponent(username)}:${encodeURIComponent(password ?? "")}@` : "";
         const uri = `mongodb://${cred}${connectHost}:${connectPort}/${database ?? ""}`;
         client = new MongoClient(uri, {
@@ -689,6 +688,8 @@ export class DbOpsManager {
     });
     try {
       await run("SELECT set_config('statement_timeout', $1, false)", [String(DB_QUERY_TIMEOUT_MS)]);
+      const pgCursorModule = await import("pg-cursor");
+      const Cursor = pgCursorModule.default ?? pgCursorModule;
       const cursor = client.query(new Cursor(statement, bindings));
       try {
         await raceDeadline(new Promise((resolve, reject) => {
