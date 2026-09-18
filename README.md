@@ -8,7 +8,9 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.3.8-blue)
+![version](https://img.shields.io/badge/version-0.3.9-blue)
+
+> **v0.3.9**：兼容 DSH `0.1.6-alpha.2`——适配新宿主 typert 校验（schema 与 strict codec 必须携带 `create()` 工厂，浏览器端 web boot 同样校验）与槽位注册新规则（拒绝同 id 重复注册，此前会导致 SSH 标签从官方侧边栏消失）；修复含 `null` 默认远程项目目录的资源记录导致配置无法读取的问题（#20）；数据库驱动改为首次连接时懒加载。
 
 > **v0.3.8**：按 DSH 插件市场惯例将宿主兼容性唯一声明在四个官方包的 `peerDependencies` 中，覆盖 `0.1.2-rc.1`、`0.1.3-alpha.2`、`0.1.5-alpha.1` 与已验证的 `0.1.6-alpha.1` 预发布线；移除不被市场使用的 `engines.dsh`，避免两套版本口径分叉。
 
@@ -18,7 +20,7 @@
 
 ## 兼容性
 
-- **目标宿主**：DSH Desktop / Web Profile `0.1.6` 系列；本项目当前开发环境已验证 `0.1.6-alpha.1`。插件使用 DSH 自带的 Node.js 运行时，不要求系统另装 `ssh`、`sftp` 或独立 Node.js。
+- **目标宿主**：DSH Desktop / Web Profile `0.1.6` 系列；本项目当前开发环境已验证 `0.1.6-alpha.1` 与 `0.1.6-alpha.2`。插件使用 DSH 自带的 Node.js 运行时，不要求系统另装 `ssh`、`sftp` 或独立 Node.js。
 - **新版右侧边栏**：宿主同时提供 `sidebarRightTabs` 与 `sidebarRight` 时，SSH 作为官方右侧边栏标签运行，支持宿主分栏、缩放和全屏。
 - **旧版回退**：缺少上述右侧边栏 API 时，插件自动使用原有浮动 SSH 面板；终端、SFTP、隧道、数据库和 Agent 工具仍可用，但不会获得官方边栏标签和分栏体验。
 - **文件字节流**：大文件的浏览器上传／下载路由仅在 Web Profile 同时提供 `webServer` 与请求来源校验服务时注册；不具备该接口的宿主继续使用既有 SFTP 操作。目录归档下载在所有宿主上均返回 `501 archive-unavailable`，避免 SFTP chroot 与 SSH shell 命名空间不一致造成越界。
@@ -81,7 +83,7 @@ Agent 命中上述黑名单时不会被静默拒绝：插件会创建一条一�
 ### 从 GitHub 安装（推荐）
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.8
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.9
 ```
 
 安装后重启 DSH Web：
@@ -94,14 +96,14 @@ dsh web
 
 ### 从发布压缩包安装
 
-从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.8) 下载 `dsh-ssh-ops-0.3.8.tgz` 后：
+从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.9) 下载 `dsh-ssh-ops-0.3.9.tgz` 后：
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.8.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.9.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.3.8.zip` 适用于离线审阅或二次开发；解压后可在目录中执行 `npm install && npm run build`。
+`dsh-ssh-ops-0.3.9.zip` 适用于离线审阅或二次开发；解压后可在目录中执行 `npm install && npm run build`。
 
 ## 使用方式
 
@@ -188,8 +190,8 @@ npm run pack:release
 
 生成物位于 `release/`：
 
-- `dsh-ssh-ops-0.3.8.tgz`：可直接被 DSH 安装。
-- `dsh-ssh-ops-0.3.8.zip`：完整离线源码包。
+- `dsh-ssh-ops-0.3.9.tgz`：可直接被 DSH 安装。
+- `dsh-ssh-ops-0.3.9.zip`：完整离线源码包。
 
 ## 许可
 

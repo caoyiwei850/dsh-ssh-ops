@@ -10,7 +10,8 @@ export const TYPERT = {
   package: "dsh-ssh-ops",
   face: "host",
   schemas: [
-    { name: "sshError", schema: sshErrorSchema }
+    // 0.1.6-alpha.2 loader requires create(); alpha.1 registry reads .schema — ship both.
+    { name: "sshError", schema: sshErrorSchema, create: () => sshErrorSchema }
   ],
   invocations: DESCRIPTORS,
   model: {

@@ -162,8 +162,9 @@ const groupRecordSchema = z.object({
   updatedAt: z.string()
 });
 
-// Exported so tests can assert that the records profileSave writes satisfy the
-// schemas DSH re-validates when it reopens this domain at boot.
+// Exported (with the credential, DB-profile and known-host specs below) so
+// tests can assert that the records each save path writes satisfy the schemas
+// DSH re-validates when it reopens the domain at boot.
 export const profileDomainSpec = defineDomain({
   name: "ssh_ops_profiles",
   version: 1,
@@ -176,7 +177,7 @@ export const profileDomainSpec = defineDomain({
 // Keep shared credentials in a new unit rather than bumping the established
 // profile unit. DSH's JSON storage rejects in-place unit-version changes, and
 // users' existing server profiles must never prevent the host from booting.
-const credentialDomainSpec = defineDomain({
+export const credentialDomainSpec = defineDomain({
   name: "ssh_ops_credentials",
   version: 1,
   tables: { credentials: domainTable(credentialRecordSchema) }
@@ -195,7 +196,7 @@ const dbProfileRecordSchema = z.object({
   updatedAt: z.string()
 });
 
-const dbProfileDomainSpec = defineDomain({
+export const dbProfileDomainSpec = defineDomain({
   name: "db_ops_profiles",
   version: 1,
   tables: {
@@ -212,7 +213,7 @@ const knownHostRecordSchema = z.object({
   lastSeenAt: z.string()
 });
 
-const knownHostDomainSpec = defineDomain({
+export const knownHostDomainSpec = defineDomain({
   name: "ssh_ops_known_hosts",
   version: 1,
   tables: {

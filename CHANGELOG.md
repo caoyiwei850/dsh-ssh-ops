@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.9 - 2026-09-18
+
+- **兼容 DSH 0.1.6-alpha.2（typert create() 契约）**：新宿主的 typert loader 要求 `TYPERT.schemas` 条目与每个调用的 strict codec 携带 `create()` 工厂（浏览器端 web boot 用同一校验，旧形状 `{ name, schema }` 会让插件条目激活失败、侧边栏整体消失）。插件在 `sshError` schema 与全部调用描述符上补齐 `create`，同时保留 `schema` 字段——alpha.1 读 `.schema`、alpha.2 调 `create()`，双版宿主通吃。
+- **修复官方侧栏注册冲突（alpha.2）**：宿主现在拒绝同一槽位出现同 id 的第二个条目。旧版抽屉按钮与官方侧栏按钮共用 `ssh-ops-tab-action`，而清理旧抽屉的代码排在侧栏注册之后，注册时抛出 "already has an entry" 并打断整条侧栏注册路径。现在按既定设计先释放抽屉再注册侧栏；注册中途失败会自动回滚重建抽屉，SSH 始终可达。
+- **修复 #20：`defaultProjectPath` 为 `null` 的资源记录**：存储 schema 此前不接受 `null`，一条这样的记录会让整个资源配置域读取失败。现在 schema 接受 `null`（与「未填写」同义），并为 profile 写入路径补了「不填／设置／清空」三条往返测试。
+- **数据库驱动懒加载**：MySQL、PostgreSQL、Redis、MongoDB 四种驱动与 `pg-cursor` 改为首次连接时动态 import，冷启动不再加载全部驱动。
+- **测试**：60 项测试全部通过；侧栏生命周期用例更新为先清理后注册、失败回滚的新契约；新增 `test/domain-records.mjs`（凭据／数据库配置／已知主机的写入记录全部通过启动时 schema 往返校验）与 `test/db-lazy-load.mjs`（冷启动不加载任何驱动；四种驱动与 `pg-cursor` 各自在首次使用时动态装载）。
+
 ## 0.3.5 - 2026-09-13
 
 - 移除不再维护的「运维模式」预设安装器及其随包预设资源，避免 npm 发布时生成无效的命令入口。

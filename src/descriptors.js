@@ -24,13 +24,15 @@ function def(method, requestSchema, requestType, resultSchema, resultType, optio
         name: "request",
         wire: "request",
         source: "json",
-        codec: { mode: "strict", typeSymbol: `${PACKAGE}/types#${requestType}`, schema: requestSchema }
+        // 0.1.6-alpha.2 requires create(); alpha.1 client face reads .schema — ship both.
+        codec: { mode: "strict", typeSymbol: `${PACKAGE}/types#${requestType}`, schema: requestSchema, create: () => requestSchema }
       }
     ],
     result: {
       mode: "strict",
       typeSymbol: `${PACKAGE}/types#${resultType}`,
-      schema: resultSchema
+      schema: resultSchema,
+      create: () => resultSchema
     },
     sourceLocation: { file: "src/index.js", line: 1, column: 1 }
   };

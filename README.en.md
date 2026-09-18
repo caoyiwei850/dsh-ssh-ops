@@ -8,7 +8,9 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.3.8-blue)
+![version](https://img.shields.io/badge/version-0.3.9-blue)
+
+> **v0.3.9**: compatible with DSH `0.1.6-alpha.2` — adapts to the host's new typert validation (schemas and strict codecs must carry `create()` factories, enforced on the browser side too) and the new slot rule that rejects a duplicate entry id, which previously made the SSH tab vanish from the official sidebar; fixes stored records with a `null` default project directory failing to load (#20); database drivers are now lazily imported on first connect.
 
 > **v0.3.8**: follows the DSH plugin-market convention by declaring host compatibility only through the four official-package `peerDependencies`, covering the `0.1.2-rc.1`, `0.1.3-alpha.2`, `0.1.5-alpha.1`, and validated `0.1.6-alpha.1` prerelease lines; removes the market-unused `engines.dsh` declaration so there is one compatibility contract.
 
@@ -18,7 +20,7 @@
 
 ## Compatibility
 
-- **Target host**: the DSH Desktop / Web Profile `0.1.6` line; the current development environment is compatible with `0.1.6-alpha.1`. The plugin uses DSH's bundled Node.js runtime and does not require a system `ssh`, `sftp`, or standalone Node.js installation.
+- **Target host**: the DSH Desktop / Web Profile `0.1.6` line; the current development environment is compatible with `0.1.6-alpha.1` and `0.1.6-alpha.2`. The plugin uses DSH's bundled Node.js runtime and does not require a system `ssh`, `sftp`, or standalone Node.js installation.
 - **Current right Sidebar**: when the host supplies both `sidebarRightTabs` and `sidebarRight`, SSH runs as an official right-Sidebar tab and uses the host's split, resize, and fullscreen behavior.
 - **Older-host fallback**: if those Sidebar APIs are absent, the plugin automatically keeps the earlier floating SSH panel. Terminal, SFTP, tunnels, databases, and agent tools remain available, but there is no official Sidebar-tab or split-pane experience.
 - **File byte streaming**: browser upload/download routes register only when the Web Profile exposes both `webServer` and the request-origin guard; hosts without them retain the existing SFTP operations. Directory archive download returns `501 archive-unavailable` on every host, preventing traversal across differing SFTP-chroot and SSH-shell filesystem namespaces.
@@ -80,7 +82,7 @@ The same model covers `sftp_delete` (the agent no longer deletes directly; inste
 ### From GitHub (recommended)
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.8
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.9
 ```
 
 Then restart DSH Web:
@@ -93,14 +95,14 @@ Open any session, click the top **SSH** tab, and use the right-side panel to con
 
 ### From a release archive
 
-Download `dsh-ssh-ops-0.3.8.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.8), then:
+Download `dsh-ssh-ops-0.3.9.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.9), then:
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.8.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.9.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.3.8.zip` is for offline review or further development; extract it and run `npm install && npm run build` in the directory.
+`dsh-ssh-ops-0.3.9.zip` is for offline review or further development; extract it and run `npm install && npm run build` in the directory.
 
 ## Usage
 
@@ -187,8 +189,8 @@ Pushing a `vX.Y.Z` tag that matches `package.json.version` runs tests, builds th
 
 Artifacts are written to `release/`:
 
-- `dsh-ssh-ops-0.3.8.tgz`: installable directly by DSH.
-- `dsh-ssh-ops-0.3.8.zip`: full offline source archive.
+- `dsh-ssh-ops-0.3.9.tgz`: installable directly by DSH.
+- `dsh-ssh-ops-0.3.9.zip`: full offline source archive.
 
 ## License
 

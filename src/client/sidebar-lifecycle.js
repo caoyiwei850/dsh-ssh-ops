@@ -15,18 +15,22 @@ export function activateSidebarWhenAvailable(ctx, {
   let sidebarDispose;
 
   const unwatch = ctx.inject(["sidebarRightTabs", "sidebarRight"], (sidebarCtx) => {
+    // Slot removals are synchronous in the DSH client runtime, and hosts at
+    // least as new as 0.1.6-alpha.2 reject a second slot entry with the same
+    // id instead of shadowing it. Dispose the drawer BEFORE the Sidebar-mode
+    // registrations re-use the session-header action id — registering first
+    // throws "already has an entry" and aborts the whole Sidebar path.
+    legacyDispose?.();
+    legacyDispose = undefined;
     try {
       sidebarDispose = registerSidebar(sidebarCtx);
     } catch (error) {
       onSidebarError(error);
+      // Sidebar mode failed partway: restore the legacy drawer so SSH stays
+      // reachable instead of silently vanishing.
+      legacyDispose = registerLegacy(ctx);
       return undefined;
     }
-
-    // Slot removals are synchronous in the DSH client runtime. Dispose the
-    // drawer before registering the same session-header action id in Sidebar
-    // mode, so there is never a duplicate button or floating panel.
-    legacyDispose?.();
-    legacyDispose = undefined;
     return () => {
       sidebarDispose?.();
       sidebarDispose = undefined;
