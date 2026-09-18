@@ -17,6 +17,8 @@
 import * as React from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { SearchAddon } from "@xterm/addon-search";
+import { isMacPlatform, runFind, searchResultLabel, searchShortcutLabel, searchShortcutMatches } from "./terminal-search.js";
 import { XTERM_CSS } from "./xterm-css.js";
 import { useSshUi, sshUiSetActiveConnection, sshUiSetBusy, sshUiSetConnections, sshUiSetError } from "./store.js";
 import { IconRobot16 } from "./IconRobot16.jsx";
@@ -131,6 +133,10 @@ const terminalPool = createTerminalPool({
       fontSize: 13,
       fontFamily: 'Menlo, Monaco, "Courier New", monospace',
       scrollback: 5000,
+      // The search addon's match HIGHLIGHTS are gated behind this flag; the
+      // search itself still works, but without it every find throws
+      // "proposed API" and the reader sees no matches at all.
+      allowProposedApi: true,
       // Some remote commands produce LF-only text. Treat it as a normal
       // terminal newline so rows do not continue at the previous column.
       convertEol: true,
@@ -138,7 +144,11 @@ const terminalPool = createTerminalPool({
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
-    return { term, fit };
+    // One SearchAddon per terminal: it searches the live scrollback (the
+    // session's own history), so a view can be attached and detached freely.
+    const search = new SearchAddon();
+    term.loadAddon(search);
+    return { term, fit, search };
   },
   max: 8
 });
@@ -166,7 +176,13 @@ function applyWorkspaceTheme(theme) {
 /** One xterm view bound to one host session via long-poll reads / stream push. */
 function XtermView({ api, sessionId, connectionId }) {
   const containerRef = useRef(null);
+  const searchInputRef = useRef(null);
+  /** The pooled entry (terminal + addons) this mount attached to. */
+  const entryRef = useRef(null);
   const [closed, setClosed] = useState(() => terminalPool.get(sessionId)?.closed ?? false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [searchResults, setSearchResults] = useState(null);
 
   useEffect(() => {
     ensureStyles();
@@ -174,6 +190,7 @@ function XtermView({ api, sessionId, connectionId }) {
     if (!container) return undefined;
     const owner = { sessionId };
     const entry = terminalPool.acquire(sessionId, owner);
+    entryRef.current = entry;
     const term = entry.term;
     const fit = entry.fit;
 
@@ -213,6 +230,23 @@ function XtermView({ api, sessionId, connectionId }) {
       flushInput();
     };
     const inputSubscription = term.onData(onData);
+
+    // Search runs over this terminal's live scrollback via the addon; the
+    // pane only adds the bar, the count and the keyboard path. Ctrl/Cmd+F is
+    // caught before xterm sees it (and before the browser's own find opens).
+    const search = entry.search;
+    const resultsSubscription = search?.onDidChangeResults?.((value) => {
+      if (alive) setSearchResults(value);
+    });
+    const isMac = isMacPlatform(globalThis.navigator?.platform ?? globalThis.navigator?.userAgent);
+    const onKeyDown = (event) => {
+      if (!searchShortcutMatches(event, isMac)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setSearchOpen(true);
+      setTimeout(() => searchInputRef.current?.focus(), 0);
+    };
+    container.addEventListener("keydown", onKeyDown, true);
 
     const controller = new AbortController();
     const NO_SESSION_NOTICE = `\r\n\x1b[31m[终端会话已失效：DSH 服务已重启或该连接已关闭。请到 设置 → SSH 资源 重新连接]\x1b[0m\r\n`;
@@ -328,6 +362,11 @@ function XtermView({ api, sessionId, connectionId }) {
       controller.abort();
       cancelAnimationFrame(raf);
       pendingInput = "";
+      container.removeEventListener("keydown", onKeyDown, true);
+      resultsSubscription?.dispose?.();
+      search?.clearDecorations?.();
+      entryRef.current = null;
+      setSearchOpen(false);
       resizeObserver.disconnect();
       inputSubscription.dispose();
       // Detach only — the pooled terminal (and its scrollback) survives this
@@ -336,8 +375,70 @@ function XtermView({ api, sessionId, connectionId }) {
     };
   }, [sessionId, connectionId, api]);
 
+  const runSearch = (backwards) => {
+    const search = entryRef.current?.search;
+    if (search === undefined || query.trim() === "") return;
+    runFind(search, query, { backwards, warn: console.warn });
+  };
+  const closeSearch = () => {
+    setSearchOpen(false);
+    setSearchResults(null);
+    entryRef.current?.search?.clearDecorations?.();
+    containerRef.current?.parentElement?.querySelector("textarea")?.focus?.();
+  };
+
   return (
-    <div style={panelStyles.xtermWrap} ref={containerRef} data-closed={closed || undefined} />
+    <div style={panelStyles.xtermHost}>
+      <div style={panelStyles.xtermWrap} ref={containerRef} data-closed={closed || undefined} />
+      {/* The shortcut alone is not discoverable: this button is the visible
+          entry point, and its tooltip teaches the keyboard path. */}
+      {!searchOpen && (
+        <button
+          type="button"
+          onClick={() => {
+            setSearchOpen(true);
+            setTimeout(() => searchInputRef.current?.focus(), 0);
+          }}
+          style={panelStyles.searchOpenBtn}
+          title={`在终端里查找（${searchShortcutLabel(isMacPlatform(globalThis.navigator?.platform ?? globalThis.navigator?.userAgent))}）`}
+          aria-label="在终端里查找"
+        >
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <circle cx="6.5" cy="6.5" r="4.5" stroke="currentColor" strokeWidth="1.5" />
+            <path d="M10 10L14 14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+          </svg>
+        </button>
+      )}
+      {searchOpen && (
+        <div style={panelStyles.searchBar}>
+          <input
+            ref={searchInputRef}
+            value={query}
+            onChange={(event) => {
+              setQuery(event.target.value);
+              const text = event.target.value.trim();
+              const search = entryRef.current?.search;
+              if (text !== "" && search !== undefined) runFind(search, text, { warn: console.warn });
+              else {
+                setSearchResults(null);
+                entryRef.current?.search?.clearDecorations?.();
+              }
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") { event.preventDefault(); runSearch(event.shiftKey); }
+              else if (event.key === "Escape") { event.preventDefault(); closeSearch(); }
+            }}
+            placeholder="在终端里查找…"
+            aria-label="在终端里查找"
+            style={panelStyles.searchInput}
+          />
+          <span style={panelStyles.searchCount} aria-live="polite">{searchResultLabel(searchResults, query)}</span>
+          <button type="button" onClick={() => runSearch(true)} style={panelStyles.searchBtn} title="上一个匹配 (Shift+Enter)">↑</button>
+          <button type="button" onClick={() => runSearch(false)} style={panelStyles.searchBtn} title="下一个匹配 (Enter)">↓</button>
+          <button type="button" onClick={closeSearch} style={panelStyles.searchBtn} title="关闭 (Esc)">×</button>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1700,6 +1801,27 @@ const panelStyles = {
   tabActive: { color: "var(--dsh-ssh-ops-text, #d7dbe2)", borderBottomColor: "#2d6cdf" },
   emptyState: { margin: "auto", fontSize: 12, color: "var(--dsh-ssh-ops-muted, #8b93a1)", textAlign: "center" },
   xtermWrap: { flex: 1, minWidth: 0, overflow: "hidden" },
+  xtermHost: { position: "relative", display: "flex", flex: 1, minWidth: 0, minHeight: 0 },
+  searchOpenBtn: {
+    position: "absolute", top: 6, right: 10, zIndex: 5, display: "inline-flex", alignItems: "center", justifyContent: "center",
+    width: 22, height: 22, padding: 0, borderRadius: 4, cursor: "pointer",
+    background: "var(--dsh-ssh-ops-surface, #161b21)", border: "1px solid var(--dsh-ssh-ops-border, #3a414b)",
+    color: "var(--dsh-ssh-ops-muted, #8b93a1)"
+  },
+  searchBar: {
+    position: "absolute", top: 6, right: 10, zIndex: 5, display: "flex", alignItems: "center", gap: 4,
+    padding: "3px 6px", borderRadius: 6,
+    background: "var(--dsh-ssh-ops-surface, #161b21)", border: "1px solid var(--dsh-ssh-ops-border, #3a414b)"
+  },
+  searchInput: {
+    width: 150, background: "var(--dsh-ssh-ops-input, #101418)", border: "1px solid var(--dsh-ssh-ops-border, #3a414b)",
+    borderRadius: 4, color: "var(--dsh-ssh-ops-text, #d7dbe2)", padding: "2px 6px", fontSize: 12, outline: "none"
+  },
+  searchCount: { fontSize: 11, color: "var(--dsh-ssh-ops-muted, #8b93a1)", minWidth: 34, textAlign: "center" },
+  searchBtn: {
+    background: "transparent", border: "none", color: "var(--dsh-ssh-ops-muted, #8b93a1)",
+    cursor: "pointer", fontSize: 13, padding: "0 3px", lineHeight: 1.2
+  },
   dialogBackdrop: {
     position: "fixed",
     inset: 0,

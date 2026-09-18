@@ -1426,15 +1426,18 @@ export default class SshOpsService extends TypertRemoteService {
       // connection. Remember it so agent tools can act on the same server
       // without making the model discover an opaque connection id first.
       this.activeConnectionId = request.connectionId;
-      try {
+      {
         const conn = this.connections.get(request.connectionId);
-        await this.sessionLogStore()?.begin({
+        // Recording starts with the session's FIRST output, not with the
+        // session: a shell that produces nothing (an accidental tab, a probe)
+        // must not leave an empty log behind.
+        session.logMeta = {
           sessionId, connectionId: request.connectionId,
           name: conn?.name ?? null, host: conn?.connectConfig?.host ?? conn?.username ?? null,
           port: conn?.connectConfig?.port ?? null, openedBy: session.openedBy,
           startedAt: session.openedAt
-        });
-      } catch { /* recording is best-effort */ }
+        };
+      }
     } catch (error) {
       this.sessions.delete(sessionId);
       conn.sessions.delete(sessionId);
@@ -3605,7 +3608,13 @@ export default class SshOpsService extends TypertRemoteService {
   appendSessionOutput(session, text, { capture = true, observePrompt = true } = {}) {
     this.terminalOutput(session).append(text);
     // Recording must never influence the session: a broken log is swallowed.
-    try { this.sessionLogStore()?.append(session.id, text); } catch { /* keep the session alive */ }
+    try {
+      const store = this.sessionLogStore();
+      if (store !== null && session.logMeta !== undefined) {
+        if (!store.has(session.id)) void store.begin(session.logMeta).catch(() => {});
+        store.append(session.id, text);
+      }
+    } catch { /* keep the session alive */ }
     try { session.shellIntegration?.feed(text); } catch { /* tracking is decoration */ }
     // Legacy poll readers retain their independent destructive buffer.
     session.buffer = tailCapped((session.buffer ?? "") + text, this.config.maxBufferBytes);

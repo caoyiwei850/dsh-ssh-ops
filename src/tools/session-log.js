@@ -6,6 +6,7 @@
  */
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { redactForModel } from "../redact.js";
+import { readableLine, toReadableText } from "../terminal-text.js";
 
 const MAX_READ_BYTES = 48 * 1024;
 
@@ -71,7 +72,9 @@ export function registerSessionLogTools(ctx, service) {
       });
       if (!result.ok) throw new Error(`ssh_session_log_search failed: ${result.error.message}`);
       return {
-        hits: result.value.hits.map((hit) => ({ offset: hit.offset, line: redactForModel(hit.line) })),
+        // Escape debris out first, then redact: a marker between characters
+        // would hide a secret from the redactor otherwise.
+        hits: result.value.hits.map((hit) => ({ offset: hit.offset, line: redactForModel(readableLine(hit.line)) })),
         scannedBytes: result.value.scannedBytes,
         stoppedEarly: result.value.stoppedEarly
       };
@@ -108,7 +111,7 @@ export function registerSessionLogTools(ctx, service) {
         maxBytes: Math.min(Math.max(Number(args.max_bytes) || 24576, 1024), MAX_READ_BYTES)
       });
       if (!result.ok) throw new Error(`ssh_session_log_read failed: ${result.error.message}`);
-      return { ...result.value, data: redactForModel(result.value.data) };
+      return { ...result.value, data: redactForModel(toReadableText(result.value.data)) };
     }
   }));
 

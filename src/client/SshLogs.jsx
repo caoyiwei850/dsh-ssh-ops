@@ -4,6 +4,7 @@
  * bounded ranges so a huge recording never reaches the browser in full.
  */
 import * as React from "react";
+import { readableLine, toReadableText } from "../terminal-text.js";
 const { useEffect, useState, useRef } = React;
 
 const PAGE_BYTES = 48 * 1024;
@@ -62,7 +63,10 @@ export function SshLogs({ api }) {
       setSize(value.size);
       setNextOffset(value.nextOffset);
       setEof(value.eof);
-      setContent((previous) => (append ? previous + value.data : value.data));
+      // The log keeps raw bytes (a recording must be faithful); the viewer
+      // shows the readable text, not the escape debris that produced it.
+      const readable = toReadableText(value.data);
+      setContent((previous) => (append ? previous + readable : readable));
       setHits(null);
     } catch (err) {
       if (seq !== loadSeq.current) return;
@@ -78,7 +82,7 @@ export function SshLogs({ api }) {
     setError(null);
     try {
       const value = await api.sessionLogSearch(selected.sessionId, query.trim(), 200);
-      setHits(Array.isArray(value.hits) ? value.hits : []);
+      setHits(Array.isArray(value.hits) ? value.hits.map((hit) => ({ ...hit, line: readableLine(hit.line) })) : []);
     } catch (err) {
       setError(err?.message ?? String(err));
     } finally {
@@ -99,14 +103,32 @@ export function SshLogs({ api }) {
         offset = value.nextOffset;
         if (value.eof || offset <= value.startOffset) break;
       }
+      // The downloaded .log is the reader's copy: readable text, not escapes.
       const where = [selected.name, selected.host].filter(Boolean).join("-") || "session";
-      const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+      const blob = new Blob([toReadableText(text)], { type: "text/plain;charset=utf-8" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
       a.download = `ssh-session-${where}-${selected.sessionId}.log`;
       a.click();
       URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(err?.message ?? String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** Remove every log that recorded nothing — they carry no information. */
+  const pruneEmpty = async () => {
+    const empty = (logs ?? []).filter((log) => log.bytes === 0);
+    if (empty.length === 0) return;
+    if (!globalThis.confirm?.(`删除 ${empty.length} 条 0 字节的会话日志？`)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      for (const log of empty) await api.sessionLogDelete(log.sessionId);
+      await refresh();
     } catch (err) {
       setError(err?.message ?? String(err));
     } finally {
@@ -138,6 +160,14 @@ export function SshLogs({ api }) {
       <div style={styles.toolbar}>
         <span style={styles.title}>会话日志</span>
         <button onClick={refresh} disabled={busy} style={styles.btn} title="刷新列表">↻</button>
+        {(logs ?? []).some((log) => log.bytes === 0) && (
+          <button
+            onClick={pruneEmpty}
+            disabled={busy}
+            style={styles.btn}
+            title="删除所有 0 字节的会话日志"
+          >清理空日志</button>
+        )}
         {!enabled && <span style={styles.hint}>录制已关闭（config.sessionLogEnabled = false）</span>}
       </div>
 

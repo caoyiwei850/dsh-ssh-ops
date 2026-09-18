@@ -41,7 +41,6 @@ function toAttrs(stat) {
 /** A crude `ls -l` line; clients that parse it (and ours does not) see a sane shape. */
 function longName(name, stat) {
   const kind = stat.isDirectory() ? "d" : "-";
-  const perms = (stat.mode & 0o777).toString(8).padStart(3, "0");
   return `${kind}rw-r--r-- 1 test test ${String(stat.size).padStart(8)} ${name}`;
 }
 
@@ -163,7 +162,10 @@ export function attachSftp(sftp, { root }) {
   sftp.on("READDIR", (reqid, handle) => {
     const entry = handles.get(handleKey(handle));
     if (entry?.kind !== "dir") { fail(reqid, STATUS.FAILURE); return; }
-    const page = entry.entries.slice(entry.index, entry.index + 100).map(({ isDirectory, ...rest }) => rest);
+    // The wire listing carries filename/longname/attrs only; isDirectory was
+    // an internal convenience for callers of this server, not a protocol field.
+    const page = entry.entries.slice(entry.index, entry.index + 100)
+      .map((item) => ({ filename: item.filename, longname: item.longname, attrs: item.attrs }));
     entry.index += page.length;
     if (page.length === 0) { fail(reqid, STATUS.EOF); return; }
     sftp.name(reqid, page);

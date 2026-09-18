@@ -51,21 +51,35 @@ export class SessionLogStore {
   metaPath(sessionId) { return join(this.dir, `${safeId(sessionId)}${META_SUFFIX}`); }
   logPath(sessionId) { return join(this.dir, `${safeId(sessionId)}${LOG_SUFFIX}`); }
 
+  /** Is this session already being recorded (its entry exists)? */
+  has(sessionId) {
+    return this.entries.has(sessionId);
+  }
+
   /**
-   * Open a log for one session. Recording failures are reported to the caller
-   * once (the caller logs them) and never block the session itself.
+   * Open a log for one session. The entry exists as soon as this returns
+   * (before the directory or stream is ready), so an append that arrives in
+   * the same tick is buffered rather than dropped — callers that record
+   * lazily call begin() and append() back to back.
    */
   async begin({ sessionId, connectionId, name, host, port, openedBy, startedAt = new Date().toISOString() }) {
-    await this.init();
     const entry = {
       sessionId, connectionId: connectionId ?? null, name: name ?? null,
       host: host ?? null, port: port ?? null, openedBy: openedBy ?? null,
-      startedAt, endedAt: null, exitCode: null, bytes: 0, truncated: false
+      startedAt, endedAt: null, exitCode: null, bytes: 0, truncated: false,
+      /** Chunks that arrived before the write stream existed. */
+      pending: []
     };
     this.entries.set(sessionId, entry);
+    await this.init();
     const stream = createWriteStream(this.logPath(sessionId), { flags: "a" });
     stream.on("error", () => { /* a broken log must not crash the session */ });
     this.streams.set(sessionId, stream);
+    const buffered = entry.pending;
+    entry.pending = [];
+    for (const chunk of buffered) {
+      try { stream.write(chunk); } catch { /* keep the session alive */ }
+    }
     await this.writeMeta(entry).catch(() => {});
     return entry;
   }
@@ -73,8 +87,8 @@ export class SessionLogStore {
   /** Append session output; past the per-session cap the rest is dropped, once. */
   append(sessionId, text) {
     const entry = this.entries.get(sessionId);
+    if (entry === undefined) return;
     const stream = this.streams.get(sessionId);
-    if (entry === undefined || stream === undefined) return;
     if (entry.truncated) return;
     const chunk = String(text ?? "");
     if (chunk.length === 0) return;
@@ -88,6 +102,11 @@ export class SessionLogStore {
       : chunk;
     entry.bytes += Buffer.byteLength(slice, "utf8");
     if (entry.bytes >= this.limits.maxSessionBytes) entry.truncated = true;
+    if (stream === undefined) {
+      // begin() is still preparing the stream: hold the chunk in order.
+      entry.pending.push(slice);
+      return;
+    }
     try {
       // Reads await this so a live session's newest output is never missed.
       this.pending.set(sessionId, new Promise((resolve) => stream.write(slice, resolve)));
@@ -141,7 +160,9 @@ export class SessionLogStore {
     // written at open and close), so the live entry wins and the panel sees
     // accurate byte counts and truncation while the session runs.
     for (const [sessionId, live] of this.entries) {
-      byId.set(sessionId, { ...live });
+      const { pending, ...exposed } = live;
+      void pending;
+      byId.set(sessionId, { ...exposed });
     }
     return [...byId.values()]
       .sort((left, right) => String(right.startedAt ?? "").localeCompare(String(left.startedAt ?? "")));

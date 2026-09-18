@@ -33,7 +33,29 @@ try {
   assert.equal(missing.ok, false);
   assert.equal(missing.reason, "no-such-log");
 
-  // ── per-session cap ───────────────────────────────────────────────────────
+  // ── first-byte recording: begin + append in the same tick ──────────────────
+{
+  const lazyDir = mkdtempSync(join(tmpdir(), "dsh-ssh-ops-logs-lazy-"));
+  try {
+    const lazy = new SessionLogStore({ dir: lazyDir });
+    assert.equal(lazy.has("s-lazy"), false);
+    const starting = lazy.begin({ sessionId: "s-lazy", host: "h" });
+    lazy.append("s-lazy", "first chunk ");
+    lazy.append("s-lazy", "second chunk");
+    assert.equal(lazy.has("s-lazy"), true, "the entry exists before the stream is ready");
+    await starting;
+    const read = await lazy.read("s-lazy", {});
+    assert.equal(read.data, "first chunk second chunk", "chunks that raced the stream are kept, in order");
+    const meta = (await lazy.list()).find((entry) => entry.sessionId === "s-lazy");
+    assert.equal(meta.bytes, 24);
+    assert.equal("pending" in meta, false, "internal buffering never leaks into the API shape");
+    await lazy.end("s-lazy");
+  } finally {
+    rmSync(lazyDir, { recursive: true, force: true });
+  }
+}
+
+// ── per-session cap ───────────────────────────────────────────────────────
   const capped = new SessionLogStore({ dir, limits: { maxSessionBytes: 16 } });
   await capped.begin({ sessionId: "s-cap", host: "h" });
   capped.append("s-cap", "abcdefghij");           // 10 bytes
@@ -158,16 +180,20 @@ try {
   const api = await readFile(new URL("../src/client/api.js", import.meta.url), "utf8");
   const tools = await readFile(new URL("../src/tools/session-log.js", import.meta.url), "utf8");
   const checks = [
-    [index, /sessionLogStore\(\)\?\.append\(session\.id, text\)/, "every session chunk is appended to its log"],
-    [index, /sessionLogStore\(\)\?\.begin\(\{[\s\S]{0,240}sessionId, connectionId: request\.connectionId/, "opening a shell begins a log"],
+    [index, /store\.append\(session\.id, text\)/, "every session chunk is appended to its log"],
+    [index, /session\.logMeta = \{[\s\S]{0,200}sessionId, connectionId: request\.connectionId/, "opening a shell remembers what to record"],
+    [index, /if \(!store\.has\(session\.id\)\) void store\.begin\(session\.logMeta\)/, "the log starts with the first output byte"],
     [index, /void this\.sessionLogStore\(\)\?\.end\(session\.id, \{ exitCode: exit\?\.code \?\? null \}\)/, "a natural exit closes the log with its code"],
     [index, /sessionLogEnabled: true/, "recording is on by default"],
     [panel, /setTab\("logs"\)/, "the SSH panel exposes the log tab"],
     [panel, /<SshLogs api=\{api\} \/>/, "the log tab renders the log panel"],
     [logs, /PAGE_BYTES = 48 \* 1024/, "the viewer pages instead of loading a whole log"],
     [logs, /api\.sessionLogSearch\(selected\.sessionId, query\.trim\(\), 200\)/, "search runs through the host"],
+    [logs, /toReadableText\(value\.data\)/, "the viewer renders readable text"],
+    [logs, /readableLine\(hit\.line\)/, "search hits are rendered readable too"],
+    [tools, /redactForModel\(readableLine\(hit\.line\)\)/, "agent hits are stripped then redacted"],
     [api, /sessionLogRead\(sessionId, offset, maxBytes\)/, "the api wrapper forwards paging arguments"],
-    [tools, /redactForModel\(result\.value\.data\)/, "agent reads are redacted"],
+    [tools, /redactForModel\(toReadableText\(result\.value\.data\)\)/, "agent reads are stripped of escapes and redacted"],
     [tools, /kind: "ask"/, "agent log reads ask the operator first"]
   ];
   for (const [source, pattern, label] of checks) {

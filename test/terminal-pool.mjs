@@ -139,3 +139,18 @@ function makeFactory(log) {
   pool.disposeAll();
 }
 console.log("terminal pool: ownership, keepalive, eviction, offset replay: passed");
+
+// ── factory extras travel with the entry (the search addon, future codecs) ──
+{
+  const search = { findNext() {}, clearDecorations() {} };
+  const pool = createTerminalPool({
+    create: () => ({ term: { dispose() {} }, fit: { dispose() {} }, search }),
+    max: 2
+  });
+  const owner = {};
+  const entry = pool.acquire("session-search", owner);
+  assert.equal(entry.search, search, "a fresh mount can reach the addon the pool was built with");
+  pool.release("session-search", owner);
+  const again = pool.acquire("session-search", {});
+  assert.equal(again.search, search, "and so can a mount that reuses the pooled terminal");
+}

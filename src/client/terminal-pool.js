@@ -6,8 +6,8 @@
  * terminal" was only true for output the host had buffered since.
  *
  * The pool is pure bookkeeping over factory-created terminals so it runs in
- * Node tests without DOM: `create` returns { term, fit } and the pool never
- * touches the DOM itself — mounting/remounting (`term.element` re-parenting)
+ * Node tests without DOM: `create` returns { term, fit, ...addons } and the
+ * pool never touches the DOM itself — mounting/remounting (`term.element` re-parenting)
  * stays in XtermView.
  *
  * Rules:
@@ -64,6 +64,10 @@ export function createTerminalPool({ create, max = 8 }) {
     return {
       term: built.term,
       fit: built.fit,
+      // Anything else the factory attached (the search addon, a future codec)
+      // travels with the entry: a pooled terminal keeps every addon it was
+      // built with, for every mount that borrows it.
+      ...(built.search !== undefined ? { search: built.search } : {}),
       closed: false,
       owner: null,
       pooled: true,
@@ -76,6 +80,7 @@ export function createTerminalPool({ create, max = 8 }) {
     return {
       term: entry.term,
       fit: entry.fit,
+      ...(entry.search !== undefined ? { search: entry.search } : {}),
       reused,
       pooled: entry.pooled,
       get offset() { return entry.offset; },
