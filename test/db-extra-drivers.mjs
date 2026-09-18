@@ -122,8 +122,20 @@ assert.equal(buildPreviewSql("sqlite", "main.hosts", 1, 0).sql, 'SELECT * FROM "
 }
 
 // ── SQLite end to end on a real temp file ───────────────────────────────────
-const dir = mkdtempSync(join(tmpdir(), "dsh-ssh-ops-sqlite-"));
-try {
+//
+// `node:sqlite` is a built-in only from Node 22.5 on, and the CI matrix covers
+// Node 20: there the driver is EXPECTED to refuse with a clear message (that
+// path is asserted below), and the round-trip half of this file has nothing to
+// talk to. Probe the runtime once and skip that half rather than failing a
+// suite that cannot possibly pass.
+const sqliteSupported = await import("node:sqlite").then(() => true, () => false);
+if (!sqliteSupported) {
+  console.log(`db extra drivers: skipping the SQLite round trip — this runtime (${process.version}) has no node:sqlite`);
+  const unavailable = await openSqlite("/tmp/would-be.db").then(() => null, (error) => error);
+  assert.match(String(unavailable?.message ?? ""), /不提供内置 SQLite/, "an unsupported runtime is refused with the documented message");
+}
+const dir = sqliteSupported ? mkdtempSync(join(tmpdir(), "dsh-ssh-ops-sqlite-")) : null;
+if (sqliteSupported) try {
   const file = join(dir, "ops.db");
   await assert.rejects(() => openSqlite(""), /需要填写数据库文件路径/);
 
