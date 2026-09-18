@@ -136,8 +136,11 @@ const profileRecordSchema = z.object({
   // domain can read every pre-0.3.3 resource without migration.
   credentialId: z.string().uuid().nullable().optional(),
   // Optional so already-saved resources load without a storage migration.
+  // Nullable because profileSave persists `null` for "no project directory"
+  // (the request schema accepts an explicit null to clear the entry) and DSH
+  // re-validates every stored record when it reopens the domain at boot.
   // This is metadata only; it never contains credentials or shell syntax.
-  defaultProjectPath: z.string().optional(),
+  defaultProjectPath: z.string().nullable().optional(),
   proxyJump: z.array(z.union([z.object({ profileId: z.string().uuid() }), z.object({
     host: z.string(), port: z.number().int(), username: z.string(),
     authKind: z.enum(["credential", "password", "key"]).optional(), credentialId: z.string().uuid().optional(), hostKeyMode: z.string().optional()
@@ -159,7 +162,9 @@ const groupRecordSchema = z.object({
   updatedAt: z.string()
 });
 
-const profileDomainSpec = defineDomain({
+// Exported so tests can assert that the records profileSave writes satisfy the
+// schemas DSH re-validates when it reopens this domain at boot.
+export const profileDomainSpec = defineDomain({
   name: "ssh_ops_profiles",
   version: 1,
   tables: {
