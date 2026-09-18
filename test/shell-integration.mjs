@@ -3,7 +3,8 @@
 // must not hang or corrupt the tracker.
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { SHELL_INTEGRATION_BASH_COMMAND, SHELL_INTEGRATION_ZSH_COMMAND, ShellIntegrationTracker, shellIntegrationCommand } from "../src/shell-integration.js";
+import { SHELL_FAMILY_PROBE, SHELL_INTEGRATION_BASH_COMMAND, SHELL_INTEGRATION_ZSH_COMMAND, ShellIntegrationTracker, parseShellFamilyProbe, shellIntegrationCommand } from "../src/shell-integration.js";
+import { terminalContextReadResultSchema } from "../src/schemas.js";
 
 const OSC = (payload) => `\x1b]${payload}\x07`;
 const OSC_ST = (payload) => `\x1b]${payload}\x1b\\`;
@@ -90,6 +91,48 @@ const OSC_ST = (payload) => `\x1b]${payload}\x1b\\`;
   assert.equal(shellIntegrationCommand(undefined).includes("PROMPT_COMMAND"), true);
 }
 
+// ── the family probe answers through a delimiter, nothing else ──────────────
+{
+  assert.match(SHELL_FAMILY_PROBE, /DSHSHELL:%s:END/, "the probe delimits its answer");
+  assert.equal(parseShellFamilyProbe("DSHSHELL::END"), "", "bash answers empty");
+  assert.equal(parseShellFamilyProbe("DSHSHELL:5.9:END"), "5.9", "zsh answers its version");
+  assert.equal(parseShellFamilyProbe("DSHSHELL:5.9:END\n"), "5.9", "trailing newline is ignored");
+  assert.equal(parseShellFamilyProbe("DSHSHELL:  5.9  :END"), "5.9");
+
+  // The live failure this guards: every exec is wrapped with a cwd marker, and
+  // an already-integrated shell emits markers of its own — the answer must be
+  // read out of the delimiter, not "is stdout non-empty".
+  const polluted = "\u001b]633;P;Cwd=/root\u0007Q0FST0FDSVQK\n\u001b]133;D;0\u0007\u001b]133;A\u0007DSHSHELL::END\n";
+  assert.equal(parseShellFamilyProbe(polluted), "", "marker-laden stdout still reports bash");
+  const zshPolluted = "${DSHSHELL:not-a-version}DSHSHELL:5.9:END";
+  assert.equal(parseShellFamilyProbe(zshPolluted), "5.9", "only the delimited answer counts");
+  assert.equal(parseShellFamilyProbe("no delimiter at all"), "", "a missing answer reads as bash (the safe default)");
+  assert.equal(shellIntegrationCommand(parseShellFamilyProbe(polluted)).includes("PROMPT_COMMAND"), true);
+  assert.equal(shellIntegrationCommand(parseShellFamilyProbe("DSHSHELL:5.9:END")).includes("precmd_functions"), true);
+}
+
+// ── the wire schema must carry the shell state (a field the schema drops never
+//    reaches the client, however correct the host method is) ─────────────────
+{
+  const state = { atPrompt: true, lastExitCode: 0, cwd: "/root", lastCommandAt: "2026-09-19T00:00:00.000Z", commands: 3 };
+  const parsed = terminalContextReadResultSchema.parse({
+    ok: true,
+    value: {
+      sessionId: "s", data: "", historyStart: 0, historyEnd: 0, offset: 0, nextOffset: 0,
+      wasClamped: false, hasMore: false, alive: true, exit: null, redacted: false, shell: state
+    }
+  });
+  assert.deepEqual(parsed.value.shell, state, "the schema keeps the OSC 133 state");
+  const legacy = terminalContextReadResultSchema.parse({
+    ok: true,
+    value: {
+      sessionId: "s", data: "", historyStart: 0, historyEnd: 0, offset: 0, nextOffset: 0,
+      wasClamped: false, hasMore: false, alive: true, exit: null, redacted: false, shell: null
+    }
+  });
+  assert.equal(legacy.value.shell, null, "and accepts null before integration is enabled");
+}
+
 // ── wiring contract ─────────────────────────────────────────────────────────
 {
   const index = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
@@ -100,7 +143,8 @@ const OSC_ST = (payload) => `\x1b]${payload}\x1b\\`;
     [index, /shell: session\.shellIntegration\?\.snapshot\(\) \?\? null/, "terminal context reports the shell state"],
     [index, /async enableShellIntegration\(request\)/, "the enabling RPC exists"],
     [index, /encodeData\(`\$\{shellIntegrationCommand\(family\)\}/, "enabling writes the family-appropriate one-liner"],
-    [index, /ZSH_VERSION/, "the family comes from the shell's own answer"],
+    [index, /buildCwdAwareCommand\(SHELL_FAMILY_PROBE\)/, "the family probe is the delimited one"],
+    [index, /parseShellFamilyProbe\(result\.stdout\)/, "the answer is parsed out of the delimiter"],
     [index, /terminal-not-ready[\s\S]{0,120}enableShellIntegration|enableShellIntegration[\s\S]{0,900}terminal-not-ready/, "enabling refuses a busy terminal"],
     [tools, /name: "ssh_shell_integration"/, "the agent can enable it per session"]
   ];

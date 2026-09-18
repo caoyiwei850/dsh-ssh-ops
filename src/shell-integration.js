@@ -49,8 +49,27 @@ export const SHELL_INTEGRATION_ZSH_COMMAND = [
 export const SHELL_INTEGRATION_COMMAND = SHELL_INTEGRATION_BASH_COMMAND;
 
 /**
- * Pick the snippet for a shell family reported by the session's `$ZSH_VERSION`
- * probe: anything non-empty is zsh, everything else (bash, dash, sh) uses the
+ * The shell-family probe: a delimited answer, so nothing else on the stream can
+ * be mistaken for it. The terminal may already carry a cwd marker (every exec
+ * is wrapped with one) or shell-integration markers of its own — a bare
+ * `printf %s` would then look non-empty and the wrong variant would be written.
+ */
+export const SHELL_FAMILY_PROBE = "printf 'DSHSHELL:%s:END' \"${ZSH_VERSION-}\"";
+
+/**
+ * Read the family answer out of a probe's stdout.
+ * @returns the `$ZSH_VERSION` text ("" for bash/sh, a version for zsh).
+ */
+export function parseShellFamilyProbe(stdout) {
+  // The greedy prefix takes the LAST delimited answer: the shell prints its
+  // own after anything else that happens to be on the stream.
+  const match = /[\s\S]*DSHSHELL:([\s\S]*?):END/.exec(String(stdout ?? ""));
+  return match === null ? "" : match[1].trim();
+}
+
+/**
+ * Pick the snippet for a shell family reported by {@link parseShellFamilyProbe}:
+ * anything non-empty is zsh, everything else (bash, dash, sh) uses the
  * POSIX-compatible variant.
  */
 export function shellIntegrationCommand(zshVersion) {

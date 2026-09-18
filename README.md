@@ -8,7 +8,9 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.3.10-blue)
+![version](https://img.shields.io/badge/version-0.3.11-blue)
+
+> **v0.3.11**：修复 shell integration 的 shell 家族探测（此前探测输出被 cwd 标记污染，导致总是按 zsh 变体注入、bash 上整行脚本失效），并把 `shell` 状态补进终端上下文的结果契约。
 
 > **v0.3.10**：数据库面扩展——新增 **SQLite**（宿主内置 `node:sqlite`，零新依赖）、**ClickHouse**（HTTP 接口）、**openGauss**（复用 PostgreSQL 协议）三种驱动，查询结果可**导出 CSV/JSON**（经 SSH 的库直接把文件写到服务器，用 SFTP 面板下载）；新增**动态 SOCKS5 隧道**（`ssh -D`）；新增**会话录制与日志**（面板可预览/搜索/下载，agent 读取需批准并自动脱敏）；新增 **OSC 133 shell integration**，终端上下文能给出 cwd、退出码与提示符状态；SFTP 面板获得**文本编辑器、目录过滤、路径收藏与拖拽上传**。
 
@@ -85,7 +87,7 @@ Agent 命中上述黑名单时不会被静默拒绝：插件会创建一条一�
 ### 从 GitHub 安装（推荐）
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.10
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.11
 ```
 
 安装后重启 DSH Web：
@@ -98,14 +100,14 @@ dsh web
 
 ### 从发布压缩包安装
 
-从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.10) 下载 `dsh-ssh-ops-0.3.10.tgz` 后：
+从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.11) 下载 `dsh-ssh-ops-0.3.11.tgz` 后：
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.10.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.11.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.3.10.zip` 适用于离线审阅或二次开发；解压后可在目录中执行 `npm install && npm run build`。
+`dsh-ssh-ops-0.3.11.zip` 适用于离线审阅或二次开发；解压后可在目录中执行 `npm install && npm run build`。
 
 ## 使用方式
 
@@ -192,8 +194,8 @@ npm run pack:release
 
 生成物位于 `release/`：
 
-- `dsh-ssh-ops-0.3.10.tgz`：可直接被 DSH 安装。
-- `dsh-ssh-ops-0.3.10.zip`：完整离线源码包。
+- `dsh-ssh-ops-0.3.11.tgz`：可直接被 DSH 安装。
+- `dsh-ssh-ops-0.3.11.zip`：完整离线源码包。
 
 ## 许可
 

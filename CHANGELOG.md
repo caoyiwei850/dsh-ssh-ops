@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.11 - 2026-09-19
+
+- **修复 shell integration 的 shell 家族探测（真机验证发现）**：探测命令走的是带 cwd 标记的包装（每次 exec 都如此），且已启用 shell integration 的服务器自身还会输出 `133/633` 标记——探测输出因此恒为非空，插件**总是按 zsh 变体注入**，写进 bash 的 `precmd_functions+=(...)` 让整行脚本解析失败，OSC 133 从未真正生效（`shell` 状态恒为空、cwd/退出码取不到）。现在探测改为定界回答（`DSHSHELL:%s:END`）并取**最后一个**定界结果，对 cwd 标记与既有集成标记都免疫；补了污染场景的回归测试。
+- **终端上下文的结果契约补上 `shell` 字段**：`terminalContextReadResultSchema` 与 typert 声明此前未包含该字段（实测值能通过，但契约与实际返回不一致），并加了"schema 必须保留 shell"的断言，防同类漂移。
+- **测试**：69 项测试通过。
+
 ## 0.3.10 - 2026-09-19
 
 - **新增数据库驱动：SQLite / ClickHouse / openGauss**：SQLite 使用宿主运行时的内置 `node:sqlite`（零新依赖，文件路径即连接，不支持的宿主给出明确报错）；ClickHouse 走 HTTP 接口（`?` 占位符翻译为带类型的 URL 参数，值永不进入语句文本；结果按 JSONCompact 解析，服务端行数上限做截断）；openGauss 与 PostgreSQL 同协议，复用同一驱动、独立默认端口。连接请求、资源记录、启动时 schema 与 typert 声明四处同步扩展；`host`/`port` 对 SQLite 变为可选。

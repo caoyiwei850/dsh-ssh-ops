@@ -263,8 +263,18 @@ export const terminalContextListResultSchema = resultSchema(z.object({ sessions:
 export const terminalContextReadRequestSchema = z.object({
   sessionId: z.string().min(1), after: z.number().int().nonnegative().safe().optional(), maxBytes: z.number().int().min(1024).max(98304).optional()
 });
+export const shellIntegrationStateSchema = z.object({
+  atPrompt: z.boolean(),
+  lastExitCode: z.number().nullable(),
+  cwd: z.string().nullable(),
+  lastCommandAt: z.string().nullable(),
+  commands: z.number().int().nonnegative()
+});
+
 export const terminalContextReadResultSchema = resultSchema(z.object({
-  sessionId: z.string(), data: z.string(), historyStart: z.number().int().nonnegative(), historyEnd: z.number().int().nonnegative(), offset: z.number().int().nonnegative(), nextOffset: z.number().int().nonnegative(), wasClamped: z.boolean(), hasMore: z.boolean(), alive: z.boolean(), exit: z.union([z.object({ code: z.number(), signal: z.number().optional() }), z.null()]), redacted: z.boolean()
+  sessionId: z.string(), data: z.string(), historyStart: z.number().int().nonnegative(), historyEnd: z.number().int().nonnegative(), offset: z.number().int().nonnegative(), nextOffset: z.number().int().nonnegative(), wasClamped: z.boolean(), hasMore: z.boolean(), alive: z.boolean(), exit: z.union([z.object({ code: z.number(), signal: z.number().optional() }), z.null()]), redacted: z.boolean(),
+  // OSC 133 state when the shell emits it (enableShellIntegration); null before that.
+  shell: shellIntegrationStateSchema.nullable()
 }));
 
 // ── write ───────────────────────────────────────────────────────────────────

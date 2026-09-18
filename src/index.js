@@ -27,7 +27,7 @@ import { DbOpsManager } from "./db-ops.js";
 import { defaultDbPort } from "./db-drivers.js";
 import { attachSocks5 } from "./socks5.js";
 import { SessionLogStore } from "./session-log.js";
-import { ShellIntegrationTracker, shellIntegrationCommand } from "./shell-integration.js";
+import { SHELL_FAMILY_PROBE, ShellIntegrationTracker, parseShellFamilyProbe, shellIntegrationCommand } from "./shell-integration.js";
 import { homedir } from "node:os";
 import { join as joinPath } from "node:path";
 import {
@@ -1566,8 +1566,8 @@ export default class SshOpsService extends TypertRemoteService {
       // Which flavour of snippet fits is the shell's own answer: a single line
       // is parsed whole, so handing zsh syntax to sh (or the reverse) would
       // abort it silently on a pipe.
-      const family = await this.collectExecOutput(client, buildCwdAwareCommand("printf %s \"${ZSH_VERSION-}\" :"), 5000)
-        .then((result) => (result.exitCode === 0 ? String(result.stdout ?? "") : ""))
+      const family = await this.collectExecOutput(client, buildCwdAwareCommand(SHELL_FAMILY_PROBE), 5000)
+        .then((result) => (result.exitCode === 0 ? parseShellFamilyProbe(result.stdout) : ""))
         .catch(() => "");
       const written = await this.write({ sessionId: session.id, data: encodeData(`${shellIntegrationCommand(family)}\r`) });
       if (!written.ok) return written;
