@@ -265,6 +265,30 @@ export class SshApi {
     return this.call("tunnelStartLocal", input);
   }
 
+  enableShellIntegration(sessionId) {
+    return this.call("enableShellIntegration", { sessionId });
+  }
+
+  sessionLogList() {
+    return this.call("sessionLogList", {});
+  }
+
+  sessionLogRead(sessionId, offset, maxBytes) {
+    return this.call("sessionLogRead", { sessionId, offset, maxBytes });
+  }
+
+  sessionLogSearch(sessionId, query, maxHits) {
+    return this.call("sessionLogSearch", { sessionId, query, maxHits });
+  }
+
+  sessionLogDelete(sessionId) {
+    return this.call("sessionLogDelete", { sessionId });
+  }
+
+  tunnelStartDynamic(connectionId, bindAddr, bindPort) {
+    return this.call("tunnelStartDynamic", { connectionId, bindAddr, bindPort });
+  }
+
   tunnelStartRemote(input) {
     return this.call("tunnelStartRemote", input);
   }
@@ -293,6 +317,10 @@ export class SshApi {
 
   dbQuery(dbConnectionId, sql, params) {
     return this.call("dbQuery", { dbConnectionId, sql, params });
+  }
+
+  dbExport(dbConnectionId, sql, options = {}) {
+    return this.call("dbExport", { dbConnectionId, sql, ...options });
   }
 
   dbExecute(dbConnectionId, sql, params) {

@@ -3,6 +3,8 @@
  * SFTP, with upload, download, mkdir, delete, and rename actions.
  */
 import * as React from "react";
+import { MAX_EDITABLE_BYTES, decodeEditableText, encodeEditableText, filterEntries } from "./file-editor.js";
+import { favoritesKey, readFavorites, writeFavorites, toggleFavorite } from "./sftp-favorites.js";
 const { useEffect, useState } = React;
 
 function joinPath(base, name) {
@@ -32,12 +34,37 @@ export function SshFiles({ api, connectionId, onCd, initialPath = "/" }) {
   const [scpUploadFile, setScpUploadFile] = useState(null);
   const [scpUploadPath, setScpUploadPath] = useState("");
   const [scpDownloadPath, setScpDownloadPath] = useState("");
+  const [filter, setFilter] = useState("");
+  const [favorites, setFavorites] = useState([]);
+  const [favoritesStorageKey, setFavoritesStorageKey] = useState(null);
+  const [editing, setEditing] = useState(null);
+  const [editorBusy, setEditorBusy] = useState(false);
+  const [dragActive, setDragActive] = useState(false);
   // Monotonic sequence: only the latest issued directory listing may commit
   // state, so a slow earlier response cannot overwrite a newer directory.
   const loadSeq = React.useRef(0);
   // Mirror of cwd for post-operation refreshes: a mutation that finishes after
   // the user navigated elsewhere must refresh the NEW directory, not snap back.
   const cwdRef = React.useRef("/");
+
+  // Favorites are stored per server: the runtime connection id changes every
+  // session, so resolve the stable host/port/username key once here.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const value = await api.list();
+        if (cancelled) return;
+        const connection = (value?.connections ?? []).find((item) => item.connectionId === connectionId);
+        const key = favoritesKey(connection);
+        setFavoritesStorageKey(key);
+        setFavorites(readFavorites(globalThis.localStorage, key));
+      } catch {
+        // Favorites are cosmetic: a failed lookup simply shows none.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [api, connectionId]);
 
   const load = async (path) => {
     const seq = ++loadSeq.current;
@@ -281,11 +308,88 @@ export function SshFiles({ api, connectionId, onCd, initialPath = "/" }) {
     );
   }
 
+  const persistFavorites = (next) => {
+    setFavorites(next);
+    writeFavorites(globalThis.localStorage, favoritesStorageKey, next);
+  };
+  const pinCurrent = () => persistFavorites(toggleFavorite(favorites, cwd).paths);
+  const unpin = (path) => persistFavorites(favorites.filter((item) => item !== path));
+
+  /** Read one remote file into the text editor, refusing binaries and big files. */
+  const openEditor = async (entry) => {
+    const path = joinPath(cwd, entry.name);
+    setBusy(true);
+    setError(null);
+    try {
+      const stat = await api.sftpStat(connectionId, path).catch(() => null);
+      if (stat?.size > MAX_EDITABLE_BYTES) {
+        setError(`文件 ${formatSize(stat.size)} 超过 ${MAX_EDITABLE_BYTES / 1024 / 1024} MB 的编辑上限，请下载后编辑`);
+        return;
+      }
+      const file = await api.sftpReadFile(connectionId, path, MAX_EDITABLE_BYTES + 1);
+      const decoded = decodeEditableText(file.data);
+      if (!decoded.ok) {
+        setError(`${entry.name}：${decoded.reason}`);
+        return;
+      }
+      setEditing({
+        path,
+        text: decoded.text,
+        original: decoded.text,
+        replaced: decoded.replaced,
+        bytes: file.data.length,
+        mtime: stat?.mtime ?? entry.mtime ?? null
+      });
+    } catch (err) {
+      setError(`打开失败：${err?.message ?? String(err)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveEditor = async () => {
+    if (!editing) return;
+    setEditorBusy(true);
+    setError(null);
+    try {
+      // Another program may have rewritten the file since it was opened; a
+      // moved mtime asks before the editor's copy wins.
+      const fresh = await api.sftpStat(connectionId, editing.path).catch(() => null);
+      if (fresh && editing.mtime != null && fresh.mtime !== editing.mtime
+        && !globalThis.confirm?.("服务器上的文件已被其他程序修改，仍要用编辑器中的内容覆盖吗？")) {
+        return;
+      }
+      await api.sftpWriteFile(connectionId, editing.path, encodeEditableText(editing.text));
+      setEditing(null);
+      load(cwdRef.current);
+    } catch (err) {
+      setError(`保存失败：${err?.message ?? String(err)}`);
+    } finally {
+      setEditorBusy(false);
+    }
+  };
+
+  const visibleEntries = entries === null ? null : filterEntries(entries, filter);
+
   return (
     <div style={filesStyles.root}>
       <div style={filesStyles.toolbar}>
         <button onClick={goUp} disabled={cwd === "/"} style={filesStyles.btn} title="上级目录">↑</button>
         <span style={filesStyles.path} title={cwd}>{cwd}</span>
+        <input
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          placeholder="过滤"
+          title="按名称过滤当前目录"
+          aria-label="按名称过滤当前目录"
+          style={filesStyles.filterInput}
+        />
+        <button
+          onClick={pinCurrent}
+          style={filesStyles.btn}
+          title={favorites.includes(cwd) ? "取消收藏当前目录" : "收藏当前目录"}
+          aria-label={favorites.includes(cwd) ? "取消收藏当前目录" : "收藏当前目录"}
+        >{favorites.includes(cwd) ? "★" : "☆"}</button>
         <button onClick={() => setCreating(!creating)} style={filesStyles.btn} title="新建目录">＋</button>
         <label style={filesStyles.btn} title="上传文件（可多选）">
           上传
@@ -303,6 +407,17 @@ export function SshFiles({ api, connectionId, onCd, initialPath = "/" }) {
         </label>
         <button onClick={() => load(cwd)} disabled={busy} style={filesStyles.btn} title="刷新">↻</button>
       </div>
+
+      {favorites.length > 0 && (
+        <div style={filesStyles.favorites}>
+          {favorites.map((path) => (
+            <span key={path} style={filesStyles.favoriteChip}>
+              <button type="button" onClick={() => load(path)} style={filesStyles.favoritePath} title={`进入 ${path}`}>{path}</button>
+              <button type="button" onClick={() => unpin(path)} style={filesStyles.favoriteRemove} title={`取消收藏 ${path}`}>×</button>
+            </span>
+          ))}
+        </div>
+      )}
 
       {creating && (
         <div style={filesStyles.inlineForm}>
@@ -336,11 +451,24 @@ export function SshFiles({ api, connectionId, onCd, initialPath = "/" }) {
         </div>
       )}
 
-      <div style={filesStyles.list}>
+      <div
+        style={{ ...filesStyles.list, ...(dragActive ? filesStyles.listDrop : {}) }}
+        onDragOver={(e) => { e.preventDefault(); setDragActive(true); }}
+        onDragLeave={() => setDragActive(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragActive(false);
+          const files = [...(e.dataTransfer?.files ?? [])];
+          if (files.length > 0) upload(files);
+        }}
+      >
+        {dragActive && <div style={filesStyles.dropHint}>松开鼠标：上传到 {cwd}</div>}
         {!entries || entries.length === 0 ? (
-          <div style={filesStyles.empty}>{busy ? "加载中…" : (entries && entries.length === 0 ? "（空目录）" : "请连接服务器")}</div>
+          <div style={filesStyles.empty}>{busy ? "加载中…" : (entries && entries.length === 0 ? "（空目录，可拖入文件上传）" : "请连接服务器")}</div>
+        ) : visibleEntries.length === 0 ? (
+          <div style={filesStyles.empty}>（无匹配项）</div>
         ) : (
-          entries.map((entry) => (
+          visibleEntries.map((entry) => (
             <div
               key={entry.name}
               style={{
@@ -377,6 +505,9 @@ export function SshFiles({ api, connectionId, onCd, initialPath = "/" }) {
                       aria-label={`在终端 cd 到 ${joinPath(cwd, entry.name)}`}
                     >cd</button>
                   )}
+                  {!entry.isDirectory && (
+                    <button onClick={() => openEditor(entry)} disabled={busy} style={filesStyles.btnTiny} title="在文本编辑器中打开（上限 10 MB）">编辑</button>
+                  )}
                   <button onClick={() => download(entry)} disabled={busy} style={filesStyles.btnTiny}>下载</button>
                   <button onClick={() => setRenaming(!renaming)} style={filesStyles.btnTiny}>改名</button>
                   <button onClick={() => doDelete(entry)} disabled={busy} style={filesStyles.btnDanger}>删除</button>
@@ -386,6 +517,35 @@ export function SshFiles({ api, connectionId, onCd, initialPath = "/" }) {
           ))
         )}
       </div>
+
+      {editing && (
+        <div style={filesStyles.editorBackdrop}>
+          <div style={filesStyles.editorDialog}>
+            <div style={filesStyles.editorTitle} title={editing.path}>编辑：{editing.path}</div>
+            <div style={filesStyles.editorMeta}>
+              {formatSize(editing.bytes)} · UTF-8
+              {editing.replaced ? " · 含无法按 UTF-8 解码的字节（保存会按 UTF-8 重写）" : ""}
+              {editing.text !== editing.original ? " · 已修改" : ""}
+            </div>
+            <textarea
+              autoFocus
+              value={editing.text}
+              onChange={(event) => setEditing({ ...editing, text: event.target.value })}
+              spellCheck={false}
+              style={filesStyles.editorText}
+            />
+            <div style={filesStyles.editorActions}>
+              <button type="button" onClick={() => setEditing(null)} style={filesStyles.btn}>关闭</button>
+              <button
+                type="button"
+                onClick={saveEditor}
+                disabled={editorBusy || editing.text === editing.original}
+                style={filesStyles.btnPrimary}
+              >{editorBusy ? "保存中…" : "保存"}</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -440,5 +600,39 @@ const filesStyles = {
   rowSelected: { background: "rgba(45,108,223,.18)" },
   icon: { flex: "none", fontSize: 13, display: "inline-flex", alignItems: "center" },
   rowName: { flex: 1, fontSize: 13, color: "var(--dsw-alias-label-primary, #d7dbe2)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
-  empty: { margin: "auto", fontSize: 12, color: "var(--dsw-alias-label-secondary, #8b93a1)" }
+  empty: { margin: "auto", fontSize: 12, color: "var(--dsw-alias-label-secondary, #8b93a1)" },
+  filterInput: {
+    width: 110, flex: "none", background: "var(--dsw-alias-bg-layer-1, #101418)", border: "1px solid var(--dsw-alias-border-l4, #2a303a)",
+    borderRadius: 6, color: "var(--dsw-alias-label-primary, #d7dbe2)", padding: "3px 8px", fontSize: 12, outline: "none"
+  },
+  favorites: { display: "flex", flexWrap: "wrap", gap: 4, flex: "none" },
+  favoriteChip: {
+    display: "inline-flex", alignItems: "center", gap: 2, border: "1px solid var(--dsw-alias-border-l4, #2a303a)",
+    borderRadius: 999, padding: "1px 2px 1px 8px", background: "var(--dsw-alias-bg-layer-1, transparent)"
+  },
+  favoritePath: {
+    background: "transparent", border: "none", color: "var(--dsw-alias-label-primary, #d7dbe2)", cursor: "pointer",
+    fontSize: 11, maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", padding: 0
+  },
+  favoriteRemove: { background: "transparent", border: "none", color: "var(--dsw-alias-label-secondary, #8b93a1)", cursor: "pointer", fontSize: 12, padding: "0 4px" },
+  listDrop: { outline: "1px dashed var(--dsw-alias-button-primary-fill, #2d6cdf)", outlineOffset: -4, borderRadius: 6 },
+  dropHint: { fontSize: 12, color: "var(--dsw-alias-label-secondary, #8b93a1)", padding: "4px 8px" },
+  editorBackdrop: {
+    position: "fixed", inset: 0, background: "rgba(0,0,0,.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 60
+  },
+  editorDialog: {
+    width: "min(860px, 92vw)", height: "min(640px, 86vh)", display: "flex", flexDirection: "column", gap: 8, padding: 12,
+    background: "var(--dsw-alias-bg-layer-2, #171b21)", border: "1px solid var(--dsw-alias-border-l3, #2a303a)", borderRadius: 10
+  },
+  editorTitle: {
+    fontSize: 13, fontWeight: 600, color: "var(--dsw-alias-label-primary, #d7dbe2)",
+    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap"
+  },
+  editorMeta: { fontSize: 11, color: "var(--dsw-alias-label-secondary, #8b93a1)", flex: "none" },
+  editorText: {
+    flex: 1, minHeight: 0, resize: "none", background: "var(--dsw-alias-bg-layer-1, #101418)", color: "var(--dsw-alias-label-primary, #d7dbe2)",
+    border: "1px solid var(--dsw-alias-border-l4, #2a303a)", borderRadius: 6, padding: 10, fontSize: 12, lineHeight: 1.5,
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", whiteSpace: "pre", overflow: "auto", outline: "none"
+  },
+  editorActions: { display: "flex", justifyContent: "flex-end", gap: 8, flex: "none" }
 };

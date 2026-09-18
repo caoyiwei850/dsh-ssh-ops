@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.10 - 2026-09-19
+
+- **新增数据库驱动：SQLite / ClickHouse / openGauss**：SQLite 使用宿主运行时的内置 `node:sqlite`（零新依赖，文件路径即连接，不支持的宿主给出明确报错）；ClickHouse 走 HTTP 接口（`?` 占位符翻译为带类型的 URL 参数，值永不进入语句文本；结果按 JSONCompact 解析，服务端行数上限做截断）；openGauss 与 PostgreSQL 同协议，复用同一驱动、独立默认端口。连接请求、资源记录、启动时 schema 与 typert 声明四处同步扩展；`host`/`port` 对 SQLite 变为可选。
+- **表数据导出 CSV / JSON**：新增 `db_export` 接口与 agent 工具。复用查询的只读门禁与占位符绑定（导出不是第二条写通道），行上限默认 5 万、封顶 20 万；经 SSH 连接的库把文件写到服务器（默认 `/tmp/dsh-export-<连接>-<时间戳>.csv`，可用 SFTP 面板下载），直连的库 256KB 以内内联返回；结果工具栏新增「导出 CSV / 导出 JSON / 导出到服务器」。
+- **动态 SOCKS5 隧道（`ssh -D`）**：新增 `tunnelStartDynamic` 与面板「动态 SOCKS5」模式——一个本地监听端口，客户端逐连接选择目标，每条连接经该服务器打开独立通道；BIND 与 UDP ASSOCIATE 明确回「命令不支持」而不是近似实现；隧道列表显示当前活动连接数。
+- **会话录制与日志**：终端输出按会话落盘（默认 `~/.dsh/ssh-ops-logs`；单会话 8MB 上限，超出即截断并标记；目录 256MB 预算，超出按最旧轮换）。SSH 面板新增「日志」tab：列表（主机/时间/大小/截断状态）、分页预览、大小写不敏感搜索（命中行带偏移可直接跳转）、下载、删除。agent 侧新增 `ssh_session_log_list` / `ssh_session_log_search` / `ssh_session_log_read`，内容读取沿用终端上下文同一信任边界：操作者批准 + 自动脱敏。
+- **Shell integration（OSC 133）**：新增 `enableShellIntegration`，向空闲的 bash/zsh 会话注入单行标记脚本；此后 `ssh_terminal_context` 返回 `shell`（当前目录、最后一条命令的退出码、是否停在提示符）。序列解析可跨 chunk 分片、兼容 BEL 与 ST 终止符，未终止的长序列会被丢弃而不是无限缓冲。
+- **SFTP 面板增强**：文本编辑器（10MB 上限、UTF-8 BOM 剥离、前 8KB 含空字节判为二进制并拒绝、保存前校验 mtime 冲突）；目录名过滤；按服务器（用户@主机:端口）收藏常用路径；文件拖拽上传。
+- **修复**：SQLite 连接不再尝试建立 SSH 隧道（此前选隧道时连接必然失败）；`sshConnectionId` 对 SQLite 仅作为导出目的地保留。
+- **类型契约补全**：新增 `test/typert-sync.mjs` 守卫（descriptor ↔ 类型声明 ↔ 服务成员表 ↔ 驱动枚举四方对齐），并据此修好历史漂移——30 个从未声明的类型（batch\*、DbExplain/DbPreview/DbTx\*、已知主机、profileDisconnect 等）、14 个缺失的服务成员行，以及 `dbTypeSchema` 与启动时的 `dbProfileRecordSchema` 未包含新驱动类型（后者会让新类型资源记录无法通过启动校验）。
+- **注入片段按 shell 家族拆分（实测修复）**：单行命令会被整行解析，POSIX sh 遇到 zsh 的数组语法会在 stderr 静默报错、整行作废（管道下看不见）。现在 `enableShellIntegration` 先探测 `$ZSH_VERSION`，再写入对应变体（bash/`PROMPT_COMMAND` 或 zsh/`precmd_functions`），两者都经真机确认能打出 `133;D;<code>`、`133;A` 与 `633;Cwd=` 标记。
+- **导出到服务器支持自定义路径**：面板按钮改为先询问目标路径（留空用默认 `/tmp/dsh-export-*.csv`）。
+- **离线测试台升级**（`test-sshd.mjs` / `test-sftp-server.mjs`）：新增沙箱化 SFTP 子系统（真实文件读写、越界拒绝）、`direct-tcpip` 转发（本地/动态隧道离线可用）、以及请求了 PTY 时启动真正的交互式 shell（有提示符，shell integration 可离线验证）。
+- **测试**：67 项测试通过；新增 socks5（含真实转发往返：代理 → 上游回显）、session-log（存储层 + 服务层 + 接线契约）、shell-integration、sftp-files-ui、db-extra-drivers（SQLite 真实往返、ClickHouse 协议映射、两种导出目的地）、typert-sync 六个用例文件。
+
 ## 0.3.9 - 2026-09-18
 
 - **兼容 DSH 0.1.6-alpha.2（typert create() 契约）**：新宿主的 typert loader 要求 `TYPERT.schemas` 条目与每个调用的 strict codec 携带 `create()` 工厂（浏览器端 web boot 用同一校验，旧形状 `{ name, schema }` 会让插件条目激活失败、侧边栏整体消失）。插件在 `sshError` schema 与全部调用描述符上补齐 `create`，同时保留 `schema` 字段——alpha.1 读 `.schema`、alpha.2 调 `create()`，双版宿主通吃。

@@ -24,6 +24,12 @@ import { processTerminalInput } from "./terminal-input.js";
 import { fail } from "./envelope.js";
 import { POLICY_NOTICE_PREFIX, DANGEROUS_DEFAULT_REASON } from "./policy-messages.js";
 import { DbOpsManager } from "./db-ops.js";
+import { defaultDbPort } from "./db-drivers.js";
+import { attachSocks5 } from "./socks5.js";
+import { SessionLogStore } from "./session-log.js";
+import { ShellIntegrationTracker, shellIntegrationCommand } from "./shell-integration.js";
+import { homedir } from "node:os";
+import { join as joinPath } from "node:path";
 import {
   KnownHosts,
   decideHostKey,
@@ -36,6 +42,7 @@ import { registerSftpTools } from "./tools/sftp.js";
 import { registerTunnelTools } from "./tools/tunnel.js";
 import { registerBatchTools } from "./tools/batch.js";
 import { registerDbTools } from "./tools/db.js";
+import { registerSessionLogTools } from "./tools/session-log.js";
 
 const MAX_BUFFER_BYTES = 2 * 1024 * 1024;
 const MAX_COMMAND_OUTPUT_BYTES = 64 * 1024;
@@ -185,7 +192,8 @@ export const credentialDomainSpec = defineDomain({
 
 const dbProfileRecordSchema = z.object({
   name: z.string(),
-  type: z.enum(["mysql", "postgresql", "redis", "mongodb"]),
+  type: z.enum(["mysql", "postgresql", "opengauss", "sqlite", "clickhouse", "redis", "mongodb"]),
+  // SQLite records carry their file path in `database` and leave these empty.
   host: z.string(),
   port: z.number().int(),
   database: z.string().nullable(),
@@ -336,6 +344,10 @@ export default class SshOpsService extends TypertRemoteService {
       streamHeartbeatMs: STREAM_HEARTBEAT_MS,
       registerDbAgentTools: parseDbToolRegistration(),
       maxDbRows: parseDbRows(),
+      // Session recording is on by default; the directory defaults to
+      // ~/.dsh/ssh-ops-logs and is resolved lazily on first use.
+      sessionLogEnabled: true,
+      sessionLogDir: undefined,
       ...config
     };
     // Tear down all connections when the plugin fiber unloads.
@@ -1381,6 +1393,8 @@ export default class SshOpsService extends TypertRemoteService {
       lastPrompt: null,
       waiters: [],
       streamListeners: new Set(),
+      // OSC 133 markers, when the shell emits them (enableShellIntegration).
+      shellIntegration: new ShellIntegrationTracker(),
       exited: null,
       stream: null,
       // The PTY receives keystrokes one at a time. Track the current command
@@ -1412,6 +1426,15 @@ export default class SshOpsService extends TypertRemoteService {
       // connection. Remember it so agent tools can act on the same server
       // without making the model discover an opaque connection id first.
       this.activeConnectionId = request.connectionId;
+      try {
+        const conn = this.connections.get(request.connectionId);
+        await this.sessionLogStore()?.begin({
+          sessionId, connectionId: request.connectionId,
+          name: conn?.name ?? null, host: conn?.connectConfig?.host ?? conn?.username ?? null,
+          port: conn?.connectConfig?.port ?? null, openedBy: session.openedBy,
+          startedAt: session.openedAt
+        });
+      } catch { /* recording is best-effort */ }
     } catch (error) {
       this.sessions.delete(sessionId);
       conn.sessions.delete(sessionId);
@@ -1509,6 +1532,48 @@ export default class SshOpsService extends TypertRemoteService {
     }
   }
 
+  /**
+   * Install the OSC 133 markers in the session's shell (bash/zsh): the prompt
+   * and each command's end are announced with an exit code and a cwd report,
+   * which is what readTerminalContext surfaces as `shell`. Gated exactly like
+   * changeDirectory — the shell must be an idle, known, single interactive
+   * prompt, because the snippet edits PROMPT_COMMAND/PS1 for the login
+   * session and nothing here can undo a partial write.
+   */
+  async enableShellIntegration(request) {
+    const session = this.sessions.get(request.sessionId);
+    const conn = session && this.connections.get(session.connectionId);
+    const ready = () => session && conn && this.sessions.get(request.sessionId) === session
+      && !conn.dead && !conn.closing && session.exited === null && session.stream
+      && session.inputKnown === true && session.inputLine === ""
+      && !this.pendingForSession(session.id) && conn.sessions.size === 1;
+    if (!ready()) return { ok: false, error: fail("terminal-not-ready", "请先结束前台程序、清空未提交输入，并仅保留一个交互终端") };
+    try {
+      if (!posixLoginShell(await this.resolveLoginShell(conn))) {
+        return { ok: false, error: fail("unsupported-shell", "无法确认此 shell 的空闲状态，请在终端手动启用") };
+      }
+      const client = conn.client;
+      const probe = await this.collectExecOutput(client, buildCwdAwareCommand(":"), 5000);
+      if (probe.exitCode !== 0) {
+        return { ok: false, error: fail("terminal-busy", "未确认空闲交互 shell，请结束前台程序后重试") };
+      }
+      if (!ready() || client !== conn.client) {
+        return { ok: false, error: fail("terminal-changed", "终端状态已变化，请重试") };
+      }
+      // Which flavour of snippet fits is the shell's own answer: a single line
+      // is parsed whole, so handing zsh syntax to sh (or the reverse) would
+      // abort it silently on a pipe.
+      const family = await this.collectExecOutput(client, buildCwdAwareCommand("printf %s \"${ZSH_VERSION-}\" :"), 5000)
+        .then((result) => (result.exitCode === 0 ? String(result.stdout ?? "") : ""))
+        .catch(() => "");
+      const written = await this.write({ sessionId: session.id, data: encodeData(`${shellIntegrationCommand(family)}\r`) });
+      if (!written.ok) return written;
+      return { ok: true, value: { sessionId: session.id, enabled: true } };
+    } catch (error) {
+      return { ok: false, error: fail("shell-integration-failed", error.message) };
+    }
+  }
+
   async read(request) {
     const session = this.sessions.get(request.sessionId);
     if (session === void 0) {
@@ -1588,7 +1653,7 @@ export default class SshOpsService extends TypertRemoteService {
     const history = this.terminalContextHistory(session);
     const relativeAfter = request.after === undefined ? undefined : request.after - history.start;
     const window = history.journal.readWindow(relativeAfter, maxBytes);
-    return { ok: true, value: { sessionId: session.id, ...window, historyStart: history.start, historyEnd: history.end, offset: history.start + window.offset, nextOffset: history.start + window.nextOffset, alive: session.exited === null && session.stream !== null, exit: session.exited, redacted: history.redacted } };
+    return { ok: true, value: { sessionId: session.id, ...window, historyStart: history.start, historyEnd: history.end, offset: history.start + window.offset, nextOffset: history.start + window.nextOffset, alive: session.exited === null && session.stream !== null, exit: session.exited, redacted: history.redacted, shell: session.shellIntegration?.snapshot() ?? null } };
   }
 
   terminalContextHistory(session) {
@@ -1808,6 +1873,7 @@ export default class SshOpsService extends TypertRemoteService {
   }
 
   async closeSession(request) {
+    try { void this.sessionLogStore()?.end(request.sessionId, { exitCode: null }); } catch { /* best-effort */ }
     const session = this.sessions.get(request.sessionId);
     if (session === void 0) return { ok: false, error: fail("no-session", `session "${request.sessionId}" does not exist`) };
     this.sessions.delete(request.sessionId);
@@ -1870,6 +1936,10 @@ export default class SshOpsService extends TypertRemoteService {
 
   async dbExecute(request) {
     return this.dbOps.execute(request);
+  }
+
+  async dbExport(request) {
+    return this.dbOps.exportRows(request);
   }
 
   async dbListTables(request) {
@@ -1962,8 +2032,10 @@ export default class SshOpsService extends TypertRemoteService {
       const record = {
         name: request.name.trim(),
         type: request.type,
-        host: request.host.trim(),
-        port: request.port,
+        // SQLite stores the file path in `database`; host/port stay empty so
+        // the record shape (and every boot-time schema check) is unchanged.
+        host: (request.host ?? "").trim(),
+        port: request.port ?? defaultDbPort(request.type),
         database: request.database?.trim() || null,
         username: request.username?.trim() || null,
         ssl: request.ssl ?? "disabled",
@@ -3243,6 +3315,46 @@ export default class SshOpsService extends TypertRemoteService {
   }
 
   /** Stop a tunnel by id. */
+  /**
+   * Dynamic SOCKS5 forwarding (the `ssh -D` equivalent): one local listener
+   * whose clients choose the destination per connection; each chosen address
+   * is opened as a fresh channel on the SSH connection, so the client reaches
+   * whatever that server can reach.
+   */
+  async tunnelStartDynamic(request) {
+    const selected = this.resolveConnection(request.connectionId);
+    if (!selected.ok) return selected;
+    const conn = selected.connection;
+    if (!(await this.ensureAlive(conn))) {
+      return { ok: false, error: fail("connection-lost", `connection "${conn.id}" is down and could not be re-established`) };
+    }
+    const tunnelId = `tun-${randomUUID().slice(0, 8)}`;
+    const bindAddr = request.bindAddr ?? "127.0.0.1";
+    const bindPort = request.bindPort ?? 0;
+    const net = await import("node:net");
+    const record = { id: tunnelId, kind: "dynamic", bindAddr, bindPort, active: true, connections: 0 };
+    try {
+      const server = net.createServer((socket) => {
+        record.connections += 1;
+        attachSocks5(socket, {
+          forwardOut: (host, port, callback) => conn.client.forwardOut("127.0.0.1", 0, host, port, callback),
+          onClose: () => { record.connections = Math.max(0, record.connections - 1); }
+        });
+      });
+      await new Promise((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(bindPort, bindAddr, () => resolve());
+      });
+      const address = server.address();
+      record.bindPort = typeof address === "object" && address !== null ? address.port : bindPort;
+      record.server = server;
+      conn.tunnels.set(tunnelId, record);
+      return { ok: true, value: { tunnelId, kind: "dynamic", bindAddr, bindPort: record.bindPort } };
+    } catch (error) {
+      return { ok: false, error: fail("tunnel-start-failed", error.message) };
+    }
+  }
+
   async tunnelStop(request) {
     const selected = this.resolveConnection(request.connectionId);
     if (!selected.ok) return selected;
@@ -3250,7 +3362,7 @@ export default class SshOpsService extends TypertRemoteService {
     const tunnel = conn.tunnels.get(request.tunnelId);
     if (tunnel === void 0) return { ok: false, error: fail("no-tunnel", `tunnel "${request.tunnelId}" does not exist on this connection`) };
     try {
-      if (tunnel.kind === "local") {
+      if (tunnel.kind === "local" || tunnel.kind === "dynamic") {
         await new Promise((resolve) => tunnel.server.close(() => resolve()));
       } else {
         if (tunnel.bridgeInfo?.bridge) {
@@ -3281,9 +3393,60 @@ export default class SshOpsService extends TypertRemoteService {
       };
       if (t.targetHost !== undefined) entry.targetHost = t.targetHost;
       if (t.targetPort !== undefined) entry.targetPort = t.targetPort;
+      if (t.connections !== undefined) entry.connections = t.connections;
       return entry;
     });
     return { ok: true, value: { tunnels } };
+  }
+
+  // ── session logs ───────────────────────────────────────────────────────────
+
+  async sessionLogList() {
+    const store = this.sessionLogStore();
+    if (store === null) return { ok: true, value: { enabled: false, logs: [] } };
+    return { ok: true, value: { enabled: true, logs: await store.list() } };
+  }
+
+  async sessionLogRead(request) {
+    const store = this.sessionLogStore();
+    if (store === null) {
+      return { ok: false, error: fail("session-log-disabled", "会话录制已关闭（config.sessionLogEnabled = false）") };
+    }
+    const result = await store.read(request.sessionId, { offset: request.offset, maxBytes: request.maxBytes });
+    if (result.ok !== true) {
+      return { ok: false, error: fail("no-session-log", `会话日志不存在：${request.sessionId}`) };
+    }
+    return {
+      ok: true,
+      value: {
+        sessionId: request.sessionId, data: result.data,
+        startOffset: result.startOffset, nextOffset: result.nextOffset, eof: result.eof, size: result.size
+      }
+    };
+  }
+
+  async sessionLogSearch(request) {
+    const store = this.sessionLogStore();
+    if (store === null) {
+      return { ok: false, error: fail("session-log-disabled", "会话录制已关闭（config.sessionLogEnabled = false）") };
+    }
+    const result = await store.search(request.sessionId, { query: request.query, maxHits: request.maxHits });
+    if (result.ok !== true) {
+      return { ok: false, error: fail("no-session-log", `会话日志不存在：${request.sessionId}`) };
+    }
+    return {
+      ok: true,
+      value: { sessionId: request.sessionId, hits: result.hits, scannedBytes: result.scannedBytes, stoppedEarly: result.stoppedEarly }
+    };
+  }
+
+  async sessionLogDelete(request) {
+    const store = this.sessionLogStore();
+    if (store === null) return { ok: true, value: { deleted: 0, remaining: 0 } };
+    const deleted = request.sessionId === undefined
+      ? (await store.removeAll()).deleted
+      : ((await store.remove(request.sessionId)), 1);
+    return { ok: true, value: { deleted, remaining: (await store.list()).length } };
   }
 
   // ── SSH config import ──────────────────────────────────────────────────────
@@ -3426,8 +3589,24 @@ export default class SshOpsService extends TypertRemoteService {
   }
 
   /** Append transport data and retain a bounded, explicit-read capture. */
+  /**
+   * The session-log store, created on first use. Returns null when recording
+   * is switched off in config; every call site treats null as "not recording".
+   */
+  sessionLogStore() {
+    if (this.config.sessionLogEnabled === false) return null;
+    if (this.sessionLogs === undefined || this.sessionLogs === null) {
+      const dir = this.config.sessionLogDir ?? joinPath(homedir(), ".dsh", "ssh-ops-logs");
+      this.sessionLogs = new SessionLogStore({ dir });
+    }
+    return this.sessionLogs;
+  }
+
   appendSessionOutput(session, text, { capture = true, observePrompt = true } = {}) {
     this.terminalOutput(session).append(text);
+    // Recording must never influence the session: a broken log is swallowed.
+    try { this.sessionLogStore()?.append(session.id, text); } catch { /* keep the session alive */ }
+    try { session.shellIntegration?.feed(text); } catch { /* tracking is decoration */ }
     // Legacy poll readers retain their independent destructive buffer.
     session.buffer = tailCapped((session.buffer ?? "") + text, this.config.maxBufferBytes);
     if (capture) {
@@ -3456,6 +3635,7 @@ export default class SshOpsService extends TypertRemoteService {
     registerTunnelTools(ctx, this);
     registerBatchTools(ctx, this);
     if (this.config.registerDbAgentTools !== false) registerDbTools(ctx, this);
+    registerSessionLogTools(ctx, this);
   }
 
   // ── internals ──────────────────────────────────────────────────────────────
@@ -3463,6 +3643,7 @@ export default class SshOpsService extends TypertRemoteService {
   recordExit(session, exit) {
     if (session.exited !== null) return;
     session.exited = exit;
+    try { void this.sessionLogStore()?.end(session.id, { exitCode: exit?.code ?? null }); } catch { /* best-effort */ }
     this.removePendingForSession(session.id);
     // A naturally-exited shell must no longer count as an open terminal:
     // drop it from the connection's live-session set so list() reports only

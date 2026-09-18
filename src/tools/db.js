@@ -22,12 +22,12 @@ export function registerDbTools(ctx, service) {
   ctx.tools.register(defineTool({
     name: "db_connect",
     timeoutMs: DB_TOOL_TIMEOUT_MS,
-    description: "Connect to a database (MySQL, PostgreSQL, Redis, or MongoDB) so the agent can query or run commands in later db_query/db_execute/db_run calls. When an SSH server is connected, a loopback host (127.0.0.1/localhost) is automatically tunneled through the current server (via_ssh=auto), so 'connect to the database on the server' works without an internal connection id; pass via_ssh='no' to force a local connection, or ssh_connection_id to pick a specific server. For cloud-managed databases requiring TLS, set ssl to 'verify' (public-CA certs) or 'preferred' (self-signed certs). Returns a db_connection_id.",
+    description: "Connect to a database (MySQL, PostgreSQL, openGauss, SQLite, ClickHouse, Redis, or MongoDB) so the agent can query or run commands in later db_query/db_execute/db_run calls. When an SSH server is connected, a loopback host (127.0.0.1/localhost) is automatically tunneled through the current server (via_ssh=auto), so 'connect to the database on the server' works without an internal connection id; pass via_ssh='no' to force a local connection, or ssh_connection_id to pick a specific server. For cloud-managed databases requiring TLS, set ssl to 'verify' (public-CA certs) or 'preferred' (self-signed certs). Returns a db_connection_id.",
     parameters: {
-      type: { type: "string", enum: ["mysql", "postgresql", "redis", "mongodb"], required: true, description: "Database type." },
-      host: { type: "string", required: true, description: "Database host. When reached via SSH, this is the address as seen from the SSH server (127.0.0.1 if the DB runs on that server)." },
-      port: { type: "integer", required: true, description: "Database port (e.g. 3306 MySQL, 5432 PostgreSQL, 6379 Redis, 27017 MongoDB)." },
-      database: { type: "string", description: "Database/schema name (MySQL/PostgreSQL/MongoDB) or numeric DB index (Redis)." },
+      type: { type: "string", enum: ["mysql", "postgresql", "opengauss", "sqlite", "clickhouse", "redis", "mongodb"], required: true, description: "Database type." },
+      host: { type: "string", description: "Database host (required for every type except sqlite). When reached via SSH, this is the address as seen from the SSH server (127.0.0.1 if the DB runs on that server)." },
+      port: { type: "integer", description: "Database port; defaults per type (3306 MySQL, 5432 PostgreSQL/openGauss, 8123 ClickHouse, 6379 Redis, 27017 MongoDB). Not used by sqlite." },
+      database: { type: "string", description: "Database/schema name (MySQL/PostgreSQL/openGauss/ClickHouse, optional), the SQLite file path (required for sqlite), or numeric DB index (Redis)." },
       username: { type: "string", description: "Database username (not needed for Redis)." },
       password: { type: "string", description: "Database password." },
       ssl: { type: "string", enum: ["disabled", "preferred", "verify"], description: "TLS mode: 'disabled' (default) plain TCP; 'preferred' encrypt without cert verification (self-signed cloud DBs); 'verify' encrypt and verify CA (public-CA cloud DBs)." },
@@ -347,6 +347,52 @@ export function registerDbTools(ctx, service) {
     async execute(args, exec) {
       const result = await service.dbExplain({ dbConnectionId: args.db_connection_id, sql: args.sql, params: args.params, signal: exec?.signal });
       if (!result.ok) throw new Error(`db_explain failed: ${result.error.message}`);
+      return result.value;
+    }
+  }));
+
+  ctx.tools.register(defineTool({
+    name: "db_export",
+    timeoutMs: DB_TOOL_TIMEOUT_MS,
+    description: "Export the rows of a read-only query (SELECT/WITH, same lexical gate as db_query) as CSV or JSON. When the database is reached through an SSH connection the file is written onto that server (default /tmp/dsh-export-*.{csv,json}) and can be pulled with the SFTP tools; a directly-connected database returns the content inline (small results only). Use for dumping a table or query result, e.g. to hand a CSV to someone or to archive data.",
+    parameters: {
+      db_connection_id: { type: "string", required: true },
+      sql: { type: "string", required: true, description: "SELECT or WITH ... SELECT statement whose rows are exported." },
+      format: { type: "string", enum: ["csv", "json"], description: "Export format; defaults to csv." },
+      delimiter: { type: "string", enum: ["comma", "tab", "semicolon", "pipe"], description: "CSV field delimiter; defaults to comma." },
+      header: { type: "boolean", description: "Include a header row in CSV output; defaults to true." },
+      path: { type: "string", description: "Remote path to write to when the connection runs through SSH; defaults to /tmp/dsh-export-<connection>-<timestamp>.<ext>." },
+      max_rows: { type: "integer", description: "Row cap for the export; defaults to 50000, maximum 200000." },
+      params: { type: "array", description: "Optional parameter values for placeholders." }
+    },
+    output: {
+      schema: {
+        type: "object", additionalProperties: false,
+        properties: {
+          format: { type: "string", required: true },
+          columns: { type: "array", required: true, items: { type: "string" } },
+          rows: { type: "integer", required: true },
+          bytes: { type: "integer", required: true },
+          truncated: { type: "boolean", required: true },
+          path: { oneOf: [{ type: "string" }, { type: "null" }], required: true },
+          content: { type: "string" }
+        }
+      },
+      render(_args, value) {
+        const where = value.path !== null
+          ? `written to ${value.path} (pull it with the SFTP tools)`
+          : "returned inline";
+        const more = value.truncated ? " [truncated at the row cap]" : "";
+        return [{ type: "text", text: `db_export ${value.format}: ${value.rows} row(s), ${value.bytes} bytes ${where}${more}` }];
+      }
+    },
+    async execute(args, exec) {
+      const result = await service.dbExport({
+        dbConnectionId: args.db_connection_id, sql: args.sql, format: args.format,
+        delimiter: args.delimiter, header: args.header, path: args.path,
+        maxRows: args.max_rows, params: args.params, signal: exec?.signal
+      });
+      if (!result.ok) throw new Error(`db_export failed: ${result.error.message}`);
       return result.value;
     }
   }));

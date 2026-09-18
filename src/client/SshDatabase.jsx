@@ -11,9 +11,19 @@ const { useEffect, useState, useRef, useCallback } = React;
 const DB_TYPES = [
   { value: "mysql", label: "MySQL", port: 3306, placeholder: "SELECT * FROM users LIMIT 10" },
   { value: "postgresql", label: "PostgreSQL", port: 5432, placeholder: "SELECT * FROM users LIMIT 10" },
+  { value: "opengauss", label: "openGauss", port: 5432, placeholder: "SELECT * FROM users LIMIT 10" },
+  { value: "sqlite", label: "SQLite", port: 0, file: true, placeholder: "SELECT * FROM users LIMIT 10" },
+  { value: "clickhouse", label: "ClickHouse", port: 8123, placeholder: "SELECT * FROM system.tables LIMIT 10" },
   { value: "redis", label: "Redis", port: 6379, placeholder: "GET mykey" },
   { value: "mongodb", label: "MongoDB", port: 27017, placeholder: "" }
 ];
+
+/** SQL-family drivers: they share the query/execute/table UI. */
+const SQL_TYPES = new Set(["mysql", "postgresql", "opengauss", "sqlite", "clickhouse"]);
+
+function isSqlDriver(type) {
+  return SQL_TYPES.has(type);
+}
 
 const MONGO_OPS = ["find", "findOne", "insertOne", "updateOne", "deleteOne", "countDocuments"];
 
@@ -31,6 +41,9 @@ function typeColor(type) {
   switch (type) {
     case "mysql": return "#4479A1";
     case "postgresql": return "#4169E1";
+    case "opengauss": return "#005BAC";
+    case "sqlite": return "#003B57";
+    case "clickhouse": return "#FFCC01";
     case "redis": return "#DC382D";
     case "mongodb": return "#47A248";
     default: return "#8b93a1";
@@ -143,7 +156,7 @@ export function SshDatabase({ api }) {
   // Auto-load the table tree when a MySQL/PostgreSQL connection is selected.
   useEffect(() => {
     const c = connections.find((x) => x.dbConnectionId === selectedId);
-    if (c && (c.type === "mysql" || c.type === "postgresql") && !tableTree[selectedId]) {
+    if (c && isSqlDriver(c.type) && !tableTree[selectedId]) {
       setTreeOpen((o) => ({ ...o, [selectedId]: true }));
       loadTables(selectedId);
     }
@@ -159,11 +172,12 @@ export function SshDatabase({ api }) {
     try {
       if (form.saveProfile) {
         // Save as durable profile with credential, then connect via profile.
+        const isFile = form.type === "sqlite";
         const saved = await api.dbProfileSave({
-          name: form.name?.trim() || `${form.type}:${form.host.trim()}`,
+          name: form.name?.trim() || (isFile ? `sqlite:${form.database.trim()}` : `${form.type}:${form.host.trim()}`),
           type: form.type,
-          host: form.host.trim(),
-          port: Number(form.port) || typeMeta(form.type).port,
+          host: isFile ? undefined : form.host.trim(),
+          port: isFile ? undefined : (Number(form.port) || typeMeta(form.type).port),
           database: form.database?.trim() || undefined,
           username: form.username?.trim() || undefined,
           password: form.password || undefined,
@@ -183,8 +197,8 @@ export function SshDatabase({ api }) {
       }
       const result = await api.dbConnect({
         type: form.type,
-        host: form.host.trim(),
-        port: Number(form.port) || typeMeta(form.type).port,
+        host: form.type === "sqlite" ? undefined : form.host.trim(),
+        port: form.type === "sqlite" ? undefined : (Number(form.port) || typeMeta(form.type).port),
         database: form.database?.trim() || undefined,
         username: form.username?.trim() || undefined,
         password: form.password || undefined,
@@ -238,12 +252,13 @@ export function SshDatabase({ api }) {
     if (name === null || name.trim() === "" || name.trim() === profile.name) return;
     setError(null);
     try {
+      const isFile = profile.type === "sqlite";
       await api.dbProfileSave({
         dbProfileId: profile.dbProfileId,
         name: name.trim(),
         type: profile.type,
-        host: profile.host,
-        port: profile.port,
+        host: isFile ? undefined : profile.host,
+        port: isFile ? undefined : (profile.port || undefined),
         database: profile.database ?? undefined,
         username: profile.username ?? undefined,
         ssl: profile.ssl,
@@ -280,7 +295,7 @@ export function SshDatabase({ api }) {
                   <span style={{ ...dbStyles.typeDot, background: typeColor(p.type) }} />
                   <div style={dbStyles.connInfo} onClick={() => !p.connected && handleProfileConnect(p.dbProfileId)}>
                     <div style={dbStyles.connName}>{p.name}</div>
-                    <div style={dbStyles.connMeta}>{typeLabel(p.type)} · {p.host}:{p.port}{p.sshProfileId ? " · SSH" : ""}</div>
+                    <div style={dbStyles.connMeta}>{typeLabel(p.type)} · {p.type === "sqlite" ? (p.database ?? "") : `${p.host}:${p.port}`}{p.sshProfileId ? " · SSH" : ""}</div>
                   </div>
                   {p.connected
                     ? <span style={dbStyles.badgeConnected}>已连接</span>
@@ -298,7 +313,7 @@ export function SshDatabase({ api }) {
               <div style={dbStyles.sectionLabel}>当前连接</div>
               {connections.map((c) => {
                 const tree = tableTree[c.dbConnectionId];
-                const isSqlType = c.type === "mysql" || c.type === "postgresql";
+                const isSqlType = isSqlDriver(c.type);
                 return (
                   <React.Fragment key={c.dbConnectionId}>
                     <div
@@ -311,7 +326,7 @@ export function SshDatabase({ api }) {
                       <span style={{ ...dbStyles.typeDot, background: typeColor(c.type) }} />
                       <div style={dbStyles.connInfo}>
                         <div style={dbStyles.connName}>{c.name}</div>
-                        <div style={dbStyles.connMeta}>{typeLabel(c.type)} · {c.host}:{c.port}{c.sshConnectionId ? " · SSH" : ""}</div>
+                        <div style={dbStyles.connMeta}>{typeLabel(c.type)} · {c.type === "sqlite" ? (c.database ?? "") : `${c.host}:${c.port}`}{c.sshConnectionId ? " · SSH" : ""}</div>
                       </div>
                       <button
                         onClick={(e) => { e.stopPropagation(); handleDisconnect(c.dbConnectionId); }}
@@ -429,7 +444,7 @@ function ConnectForm({ sshProfiles, api, onSubmit, onCancel }) {
 
   const submit = async (e) => {
     e?.preventDefault?.();
-    if (!host.trim()) return;
+    if (!canSubmit) return;
     setBusy(true);
     try {
       await onSubmit({ type, host, port, database, username, password, ssl, sshProfileId, name, saveProfile });
@@ -447,6 +462,9 @@ function ConnectForm({ sshProfiles, api, onSubmit, onCancel }) {
 
   const inputStyle = dbStyles.input;
   const isNoSql = type === "redis" || type === "mongodb";
+  const isFile = type === "sqlite";
+  // SQLite is addressed by file path; every other type needs host (+ port).
+  const canSubmit = isFile ? database.trim().length > 0 : host.trim().length > 0;
 
   return (
     <form ref={formRef} onSubmit={submit} style={dbStyles.form}>
@@ -459,21 +477,30 @@ function ConnectForm({ sshProfiles, api, onSubmit, onCancel }) {
         </select>
       </div>
 
-      <div style={dbStyles.formRow2}>
-        <label style={dbStyles.formLabel2}>
-          主机
-          <input value={host} onChange={(e) => setHost(e.target.value)} placeholder={sshProfileId ? "127.0.0.1（从 SSH 服务器看）" : "数据库地址"} style={inputStyle} autoFocus required />
-        </label>
-        <label style={dbStyles.formLabel2w}>
-          端口
-          <input value={port} onChange={(e) => setPort(e.target.value)} inputMode="numeric" style={inputStyle} />
-        </label>
-      </div>
+      {isFile ? (
+        <div style={dbStyles.formRow}>
+          <label style={dbStyles.formLabel}>
+            数据库文件
+            <input value={database} onChange={(e) => setDatabase(e.target.value)} placeholder="/path/to/database.db" style={inputStyle} autoFocus required />
+          </label>
+        </div>
+      ) : (
+        <div style={dbStyles.formRow2}>
+          <label style={dbStyles.formLabel2}>
+            主机
+            <input value={host} onChange={(e) => setHost(e.target.value)} placeholder={sshProfileId ? "127.0.0.1（从 SSH 服务器看）" : "数据库地址"} style={inputStyle} autoFocus required />
+          </label>
+          <label style={dbStyles.formLabel2w}>
+            端口
+            <input value={port} onChange={(e) => setPort(e.target.value)} inputMode="numeric" style={inputStyle} />
+          </label>
+        </div>
+      )}
 
       <div style={dbStyles.formRow2}>
         <label style={dbStyles.formLabel2}>
-          {isNoSql ? "库名 / 索引" : "数据库名"}
-          <input value={database} onChange={(e) => setDatabase(e.target.value)} placeholder={type === "redis" ? "0" : "可选"} style={inputStyle} />
+          {isFile ? "备注" : isNoSql ? "库名 / 索引" : "数据库名"}
+          <input value={isFile ? name : database} onChange={(e) => (isFile ? setName(e.target.value) : setDatabase(e.target.value))} placeholder={isFile ? "可选" : type === "redis" ? "0" : "可选"} style={inputStyle} />
         </label>
         <label style={dbStyles.formLabel2w}>
           名称
@@ -517,7 +544,7 @@ function ConnectForm({ sshProfiles, api, onSubmit, onCancel }) {
 
       <div style={dbStyles.formActions}>
         <button type="button" onClick={onCancel} style={dbStyles.btnSecondary}>取消 (Esc)</button>
-        <button type="submit" disabled={busy || !host.trim()} style={dbStyles.btnPrimary}>{busy ? "连接中…" : "连接"}</button>
+        <button type="submit" disabled={busy || !canSubmit} style={dbStyles.btnPrimary}>{busy ? "连接中…" : "连接"}</button>
       </div>
     </form>
   );
@@ -528,6 +555,22 @@ function ConnectForm({ sshProfiles, api, onSubmit, onCancel }) {
 function csvField(value) {
   const s = value === null || value === undefined ? "" : typeof value === "object" ? JSON.stringify(value) : String(value);
   return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+/** Client-side JSON download of the current result set. */
+function downloadJson(fileName, columns, rows) {
+  const projected = (rows ?? []).map((row) => {
+    const item = {};
+    for (const column of columns ?? []) item[column] = row?.[column] ?? null;
+    return item;
+  });
+  const blob = new Blob([JSON.stringify(projected, null, 2)], { type: "application/json;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = fileName;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 function downloadCsv(fileName, columns, rows) {
@@ -576,11 +619,12 @@ const HISTORY_LIMIT = 50;
 const PREVIEW_PAGE_SIZE = 50;
 
 function QueryPane({ api, connection, onError, previewTable, onClearPreview }) {
-  const isSql = connection.type === "mysql" || connection.type === "postgresql";
+  const isSql = isSqlDriver(connection.type);
   const isRedis = connection.type === "redis";
   const isMongo = connection.type === "mongodb";
 
   const [sql, setSql] = useState(typeMeta(connection.type).placeholder);
+  const [exportBusy, setExportBusy] = useState(false);
   const [redisCmd, setRedisCmd] = useState("GET mykey");
   const [mongoCollection, setMongoCollection] = useState("");
   const [mongoOp, setMongoOp] = useState("find");
@@ -727,12 +771,31 @@ function QueryPane({ api, connection, onError, previewTable, onClearPreview }) {
   const previewCanPrev = previewData && previewOffset > 0 && !previewBusy;
   const previewCanNext = previewData && previewData.rowCount >= PREVIEW_PAGE_SIZE && !previewBusy;
 
+  /** Host-side export: the file lands on the SSH server that tunnels this DB. */
+  const exportToServer = async () => {
+    const target = globalThis.prompt?.("导出到服务器上的哪个路径？（留空使用默认的 /tmp/dsh-export-*.csv）", "");
+    if (target === null || target === undefined) return;
+    setExportBusy(true);
+    try {
+      const value = await api.dbExport(connection.dbConnectionId, sql.trim(), {
+        format: "csv",
+        ...(target.trim() === "" ? {} : { path: target.trim() })
+      });
+      onError?.(null);
+      window.alert(`已导出 ${value.rows} 行到服务器文件：\n${value.path}\n\n可在右侧 SSH 面板的 SFTP 中下载。`);
+    } catch (err) {
+      onError?.(err?.message ?? String(err));
+    } finally {
+      setExportBusy(false);
+    }
+  };
+
   return (
     <div style={dbStyles.queryPane}>
       <div style={dbStyles.queryHeader}>
         <span style={{ ...dbStyles.typeDot, background: typeColor(connection.type) }} />
         <span style={dbStyles.queryConnName}>{connection.name}</span>
-        <span style={dbStyles.queryConnMeta}>{typeLabel(connection.type)} · {connection.host}:{connection.port}</span>
+        <span style={dbStyles.queryConnMeta}>{typeLabel(connection.type)} · {connection.type === "sqlite" ? (connection.database ?? "") : `${connection.host}:${connection.port}`}</span>
       </div>
 
       {/* Table preview mode: pagination bar instead of the SQL editor. */}
@@ -804,7 +867,18 @@ function QueryPane({ api, connection, onError, previewTable, onClearPreview }) {
             </button>
             <button onClick={clear} style={dbStyles.btnSecondary}>清除</button>
             {resultType === "table" && result?.rows?.length > 0 && (
-              <button onClick={() => downloadCsv(`query-${new Date().toISOString().slice(0, 10)}.csv`, result.columns, result.rows)} style={dbStyles.btnSecondary} title="导出结果为 CSV">导出 CSV</button>
+              <>
+                <button onClick={() => downloadCsv(`query-${new Date().toISOString().slice(0, 10)}.csv`, result.columns, result.rows)} style={dbStyles.btnSecondary} title="导出结果为 CSV">导出 CSV</button>
+                <button onClick={() => downloadJson(`query-${new Date().toISOString().slice(0, 10)}.json`, result.columns, result.rows)} style={dbStyles.btnSecondary} title="导出结果为 JSON">导出 JSON</button>
+              </>
+            )}
+            {isSql && connection.sshConnectionId && (
+              <button
+                onClick={exportToServer}
+                disabled={exportBusy || !sql.trim()}
+                style={dbStyles.btnSecondary}
+                title="把当前 SQL 的结果写成服务器上的文件（可用右侧 SSH 面板的 SFTP 下载）"
+              >{exportBusy ? "导出中…" : "导出到服务器"}</button>
             )}
             {history.length > 0 && (
               <select

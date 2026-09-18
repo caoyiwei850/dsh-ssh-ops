@@ -496,6 +496,21 @@ export const tunnelStartLocalRequestSchema = z.object({
   remotePort: z.number().int().min(1).max(65535)
 });
 
+export const tunnelStartDynamicRequestSchema = z.object({
+  connectionId: z.string().optional(),
+  bindAddr: z.string().optional(),
+  bindPort: z.number().int().min(0).max(65535).optional()
+});
+
+export const tunnelStartDynamicResultSchema = resultSchema(
+  z.object({
+    tunnelId: z.string(),
+    kind: z.literal("dynamic"),
+    bindAddr: z.string(),
+    bindPort: z.number()
+  })
+);
+
 export const tunnelStartLocalResultSchema = resultSchema(
   z.object({
     tunnelId: z.string(),
@@ -554,9 +569,72 @@ export const tunnelListResultSchema = resultSchema(
       remotePort: z.number().optional(),
       targetHost: z.string().optional(),
       targetPort: z.number().optional(),
+      /** Dynamic tunnels only: accepted client connections right now. */
+      connections: z.number().int().nonnegative().optional(),
       active: z.boolean()
     }))
   })
+);
+
+export const enableShellIntegrationRequestSchema = z.object({ sessionId: z.string().min(1) });
+export const enableShellIntegrationResultSchema = resultSchema(
+  z.object({ sessionId: z.string(), enabled: z.boolean() })
+);
+
+// ── session logs (recording) ─────────────────────────────────────────────────
+
+export const sessionLogInfoSchema = z.object({
+  sessionId: z.string(),
+  connectionId: z.string().nullable(),
+  name: z.string().nullable(),
+  host: z.string().nullable(),
+  port: z.number().nullable(),
+  openedBy: z.string().nullable(),
+  startedAt: z.string(),
+  endedAt: z.string().nullable(),
+  exitCode: z.number().nullable(),
+  bytes: z.number(),
+  truncated: z.boolean()
+});
+
+export const sessionLogListRequestSchema = z.object({});
+export const sessionLogListResultSchema = resultSchema(
+  z.object({ enabled: z.boolean(), logs: z.array(sessionLogInfoSchema) })
+);
+
+export const sessionLogReadRequestSchema = z.object({
+  sessionId: z.string().min(1),
+  offset: z.number().int().min(0).optional(),
+  maxBytes: z.number().int().min(1).max(4194304).optional()
+});
+export const sessionLogReadResultSchema = resultSchema(
+  z.object({
+    sessionId: z.string(),
+    data: z.string(),
+    startOffset: z.number(),
+    nextOffset: z.number(),
+    eof: z.boolean(),
+    size: z.number()
+  })
+);
+
+export const sessionLogSearchRequestSchema = z.object({
+  sessionId: z.string().min(1),
+  query: z.string().min(1),
+  maxHits: z.number().int().min(1).max(1000).optional()
+});
+export const sessionLogSearchResultSchema = resultSchema(
+  z.object({
+    sessionId: z.string(),
+    hits: z.array(z.object({ offset: z.number(), line: z.string() })),
+    scannedBytes: z.number(),
+    stoppedEarly: z.boolean()
+  })
+);
+
+export const sessionLogDeleteRequestSchema = z.object({ sessionId: z.string().min(1).optional() });
+export const sessionLogDeleteResultSchema = resultSchema(
+  z.object({ deleted: z.number(), remaining: z.number() })
 );
 
 // ── SSH config import ─────────────────────────────────────────────────────────
@@ -579,13 +657,15 @@ export const sshConfigImportResultSchema = resultSchema(
 
 // ── Database ops ─────────────────────────────────────────────────────────────
 
-export const dbTypeSchema = z.enum(["mysql", "postgresql", "redis", "mongodb"]);
+export const dbTypeSchema = z.enum(["mysql", "postgresql", "opengauss", "sqlite", "clickhouse", "redis", "mongodb"]);
 export const dbSslSchema = z.enum(["disabled", "preferred", "verify"]).default("disabled");
 
 export const dbConnectRequestSchema = z.object({
   type: dbTypeSchema,
-  host: z.string().min(1),
-  port: z.number().int().min(1).max(65535),
+  // Absent for SQLite (addressed by file path in `database`); every other
+  // driver validates its presence in the host layer.
+  host: z.string().optional(),
+  port: z.number().int().min(1).max(65535).optional(),
   database: z.string().optional(),
   username: z.string().optional(),
   password: z.string().optional(),
@@ -629,6 +709,29 @@ export const dbQueryResultSchema = resultSchema(
     rows: z.array(z.any()),
     rowCount: z.number(),
     truncated: z.boolean()
+  })
+);
+
+export const dbExportRequestSchema = z.object({
+  dbConnectionId: z.string().min(1),
+  sql: z.string().min(1),
+  format: z.enum(["csv", "json"]).default("csv"),
+  delimiter: z.enum(["comma", "tab", "semicolon", "pipe"]).optional(),
+  header: z.boolean().optional(),
+  path: z.string().optional(),
+  maxRows: z.number().int().min(1).max(200000).optional(),
+  params: z.array(z.any()).optional(),
+  signal: z.any().optional()
+});
+export const dbExportResultSchema = resultSchema(
+  z.object({
+    format: z.enum(["csv", "json"]),
+    columns: z.array(z.string()),
+    rows: z.number(),
+    bytes: z.number(),
+    truncated: z.boolean(),
+    path: z.string().nullable(),
+    content: z.string().optional()
   })
 );
 
@@ -788,8 +891,8 @@ export const dbProfileSaveRequestSchema = z.object({
   dbProfileId: z.string().uuid().optional(),
   name: z.string().min(1).max(120),
   type: dbTypeSchema,
-  host: z.string().min(1).max(255),
-  port: z.number().int().min(1).max(65535),
+  host: z.string().max(255).optional(),
+  port: z.number().int().min(1).max(65535).optional(),
   database: z.string().optional(),
   username: z.string().optional(),
   password: z.string().optional(),

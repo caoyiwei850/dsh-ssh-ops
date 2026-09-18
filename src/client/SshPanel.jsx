@@ -23,6 +23,7 @@ import { IconRobot16 } from "./IconRobot16.jsx";
 import { SshFiles } from "./SshFiles.jsx";
 import { SshTunnels } from "./SshTunnels.jsx";
 import { SshDatabase } from "./SshDatabase.jsx";
+import { SshLogs } from "./SshLogs.jsx";
 import { privateKeyProblem } from "./pemkey.js";
 import { availableCommandSnippets, loadCommandSnippets, matchingCommandSnippets, saveCommandSnippets, searchCommandSnippets } from "./command-snippets.js";
 import { createTerminalPool } from "./terminal-pool.js";
@@ -1323,6 +1324,16 @@ export function SshPanel({ api, credentials, locale, viewId = DRAWER_VIEW_ID, vi
         >
           {t.tabDatabase}
         </button>
+        <button
+          onClick={() => setTab("logs")}
+          style={{
+            ...panelStyles.tab,
+            ...(tab === "logs" ? panelStyles.tabActive : {})
+          }}
+          title="已录制的会话日志（可搜索、下载）"
+        >
+          日志
+        </button>
       </div>
 
       {!batchTask && pendingBatchCount > 0 && (
@@ -1401,6 +1412,11 @@ export function SshPanel({ api, credentials, locale, viewId = DRAWER_VIEW_ID, vi
         <TabErrorBoundary key="database">
           <div style={{ ...panelStyles.tabPane, display: tab === "database" ? "flex" : "none" }}>
             <SshDatabase api={api} />
+          </div>
+        </TabErrorBoundary>
+        <TabErrorBoundary key="logs">
+          <div style={{ ...panelStyles.tabPane, display: tab === "logs" ? "flex" : "none" }}>
+            <SshLogs api={api} />
           </div>
         </TabErrorBoundary>
         <TabErrorBoundary key="snippets">

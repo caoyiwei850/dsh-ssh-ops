@@ -5,7 +5,7 @@
 ## 0. 前置条件
 
 - 已安装并运行 **DSH Desktop**。
-- 已取得成品包 `dsh-ssh-ops-0.3.9.tgz`（来源：GitHub Releases 下载，或源码 `npm run pack:release` 构建产物 `release/` 下）。
+- 已取得成品包 `dsh-ssh-ops-0.3.10.tgz`（来源：GitHub Releases 下载，或源码 `npm run pack:release` 构建产物 `release/` 下）。
 
 ### 兼容性
 
@@ -36,13 +36,13 @@ $dsh  = "<INSTALL_DIR>\DSH Desktop\resources\app\node_modules\@deepseek-ai\dsh\l
 把 `<TARBALL>` 替换为 tgz 的绝对路径。
 
 ```powershell
-dsh plugin --profile web add "<TARBALL>\dsh-ssh-ops-0.3.9.tgz"
+dsh plugin --profile web add "<TARBALL>\dsh-ssh-ops-0.3.10.tgz"
 ```
 
 若 `dsh` 不在 PATH，用：
 
 ```powershell
-& $node $dsh plugin --profile web add "<TARBALL>\dsh-ssh-ops-0.3.9.tgz"
+& $node $dsh plugin --profile web add "<TARBALL>\dsh-ssh-ops-0.3.10.tgz"
 ```
 
 ## 3. 校验安装结果
@@ -75,6 +75,15 @@ dsh plugin --profile web remove dsh-ssh-ops
 （或手动：从 `profiles\web\package.json` 移除 `dsh-ssh-ops` 依赖与 `bundles` 条目，然后重启 DSH Desktop。）
 
 ---
+
+## 附：0.3.10 版本更新内容
+
+1. **三种新数据库驱动**：SQLite（文件即连接）、ClickHouse（HTTP）、openGauss（PostgreSQL 协议），连接表单与资源保存同步支持。
+2. **导出 CSV/JSON**：结果集可直接下载，或经 SSH 写到服务器后由 SFTP 面板取回；agent 侧有 `db_export` 工具。
+3. **动态 SOCKS5 隧道**：一个本地端口做代理出口，客户端自行选择目标。
+4. **会话录制**：SSH 面板新增「日志」tab（预览/搜索/下载/删除），默认单会话 8MB、目录 256MB 自动轮换。
+5. **OSC 133 shell integration**：终端上下文给出 cwd、退出码与提示符状态。
+6. **SFTP 增强**：文本编辑器（10MB 上限）、目录过滤、收藏路径、拖拽上传。
 
 ## 附：0.3.9 版本更新内容
 

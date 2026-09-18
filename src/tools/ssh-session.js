@@ -7,6 +7,23 @@ import { defineTool } from "@deepseek-ai/dsh-tools";
 
 export function registerSshSessionTools(ctx, service) {
   ctx.tools.register(defineTool({
+    name: "ssh_shell_integration",
+    description: "Enable shell integration (OSC 133 markers) in an open SSH terminal's bash/zsh shell. Afterwards ssh_terminal_context reports the shell's current directory, the last command's exit code and whether it sits at a prompt — far more reliable than guessing from output text. Requires an idle, single interactive shell; the session must be one from ssh_terminal_sessions.",
+    parameters: { session_id: { type: "string", required: true, description: "Session id from ssh_terminal_sessions." } },
+    output: {
+      schema: { type: "object", additionalProperties: false, properties: { sessionId: { type: "string", required: true }, enabled: { type: "boolean", required: true } } },
+      render(_args, value) {
+        return [{ type: "text", text: value.enabled ? `已在会话 ${value.sessionId} 启用 shell integration；此后 ssh_terminal_context 会带上 cwd/退出码/提示符状态。` : "启用失败。" }];
+      }
+    },
+    async execute(args) {
+      const result = await service.enableShellIntegration({ sessionId: args.session_id });
+      if (!result.ok) throw new Error(`ssh_shell_integration failed: ${result.error.message}`);
+      return result.value;
+    }
+  }));
+
+  ctx.tools.register(defineTool({
     name: "ssh_terminal_sessions",
     description: "List open SSH terminal sessions so you can identify a terminal the user operated manually. Returns metadata and history cursors only; never returns terminal output, saved resources, or credentials.",
     parameters: {},

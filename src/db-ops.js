@@ -1,19 +1,45 @@
 /**
  * DbOpsManager: in-memory database connection manager for the sshOps service.
- * Supports MySQL, PostgreSQL, Redis, MongoDB. Optional SSH tunnel reuses an
- * existing ssh2 connection (forwardOut + net.createServer) so agents can reach
- * databases on private networks. High-risk SQL (DROP DATABASE/SCHEMA/TABLE,
- * TRUNCATE, SHUTDOWN) is blocked on db_execute via db-safety.js.
+ * Supports MySQL, PostgreSQL/openGauss, SQLite, ClickHouse, Redis, MongoDB.
+ * Optional SSH tunnel reuses an existing ssh2 connection (forwardOut +
+ * net.createServer) so agents can reach databases on private networks.
+ * High-risk SQL (DROP DATABASE/SCHEMA/TABLE, TRUNCATE, SHUTDOWN) is blocked on
+ * db_execute via db-safety.js.
  */
 import net from "node:net";
 import { randomUUID } from "node:crypto";
 // DB drivers are imported on first use (see connect/pgQueryPaged) so loading
 // this module does not pull the whole driver module tree up front.
 import { assessSqlStatement, assessReadOnlySql } from "./db-safety.js";
+// SQLite/ClickHouse mechanics plus the type metadata shared with schemas and
+// the client (default ports, SQL-family checks, CSV/JSON serializers).
+import {
+  clickhouseDescribeTable,
+  clickhouseExecute,
+  clickhouseListTables,
+  clickhouseQuery,
+  defaultDbPort,
+  isPgFamily,
+  isSqlType,
+  needsNetwork,
+  openSqlite,
+  sqliteDescribeTable,
+  sqliteExecute,
+  sqliteListTables,
+  sqliteQuery,
+  toCsv,
+  toJson,
+  EXPORT_DELIMITERS
+} from "./db-drivers.js";
 // The db layer wraps every failure straight into the full result envelope.
 import { failResult as fail } from "./envelope.js";
 
 const DB_QUERY_TIMEOUT_MS = 30000;
+/** Export defaults: rows pulled when the caller names no limit, and the ceiling. */
+const EXPORT_DEFAULT_ROWS = 50000;
+const EXPORT_MAX_ROWS = 200000;
+/** Largest export returned inline to the browser (bigger ones need an SSH host to land on). */
+const EXPORT_INLINE_LIMIT = 256 * 1024;
 /** Idle transactions are rolled back and released after this long. */
 const DB_TX_IDLE_MS = 5 * 60 * 1000;
 
@@ -172,10 +198,27 @@ export function quotePgIdentifier(name) {
  * passed through mysql2's `??` escaping (mysql) or quoted above (pg), and
  * limit/offset always bound as values.
  */
+/** Default remote file name for an export: dsh-export-<connection>-<stamp>.<ext>. */
+function defaultExportName(connectionName, format) {
+  const stem = String(connectionName ?? "query").replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "query";
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  return `dsh-export-${stem}-${stamp}.${format}`;
+}
+
 export function buildPreviewSql(dialect, table, limit, offset) {
   if (!validateDbIdentifier(table).ok) return { ok: false, error: `illegal table name: ${String(table)}` };
   if (dialect === "mysql") {
     return { ok: true, sql: "SELECT * FROM ?? LIMIT ? OFFSET ?", params: [table, limit, offset] };
+  }
+  if (dialect === "sqlite") {
+    const quoted = `"${String(table).replaceAll('"', '""')}"`;
+    return { ok: true, sql: `SELECT * FROM ${quoted} LIMIT ? OFFSET ?`, params: [limit, offset] };
+  }
+  if (dialect === "clickhouse") {
+    // Placeholders become typed `{pN:...}` parameters; LIMIT/OFFSET need the
+    // integer type, which the translator derives from the JS values.
+    const quoted = `\`${String(table).replaceAll("`", "``")}\``;
+    return { ok: true, sql: `SELECT * FROM ${quoted} LIMIT ? OFFSET ?`, params: [limit, offset] };
   }
   return { ok: true, sql: `SELECT * FROM ${quotePgIdentifier(table)} LIMIT $1 OFFSET $2`, params: [limit, offset] };
 }
@@ -206,6 +249,8 @@ export class DbOpsManager {
     this.dbConnections = new Map();
     /** txId -> interactive transaction { txId, dbId, kind, handle, timer, createdAt } */
     this.dbTransactions = new Map();
+    /** Injectable fetch for the ClickHouse HTTP driver (tests stub it). */
+    this.fetchImpl = undefined;
   }
 
   /**
@@ -239,12 +284,21 @@ export class DbOpsManager {
   }
 
   async connect(request) {
-    const { type, host, port, database, username, password, ssl, sshConnectionId, name } = request;
+    const { type, host, database, username, password, ssl, sshConnectionId, name } = request;
+    // SQLite is a file, not an endpoint; every other driver falls back to its
+    // protocol default port when the caller left the port out (an empty/0
+    // value from a stored record counts as absent).
+    const port = request.port || defaultDbPort(type);
+    if (needsNetwork(type) && !host) {
+      return fail("db-connect-failed", `${type} connect 需要填写主机地址`);
+    }
     let tunnel = null;
     let connectHost = host;
     let connectPort = port;
 
-    if (sshConnectionId) {
+    // A SQLite file is local to this host: there is nothing to forward, and the
+    // sshConnectionId is still recorded below — it names where an export lands.
+    if (sshConnectionId && needsNetwork(type)) {
       try {
         tunnel = await this.createTunnel(sshConnectionId, host, port);
         connectHost = "127.0.0.1";
@@ -267,7 +321,9 @@ export class DbOpsManager {
         });
         const c = await this.mysqlCheckout({ client }, { signal, label: "db_connect", timeoutMs: this.dl("connect") });
         c.release();
-      } else if (type === "postgresql") {
+      } else if (isPgFamily(type)) {
+        // openGauss speaks the PostgreSQL wire protocol; only its server-side
+        // defaults differ, so one driver serves both types.
         const { default: pg } = await import("pg");
         client = new pg.Pool({
           host: connectHost, port: connectPort, user: username, password, database,
@@ -302,6 +358,19 @@ export class DbOpsManager {
           signal, timeoutMs: this.dl("connect"), label: "db_connect",
           onLose: () => { try { client.close(true); } catch {} }
         });
+      } else if (type === "sqlite") {
+        // No tunnel, no auth: the file path travels in `database`. Opening is
+        // the connection; one prepared statement proves the file is readable.
+        client = await openSqlite(database);
+        sqliteQuery(client, "SELECT 1 AS ok", [], 1);
+      } else if (type === "clickhouse") {
+        // Stateless HTTP: nothing to keep open, so validation is one round-trip
+        // against the same endpoint/mapping a later query uses.
+        const probe = { config: { host: connectHost, port: connectPort, database, username, password, ssl } };
+        await clickhouseQuery(probe, "SELECT 1 AS ok", [], {
+          signal, fetchImpl: this.fetchImpl, maxRows: 1
+        });
+        client = { kind: "clickhouse" };
       } else {
         throw new Error(`unsupported database type: ${type}`);
       }
@@ -313,19 +382,22 @@ export class DbOpsManager {
       // failed connect must not wait for it.
       if (client) {
         try {
-          if (type === "redis" && typeof client.disconnect === "function") client.disconnect();
+          if (type === "sqlite" && typeof client.close === "function") client.close();
+          else if (type === "redis" && typeof client.disconnect === "function") client.disconnect();
           else if (type === "mongodb" && typeof client.close === "function") client.close(true).catch(() => {});
           else if (typeof client.end === "function") client.end()?.catch?.(() => {});
         } catch {}
       }
       if (tunnel) { try { tunnel.server.close(); } catch {} }
-      const target = tunnel ? `${connectHost}:${connectPort} (tunneled to ${host}:${port})` : `${connectHost}:${connectPort}`;
+      const target = needsNetwork(type)
+        ? (tunnel ? `${connectHost}:${connectPort} (tunneled to ${host}:${port})` : `${connectHost}:${connectPort}`)
+        : String(database ?? "");
       return fail("db-connect-failed", `${type} connect to ${target}: ${error.message}`);
     }
 
     const record = {
-      id, type, name: name ?? `${type}:${host}:${port}`,
-      config: { host, port, database, username, ssl: ssl ?? "disabled", sshConnectionId: sshConnectionId ?? null },
+      id, type, name: name ?? `${type}:${host ?? database}:${port}`,
+      config: { host: host ?? "", port, database, username, ssl: ssl ?? "disabled", sshConnectionId: sshConnectionId ?? null },
       client, tunnel, createdAt: new Date().toISOString()
     };
     this.dbConnections.set(id, record);
@@ -503,7 +575,9 @@ export class DbOpsManager {
     // The teardown itself is raced too: pool.end()/quit()/close() wait on the
     // transport, and the record must leave the manager even if it never dies.
     const teardown = (async () => {
-      if (record.type === "mysql" || record.type === "postgresql") await record.client.end();
+      if (record.type === "mysql" || isPgFamily(record.type)) await record.client.end();
+      else if (record.type === "sqlite") record.client.close();
+      else if (record.type === "clickhouse") { /* stateless HTTP: nothing to close */ }
       else if (record.type === "redis") await record.client.quit();
       else if (record.type === "mongodb") await record.client.close();
     })();
@@ -560,8 +634,8 @@ export class DbOpsManager {
     let record;
     try { record = this.getRecord(request.dbConnectionId); }
     catch (error) { return fail("no-db-connection", error.message); }
-    if (record.type !== "mysql" && record.type !== "postgresql") {
-      return fail("unsupported-op", `db_query only supports mysql/postgresql, use db_run for ${record.type}`);
+    if (!isSqlType(record.type)) {
+      return fail("unsupported-op", `db_query only supports SQL databases (mysql/postgresql/opengauss/sqlite/clickhouse), use db_run for ${record.type}`);
     }
     // The query channel is lexically read-only, not just by convention: the
     // caller-supplied statement text is gated here before any driver sees it,
@@ -588,11 +662,26 @@ export class DbOpsManager {
    * so a half-open transport cannot pin the call forever.
    */
   queryPaged(record, request) {
-    const opts = { signal: request.signal, label: "db_query" };
+    // Export rides this same dispatch with a raised row cap and its own label,
+    // so its timeout messages name db_export instead of db_query.
+    const opts = {
+      signal: request.signal,
+      label: request.label ?? "db_query",
+      ...(request.maxRows !== undefined ? { maxRows: request.maxRows } : {})
+    };
     const { sql: statement, params: bindings } = request;
-    return record.type === "mysql"
-      ? this.mysqlQueryPaged(record, statement, bindings ?? [], opts)
-      : this.pgQueryPaged(record, statement, bindings ?? [], opts);
+    if (record.type === "mysql") return this.mysqlQueryPaged(record, statement, bindings ?? [], opts);
+    const cap = opts.maxRows ?? this.maxDbRows;
+    if (record.type === "sqlite") {
+      const result = sqliteQuery(record.client, statement, bindings ?? [], cap);
+      return Promise.resolve(result);
+    }
+    if (record.type === "clickhouse") {
+      return clickhouseQuery(record, statement, bindings ?? [], {
+        signal: opts.signal, fetchImpl: this.fetchImpl, maxRows: cap
+      });
+    }
+    return this.pgQueryPaged(record, statement, bindings ?? [], opts);
   }
 
   /**
@@ -628,7 +717,7 @@ export class DbOpsManager {
           if (fields?.length) fieldNames = fields.map((f) => f.name);
         });
         stream.on("result", (row) => {
-          if (rows.length >= this.maxDbRows) {
+          if (rows.length >= (opts.maxRows ?? this.maxDbRows)) {
             truncated = true;
             killed = true;
             once(resolve);
@@ -678,6 +767,9 @@ export class DbOpsManager {
    */
   async pgQueryPaged(record, statement, bindings, opts = {}) {
     const label = opts.label ?? "db_query";
+    // Export raises the shared row cap through opts; everything else uses the
+    // manager's configured page size.
+    const cap = opts.maxRows ?? this.maxDbRows;
     const client = await this.pgCheckout(record, { signal: opts.signal, label });
     const rows = [];
     let fieldNames = [];
@@ -694,13 +786,13 @@ export class DbOpsManager {
       try {
         await raceDeadline(new Promise((resolve, reject) => {
           const readBatch = () => {
-            cursor.read(this.maxDbRows + 1 - rows.length, (err, batch) => {
+            cursor.read(cap + 1 - rows.length, (err, batch) => {
               if (err) { reject(err); return; }
               if (batch.length === 0) { resolve(); return; }
               rows.push(...batch);
-              if (rows.length > this.maxDbRows) {
+              if (rows.length > cap) {
                 truncated = true;
-                rows.length = this.maxDbRows;
+                rows.length = cap;
                 resolve();
                 return;
               }
@@ -739,8 +831,8 @@ export class DbOpsManager {
     catch (error) { return fail("no-db-connection", error.message); }
     const assessment = assessSqlStatement(request.sql);
     if (assessment.blocked) return fail("unsafe-sql", assessment.reason);
-    if (record.type !== "mysql" && record.type !== "postgresql") {
-      return fail("unsupported-op", `db_execute only supports mysql/postgresql, use db_run for ${record.type}`);
+    if (!isSqlType(record.type)) {
+      return fail("unsupported-op", `db_execute only supports SQL databases (mysql/postgresql/opengauss/sqlite/clickhouse), use db_run for ${record.type}`);
     }
     try {
       const opts = { signal: request.signal, label: "db_execute" };
@@ -754,6 +846,15 @@ export class DbOpsManager {
           affectedRows = rows.affectedRows ?? 0;
           if (rows.insertId) insertId = rows.insertId;
         }
+      } else if (record.type === "sqlite") {
+        const r = sqliteExecute(record.client, request.sql, request.params ?? []);
+        affectedRows = r.affectedRows;
+        if (r.insertId !== null && r.insertId !== undefined) insertId = r.insertId;
+      } else if (record.type === "clickhouse") {
+        const r = await clickhouseExecute(record, request.sql, request.params ?? [], {
+          signal: opts.signal, fetchImpl: this.fetchImpl
+        });
+        affectedRows = r.affectedRows;
       } else {
         const r = await this.pgQueryOnce(record, request.sql, request.params ?? [], opts);
         affectedRows = r.rowCount ?? r.rows?.length ?? 0;
@@ -770,8 +871,8 @@ export class DbOpsManager {
     let record;
     try { record = this.getRecord(request.dbConnectionId); }
     catch (error) { return fail("no-db-connection", error.message); }
-    if (record.type !== "mysql" && record.type !== "postgresql") {
-      return fail("unsupported-op", `db_list_tables only supports mysql/postgresql, use db_run for ${record.type}`);
+    if (!isSqlType(record.type)) {
+      return fail("unsupported-op", `db_list_tables only supports SQL databases (mysql/postgresql/opengauss/sqlite/clickhouse), use db_run for ${record.type}`);
     }
     try {
       const opts = { signal: request.signal, label: "db_list_tables" };
@@ -779,6 +880,10 @@ export class DbOpsManager {
       if (record.type === "mysql") {
         const [rows] = await this.mysqlQueryOnce(record, "SHOW TABLES", [], opts);
         tables = rows.map((row) => Object.values(row)[0]);
+      } else if (record.type === "sqlite") {
+        tables = sqliteListTables(record.client);
+      } else if (record.type === "clickhouse") {
+        tables = await clickhouseListTables(record, { signal: opts.signal, fetchImpl: this.fetchImpl });
       } else {
         const r = await this.pgQueryOnce(record, "SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema() ORDER BY table_name", [], opts);
         tables = r.rows.map((row) => Object.values(row)[0]);
@@ -793,8 +898,8 @@ export class DbOpsManager {
     let record;
     try { record = this.getRecord(request.dbConnectionId); }
     catch (error) { return fail("no-db-connection", error.message); }
-    if (record.type !== "mysql" && record.type !== "postgresql") {
-      return fail("unsupported-op", `db_describe_table only supports mysql/postgresql, use db_run for ${record.type}`);
+    if (!isSqlType(record.type)) {
+      return fail("unsupported-op", `db_describe_table only supports SQL databases (mysql/postgresql/opengauss/sqlite/clickhouse), use db_run for ${record.type}`);
     }
     // The identifier is the only caller-controlled token embedded in these
     // metadata queries; it must pass the whitelist and is quoted per dialect.
@@ -848,6 +953,37 @@ export class DbOpsManager {
           name: row.CONSTRAINT_NAME, column: row.COLUMN_NAME,
           foreignTable: row.REFERENCED_TABLE_NAME, foreignColumn: row.REFERENCED_COLUMN_NAME
         }));
+      } else if (record.type === "sqlite") {
+        columns = sqliteDescribeTable(record.client, bareTable);
+        const idx = sqliteQuery(record.client,
+          "SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = ? AND sql IS NOT NULL ORDER BY name",
+          [bareTable], 200);
+        indexes = idx.rows.map((row) => ({
+          name: row.name, definition: row.sql,
+          unique: /CREATE\s+UNIQUE/i.test(String(row.sql)), columns: []
+        }));
+        const ddlRow = sqliteQuery(record.client,
+          "SELECT sql FROM sqlite_master WHERE name = ? AND type IN ('table','view')", [bareTable], 1);
+        ddl = ddlRow.rows?.[0]?.sql ?? null;
+        // SQLite keeps no row/size statistics; COUNT(*) would scan the table,
+        // so the stats block stays empty instead of costing a full read.
+      } else if (record.type === "clickhouse") {
+        columns = await clickhouseDescribeTable(record, bareTable, { signal: opts.signal, fetchImpl: this.fetchImpl });
+        const ddlRows = await clickhouseQuery(record, `SHOW CREATE TABLE \`${bareTable.replaceAll("`", "``")}\``, [], {
+          signal: opts.signal, fetchImpl: this.fetchImpl, maxRows: 1
+        }).catch(() => null);
+        ddl = ddlRows?.rows?.[0]?.statement ?? ddlRows?.rows?.[0]?.create_table_query ?? null;
+        const statsRows = await clickhouseQuery(record,
+          "SELECT total_rows, total_bytes FROM system.tables WHERE database = currentDatabase() AND name = ?",
+          [bareTable], { signal: opts.signal, fetchImpl: this.fetchImpl, maxRows: 1 }).catch(() => null);
+        const s = statsRows?.rows?.[0];
+        if (s) {
+          stats = {
+            estimatedRows: s.total_rows == null ? null : Number(s.total_rows),
+            dataBytes: s.total_bytes == null ? null : Number(s.total_bytes),
+            indexBytes: null
+          };
+        }
       } else {
         const r = await this.pgQueryOnce(record,
           "SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns WHERE table_name = $1 AND table_schema = current_schema() ORDER BY ordinal_position",
@@ -908,8 +1044,8 @@ export class DbOpsManager {
     let record;
     try { record = this.getRecord(request.dbConnectionId); }
     catch (error) { return fail("no-db-connection", error.message); }
-    if (record.type !== "mysql" && record.type !== "postgresql") {
-      return fail("unsupported-op", `db_preview only supports mysql/postgresql, use db_run for ${record.type}`);
+    if (!isSqlType(record.type)) {
+      return fail("unsupported-op", `db_preview only supports SQL databases (mysql/postgresql/opengauss/sqlite/clickhouse), use db_run for ${record.type}`);
     }
     const requestedLimit = Math.floor(Number(request.limit) || 50);
     if (requestedLimit > this.maxDbRows) return fail("db-limit-too-high", `requested limit ${requestedLimit} exceeds configured max ${this.maxDbRows}`);
@@ -927,10 +1063,17 @@ export class DbOpsManager {
           [bareTable], opts
         );
         estimatedTotal = statsRows?.[0]?.est == null ? null : Number(statsRows[0].est);
-      } else {
+      } else if (record.type === "clickhouse") {
+        const statsRows = await clickhouseQuery(record,
+          "SELECT total_rows AS est FROM system.tables WHERE database = currentDatabase() AND name = ?",
+          [bareTable], { signal: opts.signal, fetchImpl: this.fetchImpl, maxRows: 1 });
+        estimatedTotal = statsRows.rows?.[0]?.est == null ? null : Number(statsRows.rows[0].est);
+      } else if (isPgFamily(record.type)) {
         const estimate = await this.pgQueryOnce(record, "SELECT reltuples::bigint AS est FROM pg_class WHERE relname = $1", [bareTable], opts);
         estimatedTotal = estimate.rows?.[0]?.est == null ? null : Number(estimate.rows[0].est);
       }
+      // SQLite keeps no planner row count: the estimate stays null rather than
+      // paying a COUNT(*) scan for a decoration.
       if (estimatedTotal != null && estimatedTotal < 0) estimatedTotal = null;
     } catch (error) {
       // The estimate is decoration; the rows are the answer. Cancellation is
@@ -940,6 +1083,68 @@ export class DbOpsManager {
     const result = await this.query({ dbConnectionId: request.dbConnectionId, sql: built.sql, params: built.params, signal: request.signal });
     if (!result.ok) return result;
     return { ok: true, value: { ...result.value, table: request.table, limit, offset, estimatedTotal } };
+  }
+
+  /**
+   * Export one read-only query as CSV or JSON.
+   *
+   * Rows come from the same lexically read-only, placeholder-bound dispatch as
+   * db_query — export is never a second write channel. The destination follows
+   * the connection: a database reached through an SSH connection writes the
+   * file onto that server (ready for the SFTP panel to pull), while a direct
+   * connection returns the content inline for the browser to download, up to
+   * the inline ceiling.
+   */
+  async exportRows(request) {
+    let record;
+    try { record = this.getRecord(request.dbConnectionId); }
+    catch (error) { return fail("no-db-connection", error.message); }
+    if (!isSqlType(record.type)) {
+      return fail("unsupported-op", `db_export only supports SQL databases (mysql/postgresql/opengauss/sqlite/clickhouse), use db_run for ${record.type}`);
+    }
+    const gate = assessReadOnlySql(request.sql);
+    if (!gate.ok) return fail("readonly-sql", gate.reason);
+    const format = request.format ?? "csv";
+    if (format !== "csv" && format !== "json") return fail("bad-request", `unsupported export format: ${format}`);
+    const delimiter = EXPORT_DELIMITERS[request.delimiter ?? "comma"];
+    if (delimiter === undefined) return fail("bad-request", `unsupported delimiter: ${String(request.delimiter)}`);
+    const requested = Math.floor(Number(request.maxRows) || EXPORT_DEFAULT_ROWS);
+    const maxRows = Math.min(Math.max(requested, 1), EXPORT_MAX_ROWS);
+    try {
+      const paged = await this.queryPaged(record, {
+        sql: request.sql, params: request.params, signal: request.signal,
+        maxRows, label: "db_export"
+      });
+      const rows = paged.rows.map(serializeDbValue);
+      const columns = paged.fieldNames.length > 0 ? paged.fieldNames : (rows[0] ? Object.keys(rows[0]) : []);
+      const content = format === "csv"
+        ? toCsv(columns, rows, { delimiter, header: request.header !== false })
+        : toJson(columns, rows);
+      const bytes = Buffer.byteLength(content, "utf8");
+      const value = { format, columns, rows: rows.length, bytes, truncated: paged.truncated, path: null };
+      const sshConnectionId = record.config.sshConnectionId;
+      if (sshConnectionId) {
+        const trimmed = typeof request.path === "string" ? request.path.trim() : "";
+        const target = trimmed.length > 0 ? trimmed : `/tmp/${defaultExportName(record.name, format)}`;
+        const written = await this.sshOpsService.sftpWriteFile({
+          connectionId: sshConnectionId, path: target,
+          data: Buffer.from(content, "utf8").toString("base64")
+        });
+        if (!written || written.ok !== true) {
+          return fail("export-write-failed", `写入 ${target} 失败：${written?.error?.message ?? "未知错误"}`);
+        }
+        value.path = target;
+        return { ok: true, value };
+      }
+      if (bytes > EXPORT_INLINE_LIMIT) {
+        return fail("export-too-large",
+          `导出内容 ${bytes} 字节，超过内嵌返回上限 ${EXPORT_INLINE_LIMIT}；请把导出写到远端（为连接配置 SSH 通道）或收窄查询`);
+      }
+      value.content = content;
+      return { ok: true, value };
+    } catch (error) {
+      return fail("db-export-failed", error.message);
+    }
   }
 
   // ── interactive transactions (operator-verified change workflow) ───────────
@@ -1174,8 +1379,8 @@ export class DbOpsManager {
     let record;
     try { record = this.getRecord(request.dbConnectionId); }
     catch (error) { return fail("no-db-connection", error.message); }
-    if (record.type !== "mysql" && record.type !== "postgresql") {
-      return fail("unsupported-op", "db_explain only supports mysql/postgresql");
+    if (!isSqlType(record.type)) {
+      return fail("unsupported-op", `db_explain only supports SQL databases (mysql/postgresql/opengauss/sqlite/clickhouse)`);
     }
     const gate = assessReadOnlySql(request.sql);
     if (!gate.ok) return fail("readonly-sql", gate.reason);
@@ -1189,6 +1394,21 @@ export class DbOpsManager {
         const [r] = await this.mysqlQueryOnce(record, "EXPLAIN FORMAT=JSON " + request.sql, request.params ?? [], opts);
         const raw = r?.[0]?.EXPLAIN ?? null;
         plan = typeof raw === "string" ? JSON.parse(raw) : raw;
+      } else if (record.type === "sqlite") {
+        // SQLite prints the plan as rows; the array is the plan.
+        plan = sqliteQuery(record.client, "EXPLAIN QUERY PLAN " + request.sql, request.params ?? [], this.maxDbRows).rows;
+      } else if (record.type === "clickhouse") {
+        // ClickHouse's EXPLAIN has no cross-version JSON default: ask for JSON
+        // first and fall back to the textual plan when the server rejects it.
+        const json = await clickhouseQuery(record, "EXPLAIN json = 1 " + request.sql, request.params ?? [], {
+          signal: opts.signal, fetchImpl: this.fetchImpl, maxRows: 50
+        }).catch(() => null);
+        const raw = json?.rows?.[0]?.explain ?? null;
+        plan = raw === null || raw === undefined
+          ? (await clickhouseQuery(record, "EXPLAIN " + request.sql, request.params ?? [], {
+              signal: opts.signal, fetchImpl: this.fetchImpl, maxRows: 200
+            })).rows
+          : (typeof raw === "string" ? JSON.parse(raw) : raw);
       } else {
         const r = await this.pgQueryOnce(record, "EXPLAIN (FORMAT JSON) " + request.sql, request.params ?? [], opts);
         const raw = r.rows?.[0]?.["QUERY PLAN"] ?? null;
