@@ -69,7 +69,7 @@ export function registerDbTools(ctx, service) {
   ctx.tools.register(defineTool({
     name: "db_list_connections",
     timeoutMs: DB_TOOL_TIMEOUT_MS,
-    description: "List currently open database connections (db_connection_id, type, host, port). Use it only when the user asks which databases are connected.",
+    description: "List currently open database connections (db_connection_id, name, type, host, port, database, username, ssl, sshConnectionId, createdAt). Use it only when the user asks which databases are connected.",
     parameters: {},
     output: {
       schema: {
@@ -84,6 +84,7 @@ export function registerDbTools(ctx, service) {
               host: { type: "string", required: true },
               port: { type: "integer", required: true },
               database: { oneOf: [{ type: "string" }, { type: "null" }], required: true },
+              username: { oneOf: [{ type: "string" }, { type: "null" }], required: true },
               ssl: { type: "string", required: true },
               sshConnectionId: { oneOf: [{ type: "string" }, { type: "null" }], required: true },
               createdAt: { type: "string", required: true }
@@ -93,7 +94,7 @@ export function registerDbTools(ctx, service) {
       },
       render(_args, value) {
         if (!value.connections.length) return [{ type: "text", text: "No database connection is currently open." }];
-        return [{ type: "text", text: value.connections.map((c) => `- ${c.name} (${c.type}): ${c.host}:${c.port}${c.sshConnectionId ? " via SSH" : ""} (id: ${c.dbConnectionId})`).join("\n") }];
+        return [{ type: "text", text: value.connections.map((c) => `- ${c.name} (${c.type}): ${c.host}:${c.port}${c.username ? " user: " + c.username : ""}${c.sshConnectionId ? " via SSH" : ""} (id: ${c.dbConnectionId})`).join("\n") }];
       }
     },
     async execute(_args, exec) {
