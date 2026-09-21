@@ -8,7 +8,11 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.3.11-blue)
+![version](https://img.shields.io/badge/version-0.3.12-blue)
+
+> **v0.3.12**: fixes `db_list_connections` being rejected whenever a database connection exists because its strict output schema omitted `username` (#23). Connection listings now identify the database, non-secret username, TLS mode and SSH route; SQLite shows its file path instead of `:0`. A regression test exercises the real DSH output validator.
+
+> **v0.3.11**: fixes shell-family detection for shell integration (cwd markers previously polluted the probe, making it always inject the zsh variant and fail on bash), and adds the `shell` state to the terminal-context result contract.
 
 > **v0.3.10**: database coverage grows with **SQLite** (the host's built-in `node:sqlite`, no new dependency), **ClickHouse** (HTTP interface) and **openGauss** (PostgreSQL protocol), and query results **export to CSV/JSON** (a database reached through SSH writes the file onto that server for the SFTP panel to pull); a **dynamic SOCKS5 tunnel** (`ssh -D`); **session recording** with a searchable, downloadable log panel (agent reads are approval-gated and redacted); **OSC 133 shell integration** so terminal context carries the cwd, exit code and prompt state; and the SFTP panel gains a **text editor, name filter, per-server favorites and drag-and-drop upload**.
 
@@ -84,7 +88,7 @@ The same model covers `sftp_delete` (the agent no longer deletes directly; inste
 ### From GitHub (recommended)
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.11
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.12
 ```
 
 Then restart DSH Web:
@@ -97,14 +101,14 @@ Open any session, click the top **SSH** tab, and use the right-side panel to con
 
 ### From a release archive
 
-Download `dsh-ssh-ops-0.3.11.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.11), then:
+Download `dsh-ssh-ops-0.3.12.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.12), then:
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.11.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.12.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.3.11.zip` is for offline review or further development; extract it and run `npm install && npm run build` in the directory.
+`dsh-ssh-ops-0.3.12.zip` is for offline review or further development; extract it and run `npm install && npm run build` in the directory.
 
 ## Usage
 
@@ -191,8 +195,8 @@ Pushing a `vX.Y.Z` tag that matches `package.json.version` runs tests, builds th
 
 Artifacts are written to `release/`:
 
-- `dsh-ssh-ops-0.3.11.tgz`: installable directly by DSH.
-- `dsh-ssh-ops-0.3.11.zip`: full offline source archive.
+- `dsh-ssh-ops-0.3.12.tgz`: installable directly by DSH.
+- `dsh-ssh-ops-0.3.12.zip`: full offline source archive.
 
 ## License
 

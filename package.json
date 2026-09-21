@@ -1,7 +1,7 @@
 {
   "name": "dsh-ssh-ops",
   "description": "SSH ops and database tools for DSH Web UI: connect to remote servers via SSH terminal/SFTP/tunnels, and connect to MySQL/PostgreSQL/Redis/MongoDB databases. Host half manages sessions with ssh2; client half renders the terminal and database panel.",
-  "version": "0.3.11",
+  "version": "0.3.12",
   "license": "MIT",
   "repository": {
     "type": "git",

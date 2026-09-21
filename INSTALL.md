@@ -5,7 +5,7 @@
 ## 0. 前置条件
 
 - 已安装并运行 **DSH Desktop**。
-- 已取得成品包 `dsh-ssh-ops-0.3.10.tgz`（来源：GitHub Releases 下载，或源码 `npm run pack:release` 构建产物 `release/` 下）。
+- 已取得成品包 `dsh-ssh-ops-0.3.12.tgz`（来源：GitHub Releases 下载，或源码 `npm run pack:release` 构建产物 `release/` 下）。
 
 ### 兼容性
 
@@ -36,13 +36,13 @@ $dsh  = "<INSTALL_DIR>\DSH Desktop\resources\app\node_modules\@deepseek-ai\dsh\l
 把 `<TARBALL>` 替换为 tgz 的绝对路径。
 
 ```powershell
-dsh plugin --profile web add "<TARBALL>\dsh-ssh-ops-0.3.10.tgz"
+dsh plugin --profile web add "<TARBALL>\dsh-ssh-ops-0.3.12.tgz"
 ```
 
 若 `dsh` 不在 PATH，用：
 
 ```powershell
-& $node $dsh plugin --profile web add "<TARBALL>\dsh-ssh-ops-0.3.10.tgz"
+& $node $dsh plugin --profile web add "<TARBALL>\dsh-ssh-ops-0.3.12.tgz"
 ```
 
 ## 3. 校验安装结果
@@ -75,6 +75,12 @@ dsh plugin --profile web remove dsh-ssh-ops
 （或手动：从 `profiles\web\package.json` 移除 `dsh-ssh-ops` 依赖与 `bundles` 条目，然后重启 DSH Desktop。）
 
 ---
+
+## 附：0.3.12 版本更新内容
+
+1. **修复 #23**：`db_list_connections` 的严格输出 schema 补上 `username: string | null`，存在活动数据库连接时不再被 DSH 拒绝整个结果。
+2. **连接身份更清楚**：Agent 输出增加数据库名、非敏感用户名、TLS 模式与 SSH 路由；SQLite 显示数据库文件路径。
+3. **回归测试**：真实服务输出经 RPC 同款 JSON 传输后通过 DSH 自身的 JSON Schema 校验链路验证，覆盖 `db_list_connections`（有账号/无账号/SQLite）以及 `db_execute`、`db_tx_execute`、`db_describe_table`、`db_export` 的全部条件/复合形状。
 
 ## 附：0.3.10 版本更新内容
 

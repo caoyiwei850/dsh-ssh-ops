@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.12 - 2026-09-21
+
+- **修复 #23：`db_list_connections` 在有连接时恒定失败**：`DbOpsManager.list()` 返回的 `username` 此前没有出现在 Agent 工具的严格输出 schema 中，`additionalProperties: false` 因而让 DSH 在渲染前拒绝整个结果。现在 schema 明确要求 `username: string | null`，与 RPC 契约和服务返回保持一致。
+- **连接身份展示更完整**：Agent 列出数据库连接时同时显示数据库名、非敏感用户名、启用的 TLS 模式与 SSH 路由；SQLite 连接改为显示数据库文件路径，不再出现无意义的 `:0`。
+- **回归护栏**：测试现在把真实服务输出经 RPC 同款 JSON 传输后送入 DSH 的 `validateJsonSchemaValue()`：`db_list_connections` 覆盖有账号、无账号与 SQLite 三类连接；`db_execute`、`db_tx_execute`、`db_describe_table`、`db_export` 的全部条件/复合形状（拦截卡片、事务行校验、mysql/sqlite 内省差异、内联与 SSH 远端导出）各配一个镜像服务端字面量的样例，防止服务返回和 Agent 工具 schema 再次漂移。
+
 ## 0.3.11 - 2026-09-19
 
 - **修复 shell integration 的 shell 家族探测（真机验证发现）**：探测命令走的是带 cwd 标记的包装（每次 exec 都如此），且已启用 shell integration 的服务器自身还会输出 `133/633` 标记——探测输出因此恒为非空，插件**总是按 zsh 变体注入**，写进 bash 的 `precmd_functions+=(...)` 让整行脚本解析失败，OSC 133 从未真正生效（`shell` 状态恒为空、cwd/退出码取不到）。现在探测改为定界回答（`DSHSHELL:%s:END`）并取**最后一个**定界结果，对 cwd 标记与既有集成标记都免疫；补了污染场景的回归测试。

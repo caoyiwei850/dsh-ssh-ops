@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { validateJsonSchemaValue } from "@deepseek-ai/dsh-tools";
+import { registerDbTools } from "../src/tools/db.js";
 import { buildMysqlSsl, buildPgSsl, buildRedisSocket, buildMongoOptions } from "../src/db-ops.js";
 
 // mysql2: undefined = 不传 ssl；preferred/verify = { rejectUnauthorized }
@@ -137,12 +139,139 @@ console.log("db-ops transport-loss handling: all cases passed");
       config: { host: "db.example.test", port: 5432, database: "warehouse", username: "reporter", ssl: "verify", sshConnectionId: null },
       createdAt: "2026-08-31T00:00:00.000Z"
     }
+  ], [
+    "db-list-anonymous",
+    {
+      id: "db-list-anonymous", name: "cache", type: "redis",
+      config: { host: "cache.example.test", port: 6379, database: null, username: null, ssl: "disabled", sshConnectionId: null },
+      createdAt: "2026-08-31T00:00:01.000Z"
+    }
+  ], [
+    "db-list-sqlite",
+    {
+      id: "db-list-sqlite", name: "local cache", type: "sqlite",
+      config: { host: "", port: 0, database: "/srv/app/cache.db", username: null, ssl: "disabled", sshConnectionId: null },
+      createdAt: "2026-08-31T00:00:02.000Z"
+    }
   ]]);
   const listed = manager.list();
   assert.equal(listed.value.connections[0].username, "reporter", "history can distinguish different accounts on one endpoint");
+  assert.equal(listed.value.connections[1].username, null, "connections without an account keep an explicit null discriminator");
+
+  const tools = [];
+  registerDbTools({ tools: { register: (tool) => tools.push(tool) } }, { dbListConnections: () => listed });
+  const listTool = tools.find((tool) => tool.name === "db_list_connections");
+  const toolValue = await listTool.execute({});
+  assert.deepEqual(
+    validateJsonSchemaValue(listTool.output.schema, toolValue, "value"),
+    [],
+    "the agent tool output contract accepts every field returned by DbOpsManager.list()"
+  );
+  const rendered = listTool.output.render({}, toolValue)[0].text;
+  assert.match(rendered, /db: warehouse.*user: reporter.*TLS: verify/, "the rendered list exposes database, account, and TLS identity");
+  assert.match(rendered, /local cache \(sqlite\): \/srv\/app\/cache\.db/, "SQLite is identified by its file path instead of an empty host and port 0");
+  assert.doesNotMatch(rendered, /local cache.*:0/, "SQLite never renders a meaningless network endpoint");
 }
 
 console.log("db-ops connection list: account discriminator passed");
+
+// ── every compound db tool output shape passes the DSH agent-output validator ──
+// #23: a strict output schema (additionalProperties: false) silently rejects the
+// whole tool result the moment the service returns an undeclared field. The
+// conditional/compound shapes of the remaining db tools each get one canned
+// value mirroring the real service literals, JSON round-tripped exactly like the
+// RPC transport (dropping present-but-undefined keys), then run through the real
+// DSH validator so schema and service cannot drift apart again.
+
+{
+  const tools = [];
+  const stub = {};
+  registerDbTools({ tools: { register: (t) => tools.push(t) } }, stub);
+  const tool = (name) => tools.find((t) => t.name === name);
+  const check = async (name, args, label) => {
+    const value = await tool(name).execute(args);
+    const wire = JSON.parse(JSON.stringify(value));
+    assert.deepEqual(validateJsonSchemaValue(tool(name).output.schema, wire, "value"), [], label);
+    return value;
+  };
+
+  // db_execute: mysql-style write carrying insertId
+  stub.dbExecute = async () => ({ ok: true, value: { affectedRows: 3, truncated: false, insertId: 42 } });
+  let value = await check("db_execute", { db_connection_id: "db-1", sql: "INSERT INTO t VALUES (1)" },
+    "db_execute success shape (with insertId) passes the DSH validator");
+  assert.match(tool("db_execute").output.render({}, value)[0].text, /Affected 3 row\(s\)\. Insert id: 42\./);
+
+  // db_execute: pg/sqlite/clickhouse-style write without insertId
+  stub.dbExecute = async () => ({ ok: true, value: { affectedRows: 7, truncated: false } });
+  await check("db_execute", { db_connection_id: "db-1", sql: "UPDATE t SET a = 1" },
+    "db_execute success shape (without insertId) passes the DSH validator");
+
+  // db_execute: the operator-approval card carries reason + the untouched SQL
+  stub.dbExecute = async () => ({ ok: false, error: { code: "unsafe-sql", message: "DROP TABLE is not executed by the agent" } });
+  value = await check("db_execute", { db_connection_id: "db-1", sql: "DROP TABLE users" },
+    "db_execute blocked card passes the DSH validator");
+  assert.equal(value.blocked, true);
+  assert.match(tool("db_execute").output.render({}, value)[0].text, /已拦截/);
+  assert.match(tool("db_execute").output.render({}, value)[0].text, /```sql\nDROP TABLE users\n```/);
+
+  // db_tx_execute: SELECT verification rows (mysql branch)
+  stub.dbTxExecute = async () => ({ ok: true, value: { affectedRows: 0, rowCount: 2, truncated: false, rows: [{ id: 1, name: "a" }, { id: 2, name: "b" }] } });
+  await check("db_tx_execute", { tx_id: "tx-1", sql: "SELECT id, name FROM t" },
+    "db_tx_execute row-verification shape passes the DSH validator");
+
+  // db_tx_execute: write branch with an auto-increment id (mysql branch)
+  stub.dbTxExecute = async () => ({ ok: true, value: { affectedRows: 5, rowCount: 0, truncated: false, rows: [], insertId: 9 } });
+  value = await check("db_tx_execute", { tx_id: "tx-1", sql: "INSERT INTO t (name) VALUES ('a')" },
+    "db_tx_execute write shape (with insertId) passes the DSH validator");
+  assert.match(tool("db_tx_execute").output.render({}, value)[0].text, /Affected 5 row\(s\)\. Insert id: 9\./);
+
+  // db_tx_execute: pg branch repeats rowCount as affectedRows
+  stub.dbTxExecute = async () => ({ ok: true, value: { affectedRows: 4, rowCount: 4, truncated: false, rows: [{ id: 3 }] } });
+  await check("db_tx_execute", { tx_id: "tx-1", sql: "UPDATE t SET a = 1 WHERE id > 0" },
+    "db_tx_execute pg-style shape passes the DSH validator");
+
+  // db_describe_table: the mysql path (key/default/extra columns, stats block)
+  stub.dbDescribeTable = async () => ({ ok: true, value: {
+    table: "users",
+    columns: [
+      { name: "id", type: "bigint", nullable: false, key: "PRI", default: null, extra: "auto_increment" },
+      { name: "email", type: "varchar(255)", nullable: true, key: "", default: "NULL", extra: "" }
+    ],
+    indexes: [{ name: "PRIMARY", unique: true, columns: ["id"], definition: null }],
+    foreignKeys: [{ name: "fk_org", column: "org_id", foreignTable: "orgs", foreignColumn: "id" }],
+    ddl: "CREATE TABLE `users` (...)",
+    stats: { estimatedRows: 1200, dataBytes: 16384, indexBytes: 4096 }
+  } });
+  await check("db_describe_table", { db_connection_id: "db-1", table: "users" },
+    "db_describe_table mysql shape passes the DSH validator");
+
+  // db_describe_table: the sqlite path (absent key/default, indexes without
+  // column lists, stats stays null instead of costing a COUNT(*))
+  stub.dbDescribeTable = async () => ({ ok: true, value: {
+    table: "kv",
+    columns: [{ name: "k", type: "TEXT", nullable: false, default: undefined, extra: null }],
+    indexes: [{ name: "kv_k", unique: false, columns: [], definition: "CREATE INDEX kv_k ON kv(k)" }],
+    foreignKeys: [],
+    ddl: "CREATE TABLE kv (k TEXT NOT NULL)",
+    stats: null
+  } });
+  await check("db_describe_table", { db_connection_id: "db-1", table: "kv" },
+    "db_describe_table sqlite shape (absent key/default, null stats) passes the DSH validator");
+
+  // db_export: inline return (content attached, path stays null)
+  stub.dbExport = async () => ({ ok: true, value: { format: "csv", columns: ["id", "name"], rows: 2, bytes: 16, truncated: false, path: null, content: "id,name\n1,a\n2,b" } });
+  value = await check("db_export", { db_connection_id: "db-1", sql: "SELECT id, name FROM t" },
+    "db_export inline shape passes the DSH validator");
+  assert.match(tool("db_export").output.render({}, value)[0].text, /returned inline/);
+
+  // db_export: remote write through SSH (path set, no content)
+  stub.dbExport = async () => ({ ok: true, value: { format: "json", columns: ["id"], rows: 1, bytes: 9, truncated: false, path: "/tmp/dsh-export-analytics.json" } });
+  value = await check("db_export", { db_connection_id: "db-1", sql: "SELECT id FROM t" },
+    "db_export remote shape (path without content) passes the DSH validator");
+  assert.match(tool("db_export").output.render({}, value)[0].text, /written to \/tmp\/dsh-export-analytics\.json/);
+}
+
+console.log("db-ops agent output contracts: all compound shapes validated");
 
 // ── identifier validation + paginated preview SQL builders ───────────────────
 

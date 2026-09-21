@@ -8,7 +8,9 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.3.11-blue)
+![version](https://img.shields.io/badge/version-0.3.12-blue)
+
+> **v0.3.12**：修复 `db_list_connections` 在存在数据库连接时因输出 schema 漏声明 `username` 而被 DSH 整体拒绝的问题（#23）；连接列表现在同时展示数据库、非敏感用户名、TLS 与 SSH 路由，SQLite 显示文件路径而不是 `:0`，并用真实 DSH 校验链路补上回归测试。
 
 > **v0.3.11**：修复 shell integration 的 shell 家族探测（此前探测输出被 cwd 标记污染，导致总是按 zsh 变体注入、bash 上整行脚本失效），并把 `shell` 状态补进终端上下文的结果契约。
 
@@ -87,7 +89,7 @@ Agent 命中上述黑名单时不会被静默拒绝：插件会创建一条一�
 ### 从 GitHub 安装（推荐）
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.11
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.12
 ```
 
 安装后重启 DSH Web：
@@ -100,14 +102,14 @@ dsh web
 
 ### 从发布压缩包安装
 
-从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.11) 下载 `dsh-ssh-ops-0.3.11.tgz` 后：
+从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.12) 下载 `dsh-ssh-ops-0.3.12.tgz` 后：
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.11.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.12.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.3.11.zip` 适用于离线审阅或二次开发；解压后可在目录中执行 `npm install && npm run build`。
+`dsh-ssh-ops-0.3.12.zip` 适用于离线审阅或二次开发；解压后可在目录中执行 `npm install && npm run build`。
 
 ## 使用方式
 
@@ -194,8 +196,8 @@ npm run pack:release
 
 生成物位于 `release/`：
 
-- `dsh-ssh-ops-0.3.11.tgz`：可直接被 DSH 安装。
-- `dsh-ssh-ops-0.3.11.zip`：完整离线源码包。
+- `dsh-ssh-ops-0.3.12.tgz`：可直接被 DSH 安装。
+- `dsh-ssh-ops-0.3.12.zip`：完整离线源码包。
 
 ## 许可
 
