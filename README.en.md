@@ -26,7 +26,7 @@
 
 ## Compatibility
 
-- **Target host**: the DSH Desktop / Web Profile `0.1.6` line; the current development environment is compatible with `0.1.6-alpha.1` and `0.1.6-alpha.2`. The plugin uses DSH's bundled Node.js runtime and does not require a system `ssh`, `sftp`, or standalone Node.js installation.
+- **Target host**: the DSH Desktop / Web Profile `0.1.7-rc.1` line; the current development environment is compatible with `0.1.7-rc.1` . The plugin uses DSH's bundled Node.js runtime and does not require a system `ssh`, `sftp`, or standalone Node.js installation.
 - **Current right Sidebar**: when the host supplies both `sidebarRightTabs` and `sidebarRight`, SSH runs as an official right-Sidebar tab and uses the host's split, resize, and fullscreen behavior.
 - **Older-host fallback**: if those Sidebar APIs are absent, the plugin automatically keeps the earlier floating SSH panel. Terminal, SFTP, tunnels, databases, and agent tools remain available, but there is no official Sidebar-tab or split-pane experience.
 - **File byte streaming**: browser upload/download routes register only when the Web Profile exposes both `webServer` and the request-origin guard; hosts without them retain the existing SFTP operations. Directory archive download returns `501 archive-unavailable` on every host, preventing traversal across differing SFTP-chroot and SSH-shell filesystem namespaces.
