@@ -26,7 +26,7 @@
 
 ## 兼容性
 
-- **目标宿主**：DSH Desktop / Web Profile `0.1.6` 系列；本项目当前开发环境已验证 `0.1.6-alpha.1` 与 `0.1.6-alpha.2`。插件使用 DSH 自带的 Node.js 运行时，不要求系统另装 `ssh`、`sftp` 或独立 Node.js。
+- **目标宿主**：DSH Desktop / Web Profile `0.1.7` 系列；本项目当前开发环境已验证 `0.1.7-rc.1` 。插件使用 DSH 自带的 Node.js 运行时，不要求系统另装 `ssh`、`sftp` 或独立 Node.js。
 - **新版右侧边栏**：宿主同时提供 `sidebarRightTabs` 与 `sidebarRight` 时，SSH 作为官方右侧边栏标签运行，支持宿主分栏、缩放和全屏。
 - **旧版回退**：缺少上述右侧边栏 API 时，插件自动使用原有浮动 SSH 面板；终端、SFTP、隧道、数据库和 Agent 工具仍可用，但不会获得官方边栏标签和分栏体验。
 - **文件字节流**：大文件的浏览器上传／下载路由仅在 Web Profile 同时提供 `webServer` 与请求来源校验服务时注册；不具备该接口的宿主继续使用既有 SFTP 操作。目录归档下载在所有宿主上均返回 `501 archive-unavailable`，避免 SFTP chroot 与 SSH shell 命名空间不一致造成越界。
