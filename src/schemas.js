@@ -496,6 +496,29 @@ export const sftpRenameResultSchema = resultSchema(
   z.object({ from: z.string(), to: z.string() })
 );
 
+export const sftpUploadDirRequestSchema = z.object({
+  connectionId: z.string().optional(),
+  localPath: z.string().min(1),
+  remotePath: z.string().min(1)
+});
+
+export const sftpDownloadDirRequestSchema = z.object({
+  connectionId: z.string().optional(),
+  remotePath: z.string().min(1),
+  localPath: z.string().min(1)
+});
+
+export const sftpTransferDirResultSchema = resultSchema(
+  z.object({
+    source: z.string(),
+    target: z.string(),
+    directories: z.number(),
+    files: z.number(),
+    bytes: z.number(),
+    failed: z.array(z.object({ path: z.string(), error: z.string() }))
+  })
+);
+
 // ── Port forwarding ──────────────────────────────────────────────────────────
 
 export const tunnelStartLocalRequestSchema = z.object({

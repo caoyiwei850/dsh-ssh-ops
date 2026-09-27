@@ -14,12 +14,14 @@ import { credentialRef } from "@deepseek-ai/dsh-credentials";
 import { defineDomain, domainTable } from "@deepseek-ai/dsh-storage-domain";
 import { TypertRemoteService } from "@deepseek-ai/dsh-typert-protocol";
 import { z } from "zod";
-import { assessShellCommand, isPrefillable, shellQuote } from "./safety.js";
+import { CATEGORY_DELETE_FILES, assessShellCommand, isPrefillable, shellQuote } from "./safety.js";
 import { EXEC_CWD_ERROR_PREFIX, buildCwdAwareCommand, execEchoWarning, extractExecCwd, posixLoginShell } from "./exec-cwd.js";
+import { buildTrashCommand, parseSimpleDeleteCommand, parseTrashOutput } from "./trash.js";
 import { scpCommand, scpDownload, scpUpload } from "./scp.js";
 import { redactForModel } from "./redact.js";
 import { isTransientConnectError } from "./net-errors.js";
 import { isIdentMismatchError, withRepairedBanner } from "./ssh-banner.js";
+import { createAuthTracker, makeAuthHandler, classifyConnectFailure, formatConnectFailure, wasAuthCut } from "./ssh-auth.js";
 import { processTerminalInput } from "./terminal-input.js";
 import { fail } from "./envelope.js";
 import { POLICY_NOTICE_PREFIX, DANGEROUS_DEFAULT_REASON } from "./policy-messages.js";
@@ -29,7 +31,10 @@ import { attachSocks5 } from "./socks5.js";
 import { SessionLogStore } from "./session-log.js";
 import { SHELL_FAMILY_PROBE, ShellIntegrationTracker, parseShellFamilyProbe, shellIntegrationCommand } from "./shell-integration.js";
 import { homedir } from "node:os";
-import { join as joinPath } from "node:path";
+import { join as joinPath, dirname as dirnamePath, relative as relativePath } from "node:path";
+import { mkdir as fsMkdir, readdir as fsReaddir, stat as fsStat } from "node:fs/promises";
+import { createReadStream, createWriteStream } from "node:fs";
+import { runTransferTasks, joinRemotePath, splitRemotePath } from "./sftp-dir.js";
 import {
   KnownHosts,
   decideHostKey,
@@ -524,6 +529,12 @@ export default class SshOpsService extends TypertRemoteService {
       // `legacy: false` is an explicit "modern only, do NOT downgrade" — the
       // automatic retry is opt-out, not merely opt-in.
       allowLegacyDowngrade: request.legacy === undefined,
+      // Authentication-stage telemetry: which methods were offered, what the
+      // server still accepts, whether a keyboard-interactive prompt was
+      // served. Feeds the structured connect-failure diagnosis and the
+      // one-shot keyboard-interactive → plain-password fallback.
+      authTracker: createAuthTracker(),
+      kbdFallbackTried: false,
       proxyJump: Array.isArray(request.proxyJump) ? request.proxyJump : [],
       // Host-key TOFU mode for this connection (undefined → accept-new default
       // resolved in attachHostVerifier). Persisted on the record so transparent
@@ -706,6 +717,25 @@ export default class SshOpsService extends TypertRemoteService {
           if (record.legacyAlgorithms) {
             config.algorithms = { ...(config.algorithms ?? {}), ...LEGACY_VRP_ALGORITHMS };
           }
+          // Keyboard-interactive support: only when a saved password exists to
+          // answer prompts with, and never on the plain-password fallback
+          // attempt (where the device killed the transport mid-prompt).
+          const hasPassword = record.connectConfig.password !== undefined;
+          config.tryKeyboard = hasPassword && !record.kbdFallbackTried;
+          if (config.tryKeyboard) {
+            client.on("keyboard-interactive", (name, instructions, instructionsLang, prompts, finish) => {
+              record.authTracker.kbdSeen = true;
+              finish(prompts.map(() => record.connectConfig.password));
+            });
+          }
+          // ssh2's own default handler walks the same method order; this one
+          // additionally records what was tried and what the server accepts,
+          // so a failed login produces a diagnosis instead of a bare line.
+          config.authHandler = makeAuthHandler(record.authTracker, {
+            hasPassword,
+            hasPrivateKey: record.connectConfig.privateKey !== undefined,
+            tryKeyboard: config.tryKeyboard
+          });
           if (sock !== undefined) config.sock = sock;
           this.attachHostVerifier(config, record, record.host, record.port, record.hostKeyMode);
           client.connect(config);
@@ -756,6 +786,17 @@ export default class SshOpsService extends TypertRemoteService {
           if (attempt >= retries) retries += 1;
           continue;
         }
+        // Devices whose firmware aborts the transport while a keyboard-
+        // interactive round-trip is in flight get ONE plain-password retry
+        // (tryKeyboard off, so the interactive method is never offered). Only
+        // fires after auth provably started — otherwise it is a plain network
+        // failure and the retry loop's own policy applies.
+        if (!record.kbdFallbackTried && wasAuthCut(record.authTracker, error)) {
+          record.kbdFallbackTried = true;
+          this.log(`SSH ${record.host}:${record.port} dropped the transport during authentication; retrying once with the plain password method only.`);
+          if (attempt >= retries) retries += 1;
+          continue;
+        }
         if (!isTransientConnectError(error) || attempt >= retries) break;
         await this.sleep(Math.min(2000, 500 * 2 ** attempt));
       }
@@ -763,9 +804,17 @@ export default class SshOpsService extends TypertRemoteService {
     if (record.closing) {
       return { ok: false, error: fail("connect-cancelled", `connection "${record.id}" was closed`) };
     }
+    // Structured diagnosis instead of ssh2's bare one-liner: what stage died,
+    // which methods were tried, what the server still accepts, and the next
+    // steps worth trying. The code stays `connect-failed` so existing callers
+    // (and their matching) are unaffected.
+    const diagnosis = classifyConnectFailure(lastError, record.authTracker, {
+      hasPassword: record.connectConfig.password !== undefined,
+      hasPrivateKey: record.connectConfig.privateKey !== undefined
+    });
     return {
       ok: false,
-      error: fail("connect-failed", `${record.username}@${record.host}:${record.port}: ${lastError?.message ?? "connection failed"}`)
+      error: fail("connect-failed", formatConnectFailure(diagnosis, `${record.username}@${record.host}:${record.port}`))
     };
   }
 
@@ -832,6 +881,15 @@ export default class SshOpsService extends TypertRemoteService {
         hopConnectConfig.privateKey = hopConfig.auth.privateKey;
         if (hopConfig.auth.passphrase !== void 0) hopConnectConfig.passphrase = hopConfig.auth.passphrase;
       }
+      // Jump hosts get the same keyboard-interactive support as targets: an
+      // MFA-prompting bastion is exactly where a saved password answers prompts.
+      const hopTracker = createAuthTracker();
+      if (hopConnectConfig.password !== undefined) {
+        hopConnectConfig.tryKeyboard = true;
+        hopConnectConfig.authHandler = makeAuthHandler(hopTracker, {
+          hasPassword: true, hasPrivateKey: hopConnectConfig.privateKey !== undefined, tryKeyboard: true
+        });
+      }
       if (sock !== undefined) hopConnectConfig.sock = sock;
       const hopState = { hostKeyMismatch: null, hostKeyToRecord: null };
       this.attachHostVerifier(hopConnectConfig, hopState, hopConnectConfig.host, hopConnectConfig.port, hopConfig.hostKeyMode);
@@ -842,6 +900,12 @@ export default class SshOpsService extends TypertRemoteService {
           // second protocol error after the first one settled this promise,
           // and an unhandled 'error' crashes the DSH process.
           let settled = false;
+          if (hopConnectConfig.tryKeyboard) {
+            hopClient.on("keyboard-interactive", (name, instructions, instructionsLang, prompts, finish) => {
+              hopTracker.kbdSeen = true;
+              finish(prompts.map(() => hopConnectConfig.password));
+            });
+          }
           hopClient.once("ready", () => { if (!settled) { settled = true; resolve(); } });
           hopClient.on("error", (cause) => { if (!settled) { settled = true; reject(cause); } });
           hopClient.connect(hopConnectConfig);
@@ -1790,13 +1854,35 @@ export default class SshOpsService extends TypertRemoteService {
     return { ok: true, value: { cancelled } };
   }
 
-  pendingConfirmationApprove(request) {
+  async pendingConfirmationApprove(request) {
     const pending = this.pendingConfirmations.get(request.confirmationId);
     if (!pending) return { ok: false, error: fail("confirmation-missing", "待确认命令不存在或已处理") };
     const session = this.sessions.get(pending.sessionId);
     if (!session || session.exited !== null || session.stream === null) {
       this.removePendingConfirmation(pending.confirmationId);
       return { ok: false, error: fail("confirmation-session-closed", "终端已关闭，无法执行待确认命令") };
+    }
+    if (pending.trashScript) {
+      // The approved command runs as the reversible trash move on the exec
+      // channel when that is possible. When it is not (connection gone, or a
+      // non-POSIX login shell that cannot anchor relative paths), execution
+      // falls through to the historical PTY path below — exactly what the
+      // operator approved before this safety net existed. The card, the
+      // notices and the terminal output are identical either way; the only
+      // difference is whether a rollback copy exists.
+      const conn = this.connections.get(pending.connectionId);
+      if (conn) {
+        const shell = await this.resolveLoginShell(conn);
+        if (posixLoginShell(shell)) {
+          this.removePendingConfirmation(pending.confirmationId);
+          const result = await this.runPreparedExec(pending.connectionId, pending.trashScript, pending.command, true, 30000, false);
+          if (!result.ok) {
+            this.appendTerminalNotice(session, `回收站移动未能执行：${result.error.message}。命令未执行。`);
+            return { ok: true, value: { executed: false } };
+          }
+          return { ok: true, value: { executed: true } };
+        }
+      }
     }
     if (pending.prefilled && (!session.inputKnown || session.inputLine !== pending.command)) {
       this.removePendingConfirmation(pending.confirmationId);
@@ -2208,7 +2294,25 @@ export default class SshOpsService extends TypertRemoteService {
 
   async execOnConnection(connectionId, command, timeoutMs = 30000, retried = false) {
     const decision = assessShellCommand(command);
-    if (!decision.ok) return this.prefillBlockedResult(connectionId, command, decision.category ?? decision.reason);
+    if (!decision.ok) {
+      // A simple, fully-literal rm/unlink/rmdir still goes through the
+      // operator's confirmation card — but approving it performs the
+      // reversible trash move, not a real deletion. The card carries the
+      // prepared script; real `rm` only ever happens when the operator types
+      // it in their own terminal.
+      let trashScript = null;
+      if (decision.category === CATEGORY_DELETE_FILES) {
+        const parsed = parseSimpleDeleteCommand(command);
+        if (parsed) trashScript = buildTrashCommand(parsed.targets);
+      }
+      // The card, the reason and every notice stay byte-for-byte what they
+      // always were — the trash is a silent rollback margin, never a new UX.
+      return this.prefillBlockedResult(connectionId, command, decision.category ?? decision.reason, trashScript);
+    }
+    return this.runPreparedExec(connectionId, command, command, false, timeoutMs, retried);
+  }
+
+  async runPreparedExec(connectionId, prepared, displayCommand, trashRun, timeoutMs = 30000, retried = false) {
     const conn = this.connections.get(connectionId);
     if (conn === void 0) return { ok: false, error: fail("no-connection", `connection "${connectionId}" does not exist`) };
     if (!(await this.ensureAlive(conn))) {
@@ -2218,9 +2322,11 @@ export default class SshOpsService extends TypertRemoteService {
     // interactive shell may be somewhere else entirely. When the login shell
     // is POSIX-family, prepend the interactive-cwd prologue (see exec-cwd.js)
     // so the command runs where the operator's terminal is, and the resolved
-    // directory comes back on a stripped marker line.
+    // directory comes back on a stripped marker line. (The trash move is only
+    // ever dispatched through pendingConfirmationApprove, which refuses to
+    // run it when the shell family cannot anchor relative paths.)
     const shell = await this.resolveLoginShell(conn);
-    const sent = posixLoginShell(shell) ? buildCwdAwareCommand(command) : command;
+    const sent = posixLoginShell(shell) ? buildCwdAwareCommand(prepared) : prepared;
     const commandId = randomUUID();
     const startedAt = new Date().toISOString();
     const startedAtMs = Date.now();
@@ -2231,11 +2337,18 @@ export default class SshOpsService extends TypertRemoteService {
       // The transport may have died between the liveness check and the exec.
       // Wait for the self-healing reconnect and retry once transparently.
       if (!retried && conn.dead && (await this.ensureAlive(conn))) {
-        return this.execOnConnection(connectionId, command, timeoutMs, true);
+        return this.runPreparedExec(connectionId, prepared, displayCommand, trashRun, timeoutMs, true);
       }
       return { ok: false, error: fail("exec-failed", error.message) };
     }
-    const { cwd, stdout } = extractExecCwd(state.stdout);
+    const { cwd, stdout: execStdout } = extractExecCwd(state.stdout);
+    let stdout = execStdout;
+    let trashEvents = null;
+    if (trashRun) {
+      const parsed = parseTrashOutput(execStdout);
+      stdout = parsed.stdout;
+      trashEvents = parsed.events.filter((event) => event.event !== "purged");
+    }
     const { stderr } = state;
     if (state.exitCode === 125 && cwd === null && stderr.startsWith(EXEC_CWD_ERROR_PREFIX)) {
       return { ok: false, error: fail("cwd-unavailable", stderr.trim()) };
@@ -2245,9 +2358,11 @@ export default class SshOpsService extends TypertRemoteService {
     // state label: the `$ ` prefix is the established agent marker and, with
     // the cwd inherited, output is consistent with the visible prompt. A dim
     // warning appears only in the fallback case (cwd undetected — the exec
-    // ran from the home directory, so output may contradict the prompt).
+    // ran from the home directory, so output may contradict the prompt). A
+    // trash run echoes the plain original command: the rollback margin is
+    // silent, the terminal looks exactly as it always did.
     const warning = execEchoWarning(cwd);
-    const display = normalizeTerminalEol(`${warning ? `${warning}\n` : ""}$ ${command}\n${stdout}${stderr.length > 0 ? stderr : ""}`)
+    const display = normalizeTerminalEol(`${warning ? `${warning}\n` : ""}$ ${displayCommand}\n${stdout}${stderr.length > 0 ? stderr : ""}`)
       .replace(/(?:\r\n)+$/, "");
     for (const sessionId of conn.sessions) {
       const session = this.sessions.get(sessionId);
@@ -2258,22 +2373,27 @@ export default class SshOpsService extends TypertRemoteService {
         this.appendSessionOutput(session, `${display}\r\n${prompt}`, { capture: false, observePrompt: false });
       }
     }
-    return {
-      ok: true,
-      value: {
-        exitCode: state.exitCode,
-        stdout,
-        stderr,
-        cwd,
-        display,
-        commandId,
-        startedAt,
-        finishedAt: new Date().toISOString(),
-        durationMs: Date.now() - startedAtMs,
-        truncated: state.truncated,
-        timedOut: state.timedOut
-      }
+    const value = {
+      exitCode: state.exitCode,
+      stdout,
+      stderr,
+      cwd,
+      display,
+      commandId,
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      durationMs: Date.now() - startedAtMs,
+      truncated: state.truncated,
+      timedOut: state.timedOut
     };
+    if (trashEvents !== null && trashEvents.length > 0) {
+      value.trashed = trashEvents.map((event) => (
+        event.event === "moved"
+          ? { original: event.original, trashPath: event.trashPath }
+          : { original: event.original }
+      ));
+    }
+    return { ok: true, value };
   }
 
   /**
@@ -2283,7 +2403,7 @@ export default class SshOpsService extends TypertRemoteService {
    * command contains control characters that would be unsafe to send to a PTY).
    * The operator — never the agent — is the one who presses Enter.
    */
-  prefillBlockedCommand(connectionId, command, reason = DANGEROUS_DEFAULT_REASON) {
+  prefillBlockedCommand(connectionId, command, reason = DANGEROUS_DEFAULT_REASON, trashScript = null) {
     // Agent tools commonly omit connection_id to mean the selected right-side
     // server. Resolve it here so safety confirmations follow exactly the same
     // current-connection semantics as ssh_exec and the other SFTP tools.
@@ -2298,6 +2418,8 @@ export default class SshOpsService extends TypertRemoteService {
           // terminal input line.  This avoids the contradiction of a visible
           // command that Enter cannot submit — the only execution path is the
           // panel's Execute button, which sends the full command + Enter.
+          // For a simple delete the card also carries the prepared trash
+          // script: approving performs the reversible move, never a real rm.
           const confirmation = {
             confirmationId: randomUUID(),
             connectionId: effectiveConnectionId,
@@ -2307,7 +2429,8 @@ export default class SshOpsService extends TypertRemoteService {
             command,
             reason,
             createdAt: new Date().toISOString(),
-            prefilled: false
+            prefilled: false,
+            ...(trashScript ? { trashScript } : {})
           };
           this.pendingConfirmations.set(confirmation.confirmationId, confirmation);
           this.appendTerminalNotice(session, `危险命令已被拦截并弹出确认卡片，请在右侧 SSH 面板点击“执行”或“撤销”：${command}`);
@@ -2323,8 +2446,8 @@ export default class SshOpsService extends TypertRemoteService {
    * Build the ssh_exec result for a blocked destructive command: prefilled into
    * the terminal when possible, otherwise a copyable command card.
    */
-  prefillBlockedResult(connectionId, command, reason) {
-    const pending = this.prefillBlockedCommand(connectionId, command, reason);
+  prefillBlockedResult(connectionId, command, reason, trashScript = null) {
+    const pending = this.prefillBlockedCommand(connectionId, command, reason, trashScript);
     const now = new Date().toISOString();
     return {
       blocked: true,
@@ -3189,6 +3312,177 @@ export default class SshOpsService extends TypertRemoteService {
       return { ok: true, value: { from: request.from, to: request.to } };
     } catch (error) {
       return { ok: false, error: fail("sftp-rename-failed", `${request.from} -> ${request.to}: ${error.message}`) };
+    }
+  }
+
+  // ── Directory batch transfer (SFTP) ────────────────────────────────────────
+  // Scheduling policy lives in sftp-dir.js: small files in a bounded pool of
+  // 6, files over 512 KiB one at a time, monotone counters, per-file failures
+  // collected instead of fatal. These methods only implement the I/O.
+
+  /** Promisified one-shot sftp callback op. */
+  sftpCall(sftp, fn) {
+    return new Promise((resolve, reject) => fn((error, value) => (error ? reject(error) : resolve(value))));
+  }
+
+  /** mkdir -p over SFTP: create each missing segment, verify with stat. */
+  async ensureRemoteDir(sftp, dir) {
+    if (dir === "/" || dir === "") return;
+    try {
+      await this.sftpCall(sftp, (cb) => sftp.sftp.mkdir(dir, cb));
+      return;
+    } catch {
+      // Fall through: the directory may already exist, or the parent may be
+      // missing — stat decides, recursion creates the parent chain.
+    }
+    try {
+      const attrs = await this.sftpCall(sftp, (cb) => sftp.sftp.stat(dir, cb));
+      if ((attrs.mode & 0o170000) === 0o040000) return;
+      throw new Error(`${dir} exists and is not a directory`);
+    } catch (error) {
+      if (/not a directory/.test(error.message)) throw error;
+      const { parent } = splitRemotePath(dir);
+      await this.ensureRemoteDir(sftp, parent);
+      await this.sftpCall(sftp, (cb) => sftp.sftp.mkdir(dir, cb));
+    }
+  }
+
+  /** Upload one local file into a remote SFTP write stream. */
+  sftpUploadFile(sftp, localFile, remoteFile) {
+    return new Promise((resolve, reject) => {
+      const source = createReadStream(localFile);
+      const target = sftp.sftp.createWriteStream(remoteFile);
+      source.on("error", (error) => { target.destroy(); reject(error); });
+      target.on("error", (error) => { source.destroy(); reject(error); });
+      target.on("close", () => resolve());
+      source.pipe(target);
+    });
+  }
+
+  /** Download one remote SFTP file into a local write stream. */
+  sftpDownloadFile(sftp, remoteFile, localFile) {
+    return new Promise((resolve, reject) => {
+      const source = sftp.sftp.createReadStream(remoteFile);
+      const target = createWriteStream(localFile);
+      source.on("error", (error) => { target.destroy(); reject(error); });
+      target.on("error", (error) => { source.destroy(); reject(error); });
+      target.on("close", () => resolve());
+      source.pipe(target);
+    });
+  }
+
+  /** Recursively list a remote directory; returns [{ rel, path, size, isDirectory }]. */
+  async walkRemoteDir(sftp, root, base = root, out = []) {
+    const entries = await this.sftpCall(sftp, (cb) => sftp.sftp.readdir(root, cb));
+    for (const entry of entries) {
+      const path = joinRemotePath(root, entry.filename);
+      const rel = relativePath(base, path).split("\\").join("/");
+      const isDirectory = (entry.attrs.mode & 0o170000) === 0o040000;
+      if (isDirectory) {
+        out.push({ rel, path, size: 0, isDirectory: true });
+        await this.walkRemoteDir(sftp, path, base, out);
+      } else {
+        out.push({ rel, path, size: entry.attrs.size ?? 0, isDirectory: false });
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Upload a local directory tree over SFTP. Small files transfer in a
+   * bounded pool; large files one at a time; per-file failures are reported
+   * in the result instead of aborting the batch.
+   */
+  async sftpUploadDir(request) {
+    const selected = this.resolveConnection(request.connectionId);
+    if (!selected.ok) return selected;
+    const sftp = await this.requireSftp(selected.connection);
+    if (!sftp.ok) return sftp;
+    const { localPath, remotePath } = request;
+    try {
+      const rootStat = await fsStat(localPath);
+      if (!rootStat.isDirectory()) {
+        return { ok: false, error: fail("sftp-upload-dir-failed", `${localPath} is not a directory`) };
+      }
+      await this.ensureRemoteDir(sftp, remotePath);
+      const entries = [];
+      const walk = async (dir) => {
+        for (const entry of await fsReaddir(dir, { withFileTypes: true })) {
+          const full = joinPath(dir, entry.filename ?? entry.name);
+          if (entry.isDirectory()) {
+            await walk(full);
+          } else if (entry.isFile()) {
+            const { size } = await fsStat(full);
+            entries.push({ full, size });
+          }
+        }
+      };
+      await walk(localPath);
+      const tasks = entries.map(({ full, size }) => {
+        const rel = relativePath(localPath, full).split("\\").join("/");
+        return { path: rel, size, run: () => this.sftpUploadFile(sftp, full, joinRemotePath(remotePath, rel)) };
+      });
+      // Every ancestor directory of every file, deduplicated, created shallow
+      // first so each mkdir sees its parent already in place.
+      const remoteDirs = new Set();
+      for (const task of tasks) {
+        let dir = dirnamePath(task.path).split("\\").join("/");
+        while (dir !== "." && dir !== "/" && dir !== "") {
+          remoteDirs.add(dir);
+          dir = dirnamePath(dir);
+        }
+      }
+      const sortedDirs = [...remoteDirs].sort((a, b) => a.length - b.length);
+      for (const dir of sortedDirs) {
+        await this.ensureRemoteDir(sftp, joinRemotePath(remotePath, dir));
+      }
+      const { files, bytes, failures } = await runTransferTasks(tasks);
+      return {
+        ok: true,
+        value: { source: localPath, target: remotePath, directories: remoteDirs.size + 1, files, bytes, failed: failures }
+      };
+    } catch (error) {
+      return { ok: false, error: fail("sftp-upload-dir-failed", `${localPath} -> ${remotePath}: ${error.message}`) };
+    }
+  }
+
+  /**
+   * Download a remote directory tree over SFTP with the same scheduling
+   * policy as sftpUploadDir.
+   */
+  async sftpDownloadDir(request) {
+    const selected = this.resolveConnection(request.connectionId);
+    if (!selected.ok) return selected;
+    const sftp = await this.requireSftp(selected.connection);
+    if (!sftp.ok) return sftp;
+    const { remotePath, localPath } = request;
+    try {
+      const rootAttrs = await this.sftpCall(sftp, (cb) => sftp.sftp.stat(remotePath, cb));
+      if ((rootAttrs.mode & 0o170000) !== 0o040000) {
+        return { ok: false, error: fail("sftp-download-dir-failed", `${remotePath} is not a directory`) };
+      }
+      await fsMkdir(localPath, { recursive: true });
+      const entries = await this.walkRemoteDir(sftp, remotePath);
+      const directories = entries.filter((e) => e.isDirectory).length;
+      for (const dir of entries.filter((e) => e.isDirectory)) {
+        await fsMkdir(joinPath(localPath, dir.rel), { recursive: true });
+      }
+      const tasks = entries.filter((e) => !e.isDirectory).map((entry) => ({
+        path: entry.rel,
+        size: entry.size,
+        run: async () => {
+          const local = joinPath(localPath, entry.rel);
+          await fsMkdir(dirnamePath(local), { recursive: true });
+          await this.sftpDownloadFile(sftp, entry.path, local);
+        }
+      }));
+      const { files, bytes, failures } = await runTransferTasks(tasks);
+      return {
+        ok: true,
+        value: { source: remotePath, target: localPath, directories: directories + 1, files, bytes, failed: failures }
+      };
+    } catch (error) {
+      return { ok: false, error: fail("sftp-download-dir-failed", `${remotePath} -> ${localPath}: ${error.message}`) };
     }
   }
 

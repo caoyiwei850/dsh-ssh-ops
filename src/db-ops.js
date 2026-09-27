@@ -8,9 +8,12 @@
  */
 import net from "node:net";
 import { randomUUID } from "node:crypto";
+import { mkdir, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 // DB drivers are imported on first use (see connect/pgQueryPaged) so loading
 // this module does not pull the whole driver module tree up front.
-import { assessSqlStatement, assessReadOnlySql } from "./db-safety.js";
+import { assessSqlStatement, assessReadOnlySql, parseDestructiveTarget, QUARANTINE_SUFFIX_RE } from "./db-safety.js";
 // SQLite/ClickHouse mechanics plus the type metadata shared with schemas and
 // the client (default ports, SQL-family checks, CSV/JSON serializers).
 import {
@@ -42,6 +45,10 @@ const EXPORT_MAX_ROWS = 200000;
 const EXPORT_INLINE_LIMIT = 256 * 1024;
 /** Idle transactions are rolled back and released after this long. */
 const DB_TX_IDLE_MS = 5 * 60 * 1000;
+/** TCP keepalive on pooled database sockets (NAT/firewall idle drops). */
+const DB_TCP_KEEPALIVE_MS = 30000;
+/** A pooled connection idle longer than this gets a ping before reuse. */
+const DB_PING_AFTER_IDLE_MS = 30000;
 
 /**
  * Client-side ceilings for every driver await. A half-open transport (idle
@@ -62,6 +69,8 @@ export const DB_DEADLINES = Object.freeze({
   checkout: 12000,
   /** Best-effort cleanup round-trips: RESET statement_timeout, cursor close. */
   reset: 2000,
+  /** Liveness ping of a pooled connection before reuse after an idle period. */
+  ping: 10000,
   /** Whole db_connect handshake + validation checkout. */
   connect: 20000,
   /** Driver-level connect timeout (pg connectionTimeoutMillis, mysql connectTimeout). */
@@ -223,20 +232,68 @@ export function buildPreviewSql(dialect, table, limit, offset) {
   return { ok: true, sql: `SELECT * FROM ${quotePgIdentifier(table)} LIMIT $1 OFFSET $2`, params: [limit, offset] };
 }
 
+// ── destructive-SQL guard: backup + quarantine (never executes the SQL) ──────
+
+/** Engine types that support ALTER TABLE ... RENAME for quarantine. */
+const QUARANTINE_CAPABLE_TYPES = new Set(["mysql", "postgresql", "opengauss", "sqlite"]);
+/** DROP DATABASE dumps at most this many tables before declaring the backup partial. */
+const BACKUP_TABLE_CAP = 20;
+
+function backupFileNameStem(record, target) {
+  const sanitize = (text) => String(text).replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "x";
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  return `dsh-backup-${sanitize(record.name)}-${sanitize(target)}-${stamp}`;
+}
+
+function describeBackupEntry(entry) {
+  if (entry.error) return `- ${entry.target}：备份失败（${entry.error}）`;
+  const bits = [`- ${entry.target} → ${entry.path}`];
+  if (entry.schemaPath) bits.push(`（含 schema：${entry.schemaPath}）`);
+  if (entry.truncated) bits.push("（超过行数上限，已截断）");
+  bits.push(`，${entry.bytes} 字节`);
+  return bits.join("");
+}
+
+/**
+ * Single source for rendering backup lists (guard messages AND the agent
+ * tool result) so the recovery info shown to the operator cannot drift
+ * between the two surfaces.
+ */
+export function backupSummary(backup) {
+  if (!Array.isArray(backup) || backup.length === 0) return "本次未生成自动备份。";
+  return `已自动备份（误删可从下列文件恢复）：\n${backup.map(describeBackupEntry).join("\n")}`;
+}
+
 // ── value serialization (MongoDB ObjectId/Decimal/Date, Buffer, bigint) ─────
 
-function serializeDbValue(value) {
-  return JSON.parse(JSON.stringify(value, (_key, val) => {
+/**
+ * Single value serializer for every result path (db_query, db_preview,
+ * db_export, db_run, db_explain, transactions). Driver values that cannot
+ * travel as JSON — notably MySQL buffers returned for columns whose charset
+ * the server reports as binary/unknown — decode as UTF-8 here, so text never
+ * reaches the agent as a raw byte array.
+ *
+ * Implemented as an explicit walk instead of a JSON.stringify replacer:
+ * Buffer.toJSON() runs BEFORE the replacer, so inside a replacer a Buffer has
+ * already degraded to {type:"Buffer",data:[…]} and can never be detected.
+ */
+export function serializeDbValue(value) {
+  const walk = (val) => {
     if (val === undefined) return null;
     if (typeof val === "bigint") return val.toString();
     if (Buffer.isBuffer(val)) return val.toString("utf8");
+    if (val instanceof Date) return val.toISOString();
     if (val && typeof val === "object") {
-      if (typeof val.toISOString === "function" && val instanceof Date) return val.toISOString();
       if (typeof val.toHexString === "function") return val.toHexString();
       if (typeof val.toString === "function" && val.constructor?.name === "Decimal128") return val.toString();
+      if (Array.isArray(val)) return val.map(walk);
+      const out = {};
+      for (const [key, entry] of Object.entries(val)) out[key] = walk(entry);
+      return out;
     }
     return val;
-  }));
+  };
+  return walk(value);
 }
 
 // ── DbOpsManager ────────────────────────────────────────────────────────────
@@ -317,6 +374,9 @@ export class DbOpsManager {
         client = mysql.createPool({
           host: connectHost, port: connectPort, user: username, password, database,
           ssl: buildMysqlSsl(ssl), connectionLimit: 4, supportBigNumbers: true,
+          // TCP-level keepalive so an idle NAT/firewall drop surfaces as a
+          // socket error instead of a silent half-open connection.
+          enableKeepAlive: true, keepAliveInitialDelay: DB_TCP_KEEPALIVE_MS,
           connectTimeout: this.dl("poolConnection")
         });
         const c = await this.mysqlCheckout({ client }, { signal, label: "db_connect", timeoutMs: this.dl("connect") });
@@ -328,6 +388,8 @@ export class DbOpsManager {
         client = new pg.Pool({
           host: connectHost, port: connectPort, user: username, password, database,
           ssl: buildPgSsl(ssl), max: 4,
+          // Same TCP keepalive rationale as the MySQL pool above.
+          keepAlive: true, keepAliveInitialDelay: DB_TCP_KEEPALIVE_MS,
           // Without this pg-pool waits forever — both on new TCP connects and
           // on the waiter queue of an exhausted pool (the half-open state).
           connectionTimeoutMillis: this.dl("poolConnection")
@@ -427,7 +489,10 @@ export class DbOpsManager {
     if (!record || record.client !== client || record.dead) return;
     record.dead = true;
     this.dbConnections.delete(id);
-    this.dropTransactionsFor(id);
+    // Manual transactions die with the pool: a bounded best-effort ROLLBACK
+    // goes out per transaction, and every dedicated connection is destroyed
+    // or released-with-error so no pool slot leaks with the transport gone.
+    this.abandonTransactionsFor(id);
     if (record.tunnel) { try { record.tunnel.server.close(); } catch {} }
     // Only node-redis reconnects on its own; with the tunnel already closed it
     // would retry a dead local port forever, so stop its retry loop for good.
@@ -521,8 +586,17 @@ export class DbOpsManager {
    * raced; a lost race marks the client dead so it is released WITH an error
    * — pg-pool then removes it synchronously and its end() force-destroys the
    * socket of a hung query, returning the slot to the pool.
+   *
+   * Before the caller's statements run, a connection that has been idle for
+   * DB_PING_AFTER_IDLE_MS is verified with a bounded `SELECT 1`: a half-open
+   * transport otherwise turns the NEXT real query into a 35s stall. One fresh
+   * reconnect attempt is made transparently before giving up.
    */
   async pgWithClient(record, opts, fn) {
+    return await this.withAliveRetry(record, opts, () => this.pgWithClientOnce(record, opts, fn));
+  }
+
+  async pgWithClientOnce(record, opts, fn) {
     const label = opts?.label ?? "db statement";
     const client = await this.pgCheckout(record, { signal: opts?.signal, label, timeoutMs: this.dl("checkout") });
     let dead = false;
@@ -530,7 +604,19 @@ export class DbOpsManager {
       signal: opts?.signal, timeoutMs: this.dl("op"), label, onLose: () => { dead = true; }
     });
     try {
-      return await fn(run);
+      try {
+        await this.ensureIdleAlive(record, () => raceDeadline(client.query("SELECT 1"), {
+          signal: opts?.signal, timeoutMs: this.dl("ping"), label: `${label} ping`, onLose: () => { dead = true; }
+        }));
+      } catch (error) {
+        // A ping failure (timeout or immediate error) leaves the connection
+        // suspect; release it with an error so pg-pool never re-uses it.
+        dead = true;
+        throw error;
+      }
+      const result = await fn(run);
+      record.lastUsedAt = Date.now();
+      return result;
     } finally {
       if (dead) client.release(new Error(`${label}: connection killed after cancel/timeout`));
       else client.release();
@@ -544,6 +630,10 @@ export class DbOpsManager {
    * would bypass the kill path, so pg always goes through a checked-out client.
    */
   async mysqlWithConn(record, opts, fn) {
+    return await this.withAliveRetry(record, opts, () => this.mysqlWithConnOnce(record, opts, fn));
+  }
+
+  async mysqlWithConnOnce(record, opts, fn) {
     const label = opts?.label ?? "db statement";
     const conn = await this.mysqlCheckout(record, { signal: opts?.signal, label, timeoutMs: this.dl("checkout") });
     const target = conn.kind === "pool" ? conn.pool : conn;
@@ -557,9 +647,54 @@ export class DbOpsManager {
       throw error;
     });
     try {
-      return await fn(run);
+      try {
+        await this.ensureIdleAlive(record, () => raceDeadline(target.query("SELECT 1"), {
+          signal: opts?.signal, timeoutMs: this.dl("ping"), label: `${label} ping`, onLose: () => { killed = true; }
+        }));
+      } catch (error) {
+        // Suspect after a ping failure: destroyed, never pooled again.
+        killed = true;
+        throw error;
+      }
+      const result = await fn(run);
+      record.lastUsedAt = Date.now();
+      return result;
     } finally {
       if (killed) { try { conn.destroy(); } catch {} } else conn.release();
+    }
+  }
+
+  /**
+   * One transparent retry after an idle-liveness failure: the dead pooled
+   * connection was already reclaimed by the inner finally, so the second
+   * attempt checks out a (likely fresh) connection and pings again. Only a
+   * ping failure triggers this — ordinary statement errors never retry here.
+   */
+  async withAliveRetry(record, opts, run) {
+    try {
+      return await run();
+    } catch (error) {
+      if (error?.transportDead !== true) throw error;
+      return await run();
+    }
+  }
+
+  /**
+   * Ping a pooled connection before reuse when it has been idle longer than
+   * DB_PING_AFTER_IDLE_MS. Failure (including the bounded race timing out)
+   * throws an error marked `transportDead`, which drives the one reconnect
+   * retry above; the suspect connection itself is reclaimed by the caller's
+   * finally via the dead/killed flags.
+   */
+  async ensureIdleAlive(record, ping) {
+    const lastUsed = record.lastUsedAt ?? Date.parse(record.createdAt ?? "") ?? 0;
+    if (Number.isFinite(lastUsed) && Date.now() - lastUsed < DB_PING_AFTER_IDLE_MS) return;
+    try {
+      await ping();
+    } catch (error) {
+      const wrapped = new Error(`pooled connection idle over ${DB_PING_AFTER_IDLE_MS / 1000}s no longer responds to a liveness ping (${error.message})`);
+      wrapped.transportDead = true;
+      throw wrapped;
     }
   }
 
@@ -830,7 +965,12 @@ export class DbOpsManager {
     try { record = this.getRecord(request.dbConnectionId); }
     catch (error) { return fail("no-db-connection", error.message); }
     const assessment = assessSqlStatement(request.sql);
-    if (assessment.blocked) return fail("unsafe-sql", assessment.reason);
+    if (assessment.blocked) {
+      // Destructive SQL never executes, but it no longer dies silently: the
+      // target is backed up (and for DROP TABLE, quarantined by rename) so
+      // the operation stays recoverable. See guardDestructiveSql.
+      return this.guardDestructiveSql(record, request, assessment);
+    }
     if (!isSqlType(record.type)) {
       return fail("unsupported-op", `db_execute only supports SQL databases (mysql/postgresql/opengauss/sqlite/clickhouse), use db_run for ${record.type}`);
     }
@@ -864,6 +1004,208 @@ export class DbOpsManager {
       return { ok: true, value };
     } catch (error) {
       return fail("db-execute-failed", error.message);
+    }
+  }
+
+  /**
+   * Destructive SQL (DROP/TRUNCATE/SHUTDOWN) never executes. Depending on the
+   * target it instead:
+   *   - backs the table up (rows + DDL where the dialect provides it) and
+   *     returns the blocked envelope with the backup list attached;
+   *   - for DROP TABLE on a rename-capable engine, quarantines the table by
+   *     renaming it to `<name>_to_be_dropped_<date>` after the backup. The
+   *     agent can never finalize the deletion: purging a quarantined table is
+   *     an operator-only action (panel-executed DROP on the renamed table).
+   * The agent path (request.origin === "agent") gets structured backup data on
+   * the error envelope; panel requests keep the wire-safe {code,message} form.
+   */
+  async guardDestructiveSql(record, request, assessment) {
+    const agentOrigin = request.origin === "agent";
+    if (!isSqlType(record.type)) return fail("unsafe-sql", assessment.reason);
+
+    const blocked = (backup, message) => {
+      const text = `${message ?? assessment.reason}。${backupSummary(backup)}\nSQL 未执行；请勿重试/绕行，由人工在数据库面板执行。`;
+      // An empty backup list stays absent — no point attaching noise.
+      return agentOrigin
+        ? { ok: false, error: { code: "unsafe-sql", message: text, ...(backup.length > 0 ? { backup } : {}) } }
+        : { ok: false, error: { code: "unsafe-sql", message: text } };
+    };
+
+    const target = parseDestructiveTarget(request.sql);
+    if (target === null || target.kind === null || target.identifier === null) {
+      // SHUTDOWN, DROP PROCEDURE, quoted identifiers the lexer skips — nothing
+      // to back up or rename, keep the plain blocked flow.
+      return blocked([]);
+    }
+
+    if (target.kind === "database" || target.kind === "schema") {
+      // A whole database cannot be renamed to safety. Only the database this
+      // connection points at can be dumped through it.
+      const currentDb = record.config.database;
+      if (record.type !== "sqlite" && target.identifier !== currentDb) {
+        return blocked([], `${assessment.reason}。目标库（${target.identifier}）与连接所指向的库（${currentDb ?? "未知"}）不同，未能自动备份`);
+      }
+      const backup = [];
+      let partial = false;
+      const listed = await this.listTables({ dbConnectionId: record.id, signal: request.signal }).catch(() => ({ ok: false, error: { message: "listTables failed" } }));
+      if (listed.ok) {
+        const tables = listed.value.tables;
+        if (tables.length > BACKUP_TABLE_CAP) partial = true;
+        for (const table of tables.slice(0, BACKUP_TABLE_CAP)) {
+          backup.push(await this.backupTableSnapshot(record, table, request.signal));
+        }
+      }
+      const note = partial ? `（表数量超过 ${BACKUP_TABLE_CAP}，仅备份了前 ${BACKUP_TABLE_CAP} 张）` : (listed.ok ? "" : "（枚举表失败，未能备份）");
+      return blocked(backup, `${assessment.reason}。整库删除无法自动隔离${note}`);
+    }
+
+    // target.kind === "table"
+    const bareName = target.identifier.split(".").pop();
+    if (QUARANTINE_SUFFIX_RE.test(bareName)) {
+      // Purging a quarantined table is the one human-final step. The
+      // identifier is lexer-built, but the whitelist stays the gate.
+      if (!validateDbIdentifier(target.identifier).ok) return blocked([]);
+      if (agentOrigin) {
+        return blocked([], `隔离表的最终删除必须由操作者在数据库面板执行（当前请求来自 Agent，已拦截）`);
+      }
+      try {
+        await this.runQuarantineSql(record, `DROP TABLE ${target.identifier}`, request.signal);
+      } catch (error) {
+        return fail("db-execute-failed", error.message);
+      }
+      return { ok: true, value: { affectedRows: 0, truncated: false } };
+    }
+
+    // Rows must be read before anything hides the table — backup FIRST.
+    const backup = [await this.backupTableSnapshot(record, target.identifier, request.signal)];
+
+    if (target.verb === "TRUNCATE" || !QUARANTINE_CAPABLE_TYPES.has(record.type)) {
+      // Truncate empties a table in place and this engine cannot rename to
+      // safety — blocked with the backup attached.
+      const why = target.verb === "TRUNCATE" ? "TRUNCATE 无法隔离改名" : `引擎 ${record.type} 不支持隔离改名`;
+      return blocked(backup, `${assessment.reason}。${why}，已自动备份后拦截`);
+    }
+
+    const renamed = await this.quarantineRename(record, target.identifier, request.signal);
+    if (!renamed.ok) {
+      return blocked(backup, `${assessment.reason}。隔离改名失败（${renamed.error}），已自动备份后拦截`);
+    }
+    if (renamed.renamedTo === null) {
+      return { ok: true, value: { affectedRows: 0, truncated: false, quarantined: false, notice: "表不存在，未做任何变更（IF EXISTS 语义）", backup } };
+    }
+    const notice = `已隔离改名（数据未删除，可随时改回）。彻底删除请由操作者在数据库面板执行：DROP TABLE ${renamed.renamedTo}`;
+    if (agentOrigin) {
+      return { ok: true, value: { affectedRows: 0, truncated: false, quarantined: true, renamedTo: renamed.renamedTo, backup, notice } };
+    }
+    return blocked(backup, notice);
+  }
+
+  /**
+   * Best-effort backup of one table: rows via the read-only export channel
+   * (SSH-connected databases land on the remote /tmp, direct ones on the DSH
+   * host's temp dir), DDL alongside when the dialect can produce it. Never
+   * throws; failures land on the entry so the operator sees exactly what is
+   * and is not recoverable.
+   */
+  async backupTableSnapshot(record, table, signal) {
+    const entry = { target: table, path: null, schemaPath: null, bytes: 0, truncated: false, error: null };
+    const preview = buildPreviewSql(record.type, table, EXPORT_MAX_ROWS, 0);
+    if (!preview.ok) { entry.error = preview.error; return entry; }
+    try {
+      const exported = await this.exportRows({
+        dbConnectionId: record.id,
+        sql: preview.sql,
+        params: preview.params,
+        format: "csv",
+        maxRows: EXPORT_MAX_ROWS,
+        path: record.config.sshConnectionId ? `/tmp/${backupFileNameStem(record, table)}.csv` : undefined,
+        signal
+      });
+      if (!exported.ok) { entry.error = exported.error.message; return entry; }
+      entry.bytes = exported.value.bytes;
+      entry.truncated = exported.value.truncated;
+      if (exported.value.path) {
+        entry.path = exported.value.path;
+      } else if (typeof exported.value.content === "string") {
+        const dir = join(tmpdir(), "dsh-db-backups");
+        await mkdir(dir, { recursive: true });
+        entry.path = join(dir, `${backupFileNameStem(record, table)}.csv`);
+        await writeFile(entry.path, exported.value.content, "utf8");
+      } else {
+        entry.error = "export returned no destination";
+        return entry;
+      }
+      // Schema DDL where the dialect provides it (PostgreSQL family: null).
+      const described = await this.describeTable({ dbConnectionId: record.id, table, signal });
+      if (described.ok && described.value.ddl) {
+        const ddl = String(described.value.ddl);
+        const schemaPath = `${entry.path}.schema.sql`;
+        if (record.config.sshConnectionId) {
+          const written = await this.sshOpsService.sftpWriteFile({
+            connectionId: record.config.sshConnectionId,
+            path: schemaPath,
+            data: Buffer.from(ddl, "utf8").toString("base64")
+          });
+          if (written && written.ok === true) entry.schemaPath = schemaPath;
+        } else {
+          await writeFile(schemaPath, ddl, "utf8");
+          entry.schemaPath = schemaPath;
+        }
+      }
+      return entry;
+    } catch (error) {
+      entry.error = entry.error ?? error.message;
+      return entry;
+    }
+  }
+
+  /**
+   * Rename `identifier` to `<bare>_to_be_dropped_<YYYYMMDD>` (suffixed _2, _3
+   * … on collision). Returns {renamedTo: null} when the table does not exist
+   * (IF EXISTS semantics). The rename keeps the data on the server — only the
+   * operator can finalize a real DROP afterwards.
+   */
+  async quarantineRename(record, identifier, signal) {
+    const bare = identifier.split(".").pop();
+    const listed = await this.listTables({ dbConnectionId: record.id, signal }).catch(() => ({ ok: false, error: { message: "listTables failed" } }));
+    if (!listed.ok) return { ok: false, error: listed.error.message };
+    const names = listed.value.tables;
+    if (!names.includes(bare)) return { ok: true, renamedTo: null };
+    const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+    let candidate = `${bare}_to_be_dropped_${stamp}`;
+    let n = 2;
+    while (names.includes(candidate)) {
+      candidate = `${bare}_to_be_dropped_${stamp}_${n}`;
+      n++;
+    }
+    const qualified = identifier.includes(".");
+    const newIdentifier = qualified ? `${identifier.slice(0, identifier.length - bare.length)}${candidate}` : candidate;
+    if (!validateDbIdentifier(newIdentifier).ok) {
+      return { ok: false, error: `隔离名 ${newIdentifier} 不是合法标识符（过长或含特殊字符）` };
+    }
+    try {
+      if (record.type === "mysql") {
+        await this.mysqlQueryOnce(record, "RENAME TABLE ?? TO ??", [identifier, newIdentifier], { signal, label: "db_quarantine_rename" });
+      } else if (record.type === "sqlite") {
+        sqliteExecute(record.client, `ALTER TABLE "${bare.replace(/"/g, '""')}" RENAME TO "${candidate.replace(/"/g, '""')}"`, []);
+      } else {
+        await this.pgQueryOnce(record, `ALTER TABLE ${quotePgIdentifier(identifier)} RENAME TO ${quotePgIdentifier(candidate)}`, [], { signal, label: "db_quarantine_rename" });
+      }
+    } catch (error) {
+      return { ok: false, error: error.message };
+    }
+    return { ok: true, renamedTo: newIdentifier };
+  }
+
+  /** Run the operator-only final DROP of a quarantined table (panel path). */
+  async runQuarantineSql(record, sql, signal) {
+    const opts = { signal, label: "db_quarantine_drop" };
+    if (record.type === "mysql") {
+      await this.mysqlQueryOnce(record, sql, [], opts);
+    } else if (record.type === "sqlite") {
+      sqliteExecute(record.client, sql, []);
+    } else {
+      await this.pgQueryOnce(record, sql, [], opts);
     }
   }
 
@@ -1364,6 +1706,23 @@ export class DbOpsManager {
         if (tx.timer) clearTimeout(tx.timer);
         this.dbTransactions.delete(txId);
       }
+    }
+  }
+
+  /**
+   * Transport-loss counterpart of disposeDbTransactionsFor: per open
+   * transaction, attempt a bounded ROLLBACK (the wire may still be half-alive)
+   * and always end with destroy/release-with-error so the dedicated pooled
+   * connection is reclaimed even when the transport is gone. Fire-and-forget —
+   * the loss handler must not wait on a dead transport.
+   */
+  abandonTransactionsFor(dbConnectionId) {
+    if (!this.dbTransactions) return; // partially-constructed instances in unit tests
+    for (const [txId, tx] of [...this.dbTransactions.entries()]) {
+      if (tx.dbId !== dbConnectionId) continue;
+      if (tx.timer) clearTimeout(tx.timer);
+      // disposeTransaction drops the bookmark itself once it has settled.
+      void this.disposeTransaction(txId, "ROLLBACK").catch(() => {});
     }
   }
 
