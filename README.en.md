@@ -11,6 +11,7 @@
 ![version](https://img.shields.io/badge/version-0.3.13-blue)
 [![dsh.so risk](https://www.dsh.so/badge/dsh-ssh-ops.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![dsh.so install · dsh 0.1.7-rc.2](https://www.dsh.so/badge/install/dsh-ssh-ops@0.1.7-rc.2.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
+[![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/caoyiwei850/dsh-ssh-ops)
 
 > **v0.3.12**: fixes `db_list_connections` being rejected whenever a database connection exists because its strict output schema omitted `username` (#23). Connection listings now identify the database, non-secret username, TLS mode and SSH route; SQLite shows its file path instead of `:0`. A regression test exercises the real DSH output validator.
 

@@ -11,6 +11,7 @@
 ![version](https://img.shields.io/badge/version-0.3.13-blue)
 [![dsh.so risk](https://www.dsh.so/badge/dsh-ssh-ops.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![dsh.so install · dsh 0.1.7-rc.2](https://www.dsh.so/badge/install/dsh-ssh-ops@0.1.7-rc.2.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
+[![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/caoyiwei850/dsh-ssh-ops)
 
 > **v0.3.13**：整轮更新——**SFTP 目录批量上传/下载**（新工具 `sftp_upload_dir` / `sftp_download_dir`：小文件并发、大文件独占、单文件失败不中断整批）；**SSH 认证失败结构化诊断**（试过哪些方法、服务器还接受什么、下一步怎么走），并新增 **keyboard-interactive 认证**（保存的密码应答交互提示/MFA 门禁，设备掐断时自动降级纯密码重试）；**数据库连接健壮性三件套**（TCP keepalive、空闲复用前活性 ping + 透明重连、断连时手工事务有界收尾）；**修复** MySQL 未知字符集文本列显示为字节对象的问题；上一版的破坏性操作可逆化（rm 回收站、危险 SQL 自动备份、DROP 隔离改名、绕过向量封堵）一并随本版发布。
 
