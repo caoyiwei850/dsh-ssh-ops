@@ -122,6 +122,15 @@ function scanTokens(sql) {
     if (ch === ";") { closeStatement(); i++; continue; }
     if (ch === "(") { depth++; i++; continue; }
     if (ch === ")") { depth = Math.max(0, depth - 1); i++; continue; }
+    // Punctuation the target parser needs to see: dots separate qualified
+    // identifiers, commas separate multi-table drops. They are bare-word
+    // no-ops for the keyword gates (never in READONLY/WRITE keyword sets).
+    if (ch === "." || ch === ",") {
+      if (!current) current = { tokens: [] };
+      current.tokens.push({ word: ch, raw: ch, depth, isCall: false });
+      i++;
+      continue;
+    }
     if (IDENT_START.test(ch)) {
       if (!current) current = { tokens: [] };
       let j = i;
@@ -129,7 +138,10 @@ function scanTokens(sql) {
       let k = j;
       while (k < n && WHITESPACE.has(sql[k])) k++;
       const isCall = sql[k] === "(";
-      current.tokens.push({ word: sql.slice(i, j).toUpperCase(), depth, isCall });
+      // `raw` keeps the original case: keyword matching uses `word`, but
+      // identifier reconstruction (destructive-target parsing) must not
+      // uppercase a table name on case-sensitive servers.
+      current.tokens.push({ word: sql.slice(i, j).toUpperCase(), raw: sql.slice(i, j), depth, isCall });
       i = j;
       continue;
     }
@@ -166,4 +178,67 @@ export function assessReadOnlySql(sql) {
     }
   }
   return { ok: true, verbs };
+}
+
+// ── destructive-target parsing (backup / quarantine machinery) ───────────────
+
+/** Suffix that marks a table as quarantined by the plugin rather than dropped. */
+export const QUARANTINE_SUFFIX_RE = /_to_be_dropped_\d{8}(_\d+)?$/;
+
+/**
+ * Parse the first destructive statement of a multi-statement SQL text into its
+ * target. Returns null when the destructive statement has no exploitable
+ * target (SHUTDOWN, DROP PROCEDURE, quoted identifiers the lexer skips, …) —
+ * the caller then keeps the plain blocked flow. Identifier reconstruction
+ * keeps the original case (`raw` tokens) and joins schema-qualified parts.
+ *
+ * @returns {{ verb: string, kind: "table"|"database"|"schema"|null, identifier: string|null } | null}
+ */
+export function parseDestructiveTarget(sql) {
+  if (typeof sql !== "string" || sql.trim() === "") return null;
+  for (const stmt of scanTokens(sql)) {
+    const tokens = stmt.tokens;
+    if (tokens.length === 0 || tokens[0].depth !== 0) continue;
+    const verb = tokens[0].word;
+    if (!DESTRUCTIVE_VERBS.has(verb)) continue;
+    if (verb === "SHUTDOWN") return { verb, kind: null, identifier: null };
+
+    let i = 1;
+    let kind;
+    const kindWord = tokens[i]?.word;
+    if (verb === "TRUNCATE") {
+      // TRUNCATE [TABLE] <name> — the TABLE keyword is optional and the
+      // target is always a table.
+      kind = "table";
+      if (kindWord === "TABLE") i++;
+    } else if (kindWord === "TABLE") { kind = "table"; i++; }
+    else if (kindWord === "DATABASE") { kind = "database"; i++; }
+    else if (kindWord === "SCHEMA") { kind = "schema"; i++; }
+    else return { verb, kind: null, identifier: null };
+
+    if (tokens[i]?.word === "IF" && tokens[i + 1]?.word === "EXISTS") i += 2;
+
+    // Rebuild a (possibly schema-qualified) identifier from word/dot tokens.
+    // A comma (MySQL multi-table drop) or any following keyword ends it; the
+    // statement is blocked either way, so a partial parse only narrows the
+    // best-effort backup, never the guard.
+    const parts = [];
+    let expectPart = true;
+    for (; i < tokens.length && tokens[i].depth === 0; i++) {
+      const word = tokens[i].word;
+      if (word === ".") {
+        if (expectPart || parts.length === 0) break;
+        parts.push(".");
+        expectPart = true;
+        continue;
+      }
+      if (word === ",") break;
+      if (!expectPart) break;
+      parts.push(tokens[i].raw);
+      expectPart = false;
+    }
+    const identifier = parts.join("").replace(/\.$/, "");
+    return { verb, kind, identifier: identifier.length > 0 ? identifier : null };
+  }
+  return null;
 }

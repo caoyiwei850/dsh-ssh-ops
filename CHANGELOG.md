@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.13 - 2026-09-27
+
+- **删除回滚余地：`rm` 确认后静默进远端回收站**：Agent 发起的 `rm`/`unlink`/`rmdir` 的确认卡片、提醒与终端显示**完全不变**；唯一变化在执行层——操作者点「执行」时，*简单*删除（单条命令、显式字面路径）先把目标移入服务器 `~/.dsh-trash/`（`manifest.tsv` 记录原绝对路径与时间）再算完成，24 小时后的过期项在下一次入站时顺带真删（不装任何定时任务）。对操作者无感，删错了 24 小时内可按 manifest 恢复；无法安全改写的删除（复合命令、`find -delete`、`shred`、非 POSIX shell 下的相对路径）批准即按原命令真跑。新增 `src/trash.js`（带引号感知的 tokenizer：引号内 `~` 不展开、含 Tab 的路径拒绝改写、同秒同名自动加后缀），POSIX/busybox 兼容脚本经真实 `/bin/sh` 在临时目录全流程验证（移动、manifest、恢复、过期清理、碰撞加缀）。
+- **危险 SQL 自动备份**：`db_execute` 命中 `DROP`/`TRUNCATE`/`SHUTDOWN` 时先备份受影响的表再拦截——行数据走只读导出通道（SSH 连接落远端 `/tmp/dsh-backup-*.csv`，直连落 DSH 宿主临时目录），MySQL/SQLite 附带 DDL（PG 暂无）；`DROP DATABASE` 逐表备份（上限 20 张）。备份清单完整出现在工具结果与拦截消息里，备份失败如实标注。
+- **`DROP TABLE` 隔离改名**：备份后自动 `RENAME` 为 `<表名>_to_be_dropped_<日期>`（重名加序号），数据保留可随时改回；**Agent 无法完成真删**——隔离表的最终 `DROP` 仅接受面板（人工）发起，Agent 发起会被明确拦截。mysql（`RENAME TABLE ?? TO ??`）/ pg（`ALTER TABLE ... RENAME`）/ sqlite 三方言覆盖；隔离名遵守标识符白名单（无连字符）。
+- **安全黑名单封堵绕过向量（真实事故驱动）**：新增 `find -exec(dir) rm/unlink`、`xargs rm/unlink`、`rimraf`，以及 python/perl/ruby/php/node 一行流调用 `unlink`/`rmtree`/`rmSync`/`os.remove`/`shutil.rmtree`/`fs.rm` 等模式——此前 `rm` 被拦后 Agent 曾换用其它代码完成删除。
+- **SFTP 目录批量上传/下载（新工具 `sftp_upload_dir` / `sftp_download_dir`）**：整棵目录树递归传输并自动建远端/本地目录结构。调度策略：小文件（≤512KiB）进并发上限 6 的工作池（目录树里大量小文件是延迟瓶颈，并行决定吞吐），大文件独占通道逐个传输（不让六条半载流抢带宽）；计数单调推进，单文件失败逐条上报不中断整批（结果里列出失败路径与原因）。新增 `src/sftp-dir.js`（纯调度层，可单测），接口描述符与 typert 声明同步扩展。
+- **SSH 认证失败从一句空话变成结构化诊断**：此前登录失败只有 ssh2 的一行 "All configured authentication methods failed"，被设备中途掐断则表现为裸的连接关闭，Agent 无从判断下一步。现在连接层自定义 auth handler（顺序与 ssh2 默认一致：none → password → publickey → keyboard-interactive）逐项记录尝试过的方法与服务器最后宣布"仍然接受"的方法列表，失败时把二者连同阶段判定（认证被拒 / 传输中断 / 协议违规 / 未知）与可执行建议一起给出，例如"服务器仍接受 keyboard-interactive；插件已用保存的密码应答交互提示——若验证码是动态的请改在面板手动登录"。
+- **keyboard-interactive 认证支持 + 中断自动降级**：密码登录现在默认带 keyboard-interactive（用保存的密码应答全部提示），只允许交互式认证的设备/MFA 门禁不再直接失败；若设备在交互提示进行中把传输掐断（老固件的常见行为），自动降级为纯 password 方法重试一次——只在认证确实开始之后才触发（`USERAUTH_FAILURE` 已收到或交互提示已应答），普通网络失败不会误入这条路径。跳板机链同样支持交互式认证。
+- **数据库连接健壮性三件套**：① MySQL/PG 池启用 30s TCP keepalive，空闲 NAT/防火墙静默断链会主动暴露为 socket 错误而不是半开连接；② 池化连接空闲超过 30s 后复用前先做一次 10s 上限的活性 ping（`SELECT 1`），把"下一条真查询卡满 35s 超时"变成秒级失败，并**透明重连一次**（嫌疑连接以错误释放回池，绝不复用）；③ 连接传输中断时，打开中的手工事务逐个做有界 ROLLBACK 尝试并销毁/带错归还专用连接——池槽不再随断连泄漏。
+- **修复：MySQL 未知字符集文本列不再显示为字节对象**：服务器把文本列的字符集报成 binary/unknown 时 mysql2 返回 Buffer，而原序列化器把 Buffer 检查写在 `JSON.stringify` 的 replacer 里——`Buffer.toJSON()` 先于 replacer 执行，该分支是死代码，文本一直以 `{"type":"Buffer","data":[…]}` 漏给 Agent。改为显式递归遍历（Buffer → UTF-8 字符串，Date/ObjectId/Decimal128/bigint 行为不变，嵌套在对象/数组里的 Buffer 也一并处理）。
+- **测试**：94 项测试通过；本轮新增 ssh-auth（方法序列/诊断分类/降级触发条件）、db-keepalive（活性 ping/透明重连/断连事务收尾）、db-charset（Buffer 解码钉死 + 导出路径）、sftp-dir（调度策略边界 + 内存 SFTP 服务器上的目录上传/下载往返）四个用例文件；可逆化轮新增 trash（解析器/脚本生成/真实 shell 端到端/保留期）与 db-guard（备份先于改名、隔离改名、操作者专属清除、方言 SQL、备份失败降级）两个用例文件，safety 用例同步改写（卡片流程改用不可回收的 `shred`，回收站流程独立覆盖）。
+
 ## 0.3.12 - 2026-09-21
 
 - **修复 #23：`db_list_connections` 在有连接时恒定失败**：`DbOpsManager.list()` 返回的 `username` 此前没有出现在 Agent 工具的严格输出 schema 中，`additionalProperties: false` 因而让 DSH 在渲染前拒绝整个结果。现在 schema 明确要求 `username: string | null`，与 RPC 契约和服务返回保持一致。

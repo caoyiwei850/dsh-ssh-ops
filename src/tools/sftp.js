@@ -1,9 +1,12 @@
 /**
  * Agent tools for SFTP file management. sftp_delete never deletes on its own:
- * it converts the path into an `rm -rf` confirmation card for the operator.
+ * it converts the path into an `rm -rf` confirmation card for the operator;
+ * approving it additionally leaves a silent rollback copy in the server trash
+ * (see src/trash.js).
  */
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { shellQuote } from "../safety.js";
+import { buildTrashCommand, parseSimpleDeleteCommand } from "../trash.js";
 
 export function registerSftpTools(ctx, service) {
   ctx.tools.register(defineTool({
@@ -138,8 +141,14 @@ export function registerSftpTools(ctx, service) {
       }
     },
     async execute(args) {
+      // Original card UX, byte for byte. The only addition is invisible: when
+      // the path is a simple literal, the queued card carries a prepared trash
+      // script so operator approval leaves a rollback copy on the server
+      // (see src/trash.js) instead of really deleting.
       const command = `rm -rf ${shellQuote(args.path)}`;
-      const pending = service.prefillBlockedCommand(args.connection_id, command, "删除文件或目录（SFTP）");
+      const parsed = parseSimpleDeleteCommand(command);
+      const trashScript = parsed ? buildTrashCommand(parsed.targets) : null;
+      const pending = service.prefillBlockedCommand(args.connection_id, command, "删除文件或目录（SFTP）", trashScript);
       return { path: args.path, blocked: true, reason: "删除文件或目录（SFTP）", command, prefilled: pending.prefilled, queued: pending.queued };
     }
   }));
@@ -159,6 +168,76 @@ export function registerSftpTools(ctx, service) {
     async execute(args) {
       const result = await service.sftpRename({ connectionId: args.connection_id, from: args.from, to: args.to });
       if (!result.ok) throw new Error(`sftp_rename failed: ${result.error.message}`);
+      return result.value;
+    }
+  }));
+
+  ctx.tools.register(defineTool({
+    name: "sftp_upload_dir",
+    description: "Upload a local directory tree to a remote server over SFTP, creating the remote directory structure. Small files transfer in parallel (bounded), large files one at a time for full link throughput. Per-file failures are reported, not fatal. Omit connection_id for the current server.",
+    parameters: {
+      connection_id: { type: "string", description: "Connection id from ssh_connect; omit to use the current server." },
+      local_path: { type: "string", required: true, description: "Local directory to upload." },
+      remote_path: { type: "string", required: true, description: "Remote destination directory (created when missing)." }
+    },
+    output: {
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          source: { type: "string", required: true },
+          target: { type: "string", required: true },
+          directories: { type: "number", required: true },
+          files: { type: "number", required: true },
+          bytes: { type: "number", required: true },
+          failed: { type: "array", required: true, items: { type: "object", additionalProperties: false, properties: { path: { type: "string", required: true }, error: { type: "string", required: true } } } }
+        }
+      },
+      render(args, value) {
+        const head = `Uploaded ${value.files} files (${value.bytes} bytes, ${value.directories} directories) to ${value.target}`;
+        if (!value.failed.length) return [{ type: "text", text: head }];
+        const lines = value.failed.map((f) => `- ${f.path}: ${f.error}`);
+        return [{ type: "text", text: `${head}\n${value.failed.length} failures:\n${lines.join("\n")}` }];
+      }
+    },
+    async execute(args) {
+      const result = await service.sftpUploadDir({ connectionId: args.connection_id, localPath: args.local_path, remotePath: args.remote_path });
+      if (!result.ok) throw new Error(`sftp_upload_dir failed: ${result.error.message}`);
+      return result.value;
+    }
+  }));
+
+  ctx.tools.register(defineTool({
+    name: "sftp_download_dir",
+    description: "Download a remote directory tree over SFTP to a local directory, recreating the structure. Small files transfer in parallel (bounded), large files one at a time. Per-file failures are reported, not fatal. Omit connection_id for the current server.",
+    parameters: {
+      connection_id: { type: "string", description: "Connection id from ssh_connect; omit to use the current server." },
+      remote_path: { type: "string", required: true, description: "Remote directory to download." },
+      local_path: { type: "string", required: true, description: "Local destination directory (created when missing)." }
+    },
+    output: {
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          source: { type: "string", required: true },
+          target: { type: "string", required: true },
+          directories: { type: "number", required: true },
+          files: { type: "number", required: true },
+          bytes: { type: "number", required: true },
+          failed: { type: "array", required: true, items: { type: "object", additionalProperties: false, properties: { path: { type: "string", required: true }, error: { type: "string", required: true } } } }
+        }
+      },
+      render(args, value) {
+        const head = `Downloaded ${value.files} files (${value.bytes} bytes, ${value.directories} directories) to ${value.target}`;
+        if (!value.failed.length) return [{ type: "text", text: head }];
+        const lines = value.failed.map((f) => `- ${f.path}: ${f.error}`);
+        return [{ type: "text", text: `${head}\n${value.failed.length} failures:\n${lines.join("\n")}` }];
+      }
+    },
+    async execute(args) {
+      const result = await service.sftpDownloadDir({ connectionId: args.connection_id, remotePath: args.remote_path, localPath: args.local_path });
+      if (!result.ok) throw new Error(`sftp_download_dir failed: ${result.error.message}`);
       return result.value;
     }
   }));

@@ -13,7 +13,7 @@
  * connecting…", "…cancelled") from the layer that knows what hung.
  */
 import { defineTool } from "@deepseek-ai/dsh-tools";
-import { pickSshConnectionId } from "../db-ops.js";
+import { backupSummary, pickSshConnectionId } from "../db-ops.js";
 
 /** Cooperative tool-call budget; the db layer's own ceilings are all lower. */
 export const DB_TOOL_TIMEOUT_MS = 60000;
@@ -151,7 +151,7 @@ export function registerDbTools(ctx, service) {
   ctx.tools.register(defineTool({
     name: "db_execute",
     timeoutMs: DB_TOOL_TIMEOUT_MS,
-    description: "Run a write SQL statement (INSERT/UPDATE/DELETE/CREATE/ALTER) on a connected MySQL or PostgreSQL database. Destructive statements (DROP/TRUNCATE/SHUTDOWN, detected by leading statement verb so keywords inside string literals or comments are not false-positives) are not executed by the agent: the SQL is returned as a copyable card to paste into the database panel's SQL editor and run manually. For Redis or MongoDB, use db_run instead.",
+    description: "Run a write SQL statement (INSERT/UPDATE/DELETE/CREATE/ALTER) on a connected MySQL or PostgreSQL database. Destructive statements (DROP/TRUNCATE/SHUTDOWN, detected by leading statement verb so keywords inside string literals or comments are not false-positives) are NOT executed and must never be retried or worked around: DROP TABLE is instead backed up and quarantined by rename (result reports quarantined/renamedTo), while DROP DATABASE/TRUNCATE/SHUTDOWN are blocked after an automatic backup of the affected tables. Only the operator, via the database panel, can finalize any real deletion. For Redis or MongoDB, use db_run instead.",
     parameters: {
       db_connection_id: { type: "string", required: true },
       sql: { type: "string", required: true, description: "Write statement. MySQL uses ? placeholders, PostgreSQL uses $1 placeholders." },
@@ -166,12 +166,39 @@ export function registerDbTools(ctx, service) {
           truncated: { type: "boolean", required: true },
           blocked: { type: "boolean" },
           reason: { type: "string" },
-          sql: { type: "string" }
+          sql: { type: "string" },
+          quarantined: { type: "boolean" },
+          renamedTo: { type: "string" },
+          notice: { type: "string" },
+          backup: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                target: { type: "string", required: true },
+                path: { type: "string" },
+                schemaPath: { type: "string" },
+                bytes: { type: "integer" },
+                truncated: { type: "boolean" },
+                error: { type: "string" }
+              }
+            }
+          }
         }
       },
       render(_args, value) {
+        if (value.quarantined) {
+          const lines = [`♻️ DROP 已转换为隔离改名（数据未删除，可随时改回）：${value.sql} → ${value.renamedTo}`];
+          if (Array.isArray(value.backup) && value.backup.length > 0) {
+            lines.push(backupSummary(value.backup));
+          }
+          lines.push(value.notice ?? "彻底删除请由操作者在数据库面板执行。");
+          return [{ type: "text", text: lines.join("\n") }];
+        }
         if (value.blocked) {
-          return [{ type: "text", text: `⚠️ 已拦截：${value.reason ?? ""}\nSQL 未执行，请在数据库面板 SQL 编辑器粘贴执行：\n\`\`\`sql\n${value.sql ?? ""}\n\`\`\`\n请勿重试/绕行，由人工执行。` }];
+          const backupNote = Array.isArray(value.backup) && value.backup.length > 0 ? `\n${backupSummary(value.backup)}` : "";
+          return [{ type: "text", text: `⚠️ 已拦截：${value.reason ?? ""}\nSQL 未执行，请在数据库面板 SQL 编辑器粘贴执行：\n\`\`\`sql\n${value.sql ?? ""}\n\`\`\`${backupNote}\n请勿重试/绕行，由人工执行。` }];
         }
         let text = `Affected ${value.affectedRows} row(s).`;
         if (value.insertId !== undefined) text += ` Insert id: ${value.insertId}.`;
@@ -179,10 +206,15 @@ export function registerDbTools(ctx, service) {
       }
     },
     async execute(args, exec) {
-      const result = await service.dbExecute({ dbConnectionId: args.db_connection_id, sql: args.sql, params: args.params, signal: exec?.signal });
+      const result = await service.dbExecute({ dbConnectionId: args.db_connection_id, sql: args.sql, params: args.params, signal: exec?.signal, origin: "agent" });
       if (!result.ok) {
         if (result.error.code === "unsafe-sql") {
-          return { affectedRows: 0, truncated: false, blocked: true, reason: result.error.message, sql: args.sql };
+          const hasBackup = Array.isArray(result.error.backup) && result.error.backup.length > 0;
+          return {
+            affectedRows: 0, truncated: false, blocked: true,
+            reason: result.error.message, sql: args.sql,
+            ...(hasBackup ? { backup: result.error.backup } : {})
+          };
         }
         throw new Error(`db_execute failed: ${result.error.message}`);
       }

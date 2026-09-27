@@ -112,3 +112,50 @@ for (const sql of readonlyBlocked) {
 }
 
 console.log(`db-safety readonly gate: ${readonlyOk.length} allowed and ${readonlyBlocked.length} blocked cases passed`);
+
+// ── destructive-target parsing (backup / quarantine machinery) ───────────────
+import { parseDestructiveTarget, QUARANTINE_SUFFIX_RE } from "../src/db-safety.js";
+
+const targetCases = [
+  ["DROP TABLE users", { verb: "DROP", kind: "table", identifier: "users" }],
+  ["drop table Users", { verb: "DROP", kind: "table", identifier: "Users" }], // case preserved
+  ["DROP TABLE IF EXISTS t1", { verb: "DROP", kind: "table", identifier: "t1" }],
+  ["DROP TABLE schema_a.users", { verb: "DROP", kind: "table", identifier: "schema_a.users" }],
+  ["  DROP  TABLE  t2 ", { verb: "DROP", kind: "table", identifier: "t2" }],
+  ["DROP DATABASE production", { verb: "DROP", kind: "database", identifier: "production" }],
+  ["DROP SCHEMA private", { verb: "DROP", kind: "schema", identifier: "private" }],
+  ["TRUNCATE TABLE logs", { verb: "TRUNCATE", kind: "table", identifier: "logs" }],
+  ["TRUNCATE logs", { verb: "TRUNCATE", kind: "table", identifier: "logs" }],
+  ["truncate table access_log_2026", { verb: "TRUNCATE", kind: "table", identifier: "access_log_2026" }],
+  ["SELECT 1; DROP TABLE x", { verb: "DROP", kind: "table", identifier: "x" }], // first destructive statement
+  ["DROP TABLE a, b", { verb: "DROP", kind: "table", identifier: "a" }], // multi-table: first target only
+  ["DROP TABLE t CASCADE", { verb: "DROP", kind: "table", identifier: "t" }],
+  ["DROP TABLE t RESTRICT", { verb: "DROP", kind: "table", identifier: "t" }],
+  ["SHUTDOWN", { verb: "SHUTDOWN", kind: null, identifier: null }],
+  ["DROP PROCEDURE p", { verb: "DROP", kind: null, identifier: null }],
+  ["DROP TRIGGER trg", { verb: "DROP", kind: null, identifier: null }],
+  ["DROP TABLE `weird name`", { verb: "DROP", kind: "table", identifier: null }], // quoted identifiers are lexed out
+  ["DROP TABLE", { verb: "DROP", kind: "table", identifier: null }]
+];
+for (const [sql, expected] of targetCases) {
+  assert.deepEqual(parseDestructiveTarget(sql), expected, `parse target of: ${sql}`);
+}
+// Assessments agree on the verb the parser reports.
+for (const [sql] of targetCases) {
+  const assessment = assessSqlStatement(sql);
+  assert.equal(assessment.blocked, true, `expected blocked: ${sql}`);
+  const target = parseDestructiveTarget(sql);
+  assert.equal(target.verb, assessment.verb, `verb agreement: ${sql}`);
+}
+assert.equal(parseDestructiveTarget("SELECT * FROM t"), null);
+assert.equal(parseDestructiveTarget(""), null);
+
+// Quarantine suffix recognition: rename target names must round-trip.
+assert.ok(QUARANTINE_SUFFIX_RE.test("users_to_be_dropped_20260924"));
+assert.ok(QUARANTINE_SUFFIX_RE.test("users_to_be_dropped_20260924_2"));
+assert.ok(QUARANTINE_SUFFIX_RE.test("t_to_be_dropped_20261231"));
+assert.ok(!QUARANTINE_SUFFIX_RE.test("users"));
+assert.ok(!QUARANTINE_SUFFIX_RE.test("users_to_be_dropped"));
+assert.ok(!QUARANTINE_SUFFIX_RE.test("users_to_be_dropped_2026"));
+
+console.log(`db-safety destructive-target parser: ${targetCases.length} cases passed`);

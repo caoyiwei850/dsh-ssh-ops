@@ -8,9 +8,9 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.3.12-blue)
+![version](https://img.shields.io/badge/version-0.3.13-blue)
 
-> **v0.3.12**：修复 `db_list_connections` 在存在数据库连接时因输出 schema 漏声明 `username` 而被 DSH 整体拒绝的问题（#23）；连接列表现在同时展示数据库、非敏感用户名、TLS 与 SSH 路由，SQLite 显示文件路径而不是 `:0`，并用真实 DSH 校验链路补上回归测试。
+> **v0.3.13**：整轮更新——**SFTP 目录批量上传/下载**（新工具 `sftp_upload_dir` / `sftp_download_dir`：小文件并发、大文件独占、单文件失败不中断整批）；**SSH 认证失败结构化诊断**（试过哪些方法、服务器还接受什么、下一步怎么走），并新增 **keyboard-interactive 认证**（保存的密码应答交互提示/MFA 门禁，设备掐断时自动降级纯密码重试）；**数据库连接健壮性三件套**（TCP keepalive、空闲复用前活性 ping + 透明重连、断连时手工事务有界收尾）；**修复** MySQL 未知字符集文本列显示为字节对象的问题；上一版的破坏性操作可逆化（rm 回收站、危险 SQL 自动备份、DROP 隔离改名、绕过向量封堵）一并随本版发布。
 
 > **v0.3.11**：修复 shell integration 的 shell 家族探测（此前探测输出被 cwd 标记污染，导致总是按 zsh 变体注入、bash 上整行脚本失效），并把 `shell` 状态补进终端上下文的结果契约。
 
@@ -76,11 +76,15 @@
 
 ## 安全边界
 
-DSH 自身权限机制仍然有效。本插件额外阻止 Agent 工具执行明显不可逆或破坏性操作，例如删除文件、删库、格式化磁盘、`terraform destroy`、`kubectl delete`、`docker prune`、强制 Git 清理以及重启/关机。
+DSH 自身权限机制仍然有效。本插件额外阻止 Agent 工具执行明显不可逆或破坏性操作，例如删除文件、删库、格式化磁盘、`terraform destroy`、`kubectl delete`、`docker prune`、强制 Git 清理以及重启/关机。黑名单同时覆盖高频**绕过变体**：`find -exec rm`、`xargs rm`、`rimraf`，以及 python/perl/ruby/php/node 一行流里调用 `unlink`/`rmtree`/`rmSync` 等（源自真实事故：`rm` 被拦后 Agent 换用其它代码完成删除）。黑名单无法穷尽（任何脚本/管道都可能藏删除），因此下面两层「后果兜底」与它配合，而不是只依赖识别。
+
+**删除可逆化（`rm` → 确认后进远端回收站）**：Agent 发起的删除依然**必须过人手**——*简单* `rm`/`unlink`/`rmdir`（单条命令、显式字面路径、无管道/重定向/glob/变量展开）照常弹出确认卡片，但点「执行」时执行的是**可恢复的移动**：目标被 `mv` 进服务器上的 `~/.dsh-trash/`，并在该目录的 `manifest.tsv` 里记录原绝对路径与时间；24 小时后的过期项会在下一次有新文件进回收站时顺带真删（**不在服务器上安装任何定时任务**）。也就是说 **Agent 发起的删除永远不会真正发生**——误删（包括人看错卡片、指错机器）都能从回收站 `mv` 回来；要彻底删除，由操作者自己在终端执行 `rm`（人工输入不经过此拦截，边界不变）。`ssh_exec` 与 `sftp_delete` 均走此路径，卡片与终端镜像都会注明「执行 = 移入回收站」。复合命令、`find -delete`、`shred` 等无法安全改写的删除走原有卡片（执行 = 原命令真跑）。
+
+**危险 SQL 可恢复化**：`db_execute` 的高危 SQL（`DROP`/`TRUNCATE`/`SHUTDOWN`，按语句动词识别）依旧绝不执行，但拦截瞬间会**自动备份**受影响的表——行数据经只读导出通道落盘（SSH 连接的库写到远端 `/tmp/dsh-backup-*.csv`，直连的库写到 DSH 宿主临时目录），MySQL/SQLite 还会附带建表 DDL（PostgreSQL 暂无 DDL 来源）；`DROP DATABASE` 会逐表备份（上限 20 张，超出明示）。其中 **`DROP TABLE` 进一步转为隔离改名**：备份完成后自动 `RENAME` 为 `<表名>_to_be_dropped_<日期>`（重名自动加序号），数据原样保留、可随时改回。**Agent 永远无法完成真正的删除**——隔离表的最终 `DROP` 只接受面板（人工）发起，Agent 再次发起会被明确拦截。备份/隔离清单会完整出现在工具结果里；备份失败时同样如实标注（隔离改名本身可逆，所以不因备份失败而放弃）。
 
 Agent 命中上述黑名单时不会被静默拒绝：插件会创建一条一次性的**待确认**记录，并立即在整个视口**弹出确认模态**（含完整命令、风险原因与「执行 / 撤销」按钮；Esc、点遮罩或「稍后在面板中处理」可暂时收起，全部处理完自动关闭；面板重开时仍未处理的会再次弹出）。未处理项同时常驻在右侧 SSH 面板「终端」窗口上方，卡片默认折叠为单行摘要（命令 + 主机名 + 常驻执行/撤销按钮），最新一条自动展开，点击展开风险说明与完整命令。只有操作者点击红色「执行」才会将命令发送到服务器（自动追加回车）；「撤销」清除该记录。危险命令**不再预填到终端命令行**——输入行始终为空，操作者不可能因误按回车而执行。多条危险命令作为独立卡片排队。若当时没有活跃的终端会话、或命令含 Tab 等无法安全发送到 PTY 的控制字符，则降级为在对话中返回一张可复制的命令卡片，供操作者粘贴到终端执行。普通运维操作（配置 SSL、安装软件包、修改配置、重载服务等）可以正常通过 DSH 的权限流程执行。
 
-同样的模型覆盖 `sftp_delete`（不再由 Agent 直接删，改为将等价 `rm -rf <路径>` 加入待确认队列）和 `db_execute` 的高危 SQL（`DROP`/`TRUNCATE`/`SHUTDOWN`）：高危 SQL 保持现有模式，返回带 ```sql 代码块的卡片，供操作者粘贴到数据库面板的 SQL 编辑器手动执行。SQL 判断按**语句动词**识别（跳过字符串/注释、支持多语句、按 `;` 切分），不会误杀字符串字面量里的关键字，高频增删改查正常放行。
+同样的模型覆盖 `sftp_delete`（卡片不变，批准时留回滚副本，见上）和 `db_execute` 的高危 SQL（备份 + 隔离，见上）。SQL 判断按**语句动词**识别（跳过字符串/注释、支持多语句、按 `;` 切分），不会误杀字符串字面量里的关键字，高频增删改查正常放行。
 
 **凭据使用建议**：`ssh_connect` / `db_connect` 以明文参数接收密码或私钥时，这些参数会进入对话与工具调用记录。生产环境请优先把服务器保存为「SSH 资源」（密码存入宿主加密凭据库，面板与 Agent 只见引用），或使用密钥文件的 passphrase 方式，避免在对话中直接传递密钥。
 
@@ -89,7 +93,7 @@ Agent 命中上述黑名单时不会被静默拒绝：插件会创建一条一�
 ### 从 GitHub 安装（推荐）
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.12
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.13
 ```
 
 安装后重启 DSH Web：
@@ -102,14 +106,14 @@ dsh web
 
 ### 从发布压缩包安装
 
-从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.12) 下载 `dsh-ssh-ops-0.3.12.tgz` 后：
+从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.13) 下载 `dsh-ssh-ops-0.3.13.tgz` 后：
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.12.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.13.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.3.12.zip` 适用于离线审阅或二次开发；解压后可在目录中执行 `npm install && npm run build`。
+`dsh-ssh-ops-0.3.13.zip` 适用于离线审阅或二次开发；解压后可在目录中执行 `npm install && npm run build`。
 
 ## 使用方式
 
@@ -120,7 +124,7 @@ dsh web
 5. 需要数据库时，让 Agent 调 `db_connect`（或自己在「数据库」页签新建连接），随后即可在对话中查询/执行。
 ### Agent 工具
 
-共 31 个 Agent 工具，省略 `connection_id` / `db_connection_id` 时默认作用于当前活动连接，**无需先调 `ssh_list` / `db_list_connections`**。
+共 33 个 Agent 工具，省略 `connection_id` / `db_connection_id` 时默认作用于当前活动连接，**无需先调 `ssh_list` / `db_list_connections`**。
 
 #### SSH（6）
 
@@ -140,7 +144,7 @@ dsh web
 | `ssh_terminal_sessions` | 列出已打开终端的低敏元数据与读取游标，不返回终端内容或凭据 |
 | `ssh_terminal_context` | 经每次用户确认后，按游标读取指定手动终端的有限、脱敏历史；不会影响右侧终端回看 |
 
-#### SFTP（6）
+#### SFTP（8）
 
 | 工具 | 用途 |
 | --- | --- |
@@ -150,6 +154,8 @@ dsh web
 | `sftp_mkdir` | 新建远程目录 |
 | `sftp_delete` | 删除远程文件或空目录（**不直接执行**，改为把 `rm -rf <路径>` 加入待确认队列或返回可复制卡片） |
 | `sftp_rename` | 重命名/移动远程路径 |
+| `sftp_upload_dir` | 上传本地目录树到远程（自动建目录结构；小文件并发、大文件独占；单文件失败逐条上报不中断整批） |
+| `sftp_download_dir` | 下载远程目录树到本地（同上调度策略） |
 
 #### 端口转发（3）
 
@@ -196,8 +202,8 @@ npm run pack:release
 
 生成物位于 `release/`：
 
-- `dsh-ssh-ops-0.3.12.tgz`：可直接被 DSH 安装。
-- `dsh-ssh-ops-0.3.12.zip`：完整离线源码包。
+- `dsh-ssh-ops-0.3.13.tgz`：可直接被 DSH 安装。
+- `dsh-ssh-ops-0.3.13.zip`：完整离线源码包。
 
 ## 许可
 

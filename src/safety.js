@@ -9,9 +9,27 @@
  */
 import { policyBlockedReason } from "./policy-messages.js";
 
+/**
+ * Stable identifier for the file-deletion category. The trash rewrite keys on
+ * this (not on the display string) so editing the human-facing message can
+ * never silently disable the rewrite.
+ */
+export const CATEGORY_DELETE_FILES = "删除文件或目录";
+
 const IRREVERSIBLE_BLOCKS = [
-  [/(?:^|\s)(?:rm|unlink|shred|rmdir)\b/i, "删除文件或目录"],
+  [/(?:^|\s)(?:rm|unlink|shred|rmdir)\b/i, CATEGORY_DELETE_FILES],
+  // Deny-list evasion is a real, observed failure mode: an agent whose `rm`
+  // was blocked once re-issued the deletion through an equivalent form. These
+  // entries cover the high-frequency vectors — batch deletion disguised as
+  // find/xargs, and interpreter one-liners that call unlink/rmtree from
+  // python/perl/ruby/php/node. A deny-list can never be exhaustive (any
+  // script or pipeline can hide a deletion); the recoverable-trash and
+  // backup layers are the consequence backstop, this list only narrows it.
   [/\bfind\b[\s\S]*\s-delete\b/i, "批量删除文件"],
+  [/\bfind\b[\s\S]*\s-exec(?:dir)?\b[\s\S]*\b(?:rm|unlink)\b/i, "批量删除文件"],
+  [/\bxargs\b[^|;&]*\b(?:rm|unlink)\b/i, "批量删除文件"],
+  [/\brimraf\b/i, CATEGORY_DELETE_FILES],
+  [/\b(?:python3?|perl|ruby|php|node)\b[\s\S]*\b(?:unlink(?:Sync)?|rmtree|rmSync|rimraf|os\.remove|shutil\.rmtree|fs\.rm(?:Sync)?|fs\.unlink(?:Sync)?)\b/i, "通过脚本解释器删除文件"],
   [/\b(?:drop\s+(?:database|schema|table|view|user)|truncate\b|delete\s+from\b)\b/i, "删除数据库数据或对象"],
   [/\b(?:mkfs(?:\.|\b)|dd\b|wipefs\b|fdisk\b|parted\b|sgdisk\b)\b/i, "格式化或改写磁盘"],
   [/\b(?:docker\s+(?:system\s+prune|container\s+prune|image\s+prune|volume\s+prune)|docker\s+(?:rm|rmi|volume\s+rm))\b/i, "删除容器、镜像或卷"],

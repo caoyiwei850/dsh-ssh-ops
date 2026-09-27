@@ -8,7 +8,7 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.3.12-blue)
+![version](https://img.shields.io/badge/version-0.3.13-blue)
 
 > **v0.3.12**: fixes `db_list_connections` being rejected whenever a database connection exists because its strict output schema omitted `username` (#23). Connection listings now identify the database, non-secret username, TLS mode and SSH route; SQLite shows its file path instead of `:0`. A regression test exercises the real DSH output validator.
 
@@ -88,7 +88,7 @@ The same model covers `sftp_delete` (the agent no longer deletes directly; inste
 ### From GitHub (recommended)
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.12
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.13
 ```
 
 Then restart DSH Web:
@@ -101,14 +101,14 @@ Open any session, click the top **SSH** tab, and use the right-side panel to con
 
 ### From a release archive
 
-Download `dsh-ssh-ops-0.3.12.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.12), then:
+Download `dsh-ssh-ops-0.3.13.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.13), then:
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.12.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.13.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.3.12.zip` is for offline review or further development; extract it and run `npm install && npm run build` in the directory.
+`dsh-ssh-ops-0.3.13.zip` is for offline review or further development; extract it and run `npm install && npm run build` in the directory.
 
 ## Usage
 
@@ -195,8 +195,8 @@ Pushing a `vX.Y.Z` tag that matches `package.json.version` runs tests, builds th
 
 Artifacts are written to `release/`:
 
-- `dsh-ssh-ops-0.3.12.tgz`: installable directly by DSH.
-- `dsh-ssh-ops-0.3.12.zip`: full offline source archive.
+- `dsh-ssh-ops-0.3.13.tgz`: installable directly by DSH.
+- `dsh-ssh-ops-0.3.13.zip`: full offline source archive.
 
 ## License
 

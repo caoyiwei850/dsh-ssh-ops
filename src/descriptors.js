@@ -77,6 +77,8 @@ export const DESCRIPTORS = [
   def("sftpMkdir", S.sftpMkdirRequestSchema, "SftpMkdirRequest", S.sftpMkdirResultSchema, "SftpMkdirResult"),
   def("sftpDelete", S.sftpDeleteRequestSchema, "SftpDeleteRequest", S.sftpDeleteResultSchema, "SftpDeleteResult"),
   def("sftpRename", S.sftpRenameRequestSchema, "SftpRenameRequest", S.sftpRenameResultSchema, "SftpRenameResult"),
+  def("sftpUploadDir", S.sftpUploadDirRequestSchema, "SftpUploadDirRequest", S.sftpTransferDirResultSchema, "SftpTransferDirResult"),
+  def("sftpDownloadDir", S.sftpDownloadDirRequestSchema, "SftpDownloadDirRequest", S.sftpTransferDirResultSchema, "SftpTransferDirResult"),
   def("tunnelStartLocal", S.tunnelStartLocalRequestSchema, "TunnelStartLocalRequest", S.tunnelStartLocalResultSchema, "TunnelStartLocalResult"),
   def("tunnelStartRemote", S.tunnelStartRemoteRequestSchema, "TunnelStartRemoteRequest", S.tunnelStartRemoteResultSchema, "TunnelStartRemoteResult"),
   def("tunnelStartDynamic", S.tunnelStartDynamicRequestSchema, "TunnelStartDynamicRequest", S.tunnelStartDynamicResultSchema, "TunnelStartDynamicResult"),
