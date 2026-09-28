@@ -152,3 +152,29 @@ assert.deepEqual(claimPendingOpens(), []);
 assert.deepEqual(viewSession("tab-left").connectionIds, []);
 
 console.log("pane selection: split-pane visibility survives remount, new panes start empty, last close disconnects, queued connects land in one pane: passed");
+
+// ── agent-connected servers announce themselves (issue #25) ──────────────────
+// ssh_connect_profile opens transport + session host-side; the browser learns
+// through list() metadata (agentSession) and must queue the connection for a
+// pane and reveal the SSH surface. Announcing is idempotent per connection id
+// for the page lifetime — the poll runs every couple of seconds.
+{
+  const { sshUiAnnounceAgentConnections } = await import("../src/client/store.js");
+  resetPaneSessions();
+  const listed = [
+    { connectionId: "agent-1", agentSession: true },
+    { connectionId: "human-1" },
+    { connectionId: "agent-2", agentSession: true }
+  ];
+  assert.equal(sshUiAnnounceAgentConnections(listed), true, "fresh agent connections announce");
+  assert.deepEqual(claimPendingOpens(), ["agent-1", "agent-2"], "only agent-opened connections are queued, humans never");
+  assert.equal(sshUiAnnounceAgentConnections(listed), false, "re-announcing the same connections is a no-op");
+  assert.deepEqual(claimPendingOpens(), [], "the dedupe did not re-queue anything");
+  assert.equal(sshUiAnnounceAgentConnections([{ connectionId: "agent-1", agentSession: true }]), false, "per-connection memory survives later polls");
+  assert.equal(sshUiAnnounceAgentConnections([{ connectionId: "agent-1", agentRevealId: "request-1" }]), true, "a saved-resource request reopens an existing human session");
+  assert.deepEqual(claimPendingOpens(), ["agent-1"]);
+  assert.equal(sshUiAnnounceAgentConnections([{ connectionId: "agent-1", agentRevealId: "request-1" }]), false, "the same request is not replayed each poll");
+  assert.equal(sshUiAnnounceAgentConnections([{ connectionId: "agent-1", agentRevealId: "request-2" }]), true, "a later request can reopen a closed pane");
+  assert.deepEqual(claimPendingOpens(), ["agent-1"]);
+  resetPaneSessions();
+}

@@ -329,6 +329,9 @@ export function SshResources({ api, credentials }) {
   const [forgetBusy, setForgetBusy] = useState(null);
   const [copiedHostKey, setCopiedHostKey] = useState(null);
   const [hostKeyPopup, setHostKeyPopup] = useState(null);
+  // null = not loaded yet; the checkbox stays disabled until the host answers.
+  const [agentAutoConnect, setAgentAutoConnect] = useState(null);
+  const [agentSaving, setAgentSaving] = useState(false);
 
   const refresh = async ({ showLoading = true } = {}) => {
     // Poll ticks must not flip the loading flag: the list would unmount and
@@ -359,6 +362,14 @@ export function SshResources({ api, credentials }) {
     let alive = true;
     (async () => {
       try { await migrateLegacyProfiles(api); } catch {}
+      // The auto-connect switch is a stored operator setting, not polled live
+      // data: load it once and let the toggle own it from there.
+      try {
+        const settings = await api.agentSettingsGet();
+        if (alive) setAgentAutoConnect(settings.agentAutoConnect === true);
+      } catch {
+        if (alive) setAgentAutoConnect(false);
+      }
       if (alive) await refresh();
     })();
     // The connected badge reflects live server-side connections, which also
@@ -367,6 +378,23 @@ export function SshResources({ api, credentials }) {
     const timer = setInterval(() => { if (alive) refresh({ showLoading: false }); }, 5000);
     return () => { alive = false; clearInterval(timer); };
   }, [api]);
+
+  const toggleAgentAutoConnect = async (event) => {
+    const next = event.target.checked;
+    setAgentSaving(true);
+    try {
+      const saved = await api.agentSettingsSave(next);
+      setAgentAutoConnect(saved.agentAutoConnect === true);
+      setError(null);
+    } catch (cause) {
+      // Optimistic flip is rolled back so the checkbox never lies about what
+      // the host will enforce.
+      setError(cause?.message ?? String(cause));
+      setAgentAutoConnect(!next);
+    } finally {
+      setAgentSaving(false);
+    }
+  };
 
   const connect = async (profile) => {
     setConnecting(profile.profileId);
@@ -528,7 +556,14 @@ export function SshResources({ api, credentials }) {
       <ResourceFormTheme />
       <div style={styles.pageHeader}>
         <div><h2 style={styles.heading}>SSH 资源</h2><p style={styles.description}>保存服务器地址和本机 DSH 凭据。密码、私钥和口令不会显示给 Agent 或写入浏览器存储。</p></div>
-        <button type="button" style={styles.primary} onClick={() => setEditor({ mode: "new" })}>新增服务器</button>
+        <div style={styles.headerActions}>
+          <label className="dsh-ssh-ops-agent-toggle" style={styles.agentToggle}>
+            <input type="checkbox" checked={agentAutoConnect === true} disabled={agentAutoConnect === null || agentSaving} onChange={toggleAgentAutoConnect} style={styles.agentToggleBox} />
+            <span>AI 自动连接</span>
+            <span role="tooltip" className="dsh-ssh-ops-agent-toggle-tip">开启后，对话中的 AI 可按名称自行连接这里保存的服务器并切换当前连接（ssh_connect_profile）；每次连接都会在右侧面板打开终端，操作者始终可见。关闭时 AI 只能请你手动连接。默认关闭。</span>
+          </label>
+          <button type="button" style={styles.primary} onClick={() => setEditor({ mode: "new" })}>新增服务器</button>
+        </div>
       </div>
       <div style={styles.setupGrid}>
         <section style={{ ...styles.groupPanel, marginBottom: 0 }}>
@@ -604,9 +639,10 @@ const styles = {
   empty: { padding: 28, border: "1px dashed rgba(127,127,127,.55)", borderRadius: 10, color: "inherit", opacity: 0.76, textAlign: "center" },
   groupPanel: { border: "1px solid rgba(127,127,127,.55)", borderRadius: 10, padding: 12, marginBottom: 16, minWidth: 0 }, setupGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: 12, marginBottom: 16 }, groupTitle: { fontSize: 13, fontWeight: 650, marginBottom: 8 }, groupCreate: { display: "flex", gap: 8, flexWrap: "nowrap", alignItems: "center" }, groupChips: { display: "flex", gap: 7, flexWrap: "wrap", marginTop: 10 }, groupChip: { display: "inline-flex", alignItems: "center", gap: 5, padding: "4px 7px", borderRadius: 99, background: "rgba(127,127,127,.16)", fontSize: 12 }, chipDelete: { border: 0, background: "transparent", color: "#f07171", cursor: "pointer", padding: 0, fontSize: 15, lineHeight: 1 }, credentialList: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 6, maxHeight: 112, overflowY: "auto", marginTop: 8, paddingRight: 2 }, credentialRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 5, minWidth: 0 }, credentialActions: { display: "flex", alignItems: "center", gap: 2 }, credentialLabel: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12 }, groupedList: { display: "grid", gap: 18 }, groupHeadingButton: { border: 0, padding: 0, margin: "0 0 8px", background: "transparent", color: "inherit", cursor: "pointer", textAlign: "left" }, groupHeading: { fontSize: 14, fontWeight: 650 }, groupCount: { fontWeight: 400, opacity: 0.72 }, groupEmpty: { padding: 12, color: "inherit", opacity: 0.76, border: "1px dashed rgba(127,127,127,.55)", borderRadius: 8, fontSize: 12 },
   snippetForm: { display: "grid", gridTemplateColumns: "minmax(100px,.8fr) minmax(180px,2fr) minmax(110px,.7fr) auto", gap: 8, marginTop: 10, alignItems: "center" }, snippetList: { display: "grid", gap: 7, marginTop: 10 }, snippetItem: { display: "flex", justifyContent: "space-between", gap: 12, padding: "8px 10px", border: "1px solid rgba(127,127,127,.4)", borderRadius: 7, fontSize: 12 }, snippetScope: { marginLeft: 7, opacity: .7 }, snippetCommand: { marginTop: 4, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", opacity: .82, overflowWrap: "anywhere" }, fingerprint: { marginTop: 8, maxWidth: 560, overflowWrap: "anywhere", fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", fontSize: 12, lineHeight: 1.45, opacity: 0.86 }, backdrop: { position: "fixed", inset: 0, zIndex: 2000, background: "rgba(0,0,0,.42)", display: "flex", alignItems: "center", justifyContent: "center" }, dialog: { width: 440, maxWidth: "calc(100vw - 32px)", maxHeight: "calc(100vh - 32px)", overflow: "auto", background: "var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-overlay, #fff))", color: "var(--dsw-alias-label-primary, inherit)", borderRadius: 12, padding: 18, boxShadow: "0 20px 60px rgba(0,0,0,.28)", display: "flex", flexDirection: "column", gap: 11 }, dialogTitle: { fontSize: 16, fontWeight: 650 },
-  field: { display: "flex", flexDirection: "column", gap: 5, fontSize: 13 }, hint: { color: "var(--dsw-alias-label-secondary, inherit)", fontWeight: 400 }, input: { width: "100%", boxSizing: "border-box", border: "1px solid var(--dsw-alias-border-l4, rgba(127,127,127,.55))", borderRadius: 7, padding: "7px 8px", background: "var(--dsw-alias-bg-layer-1, #101418)", color: "var(--dsw-alias-label-primary, inherit)", fontSize: 13 }, twoColumns: { display: "grid", gridTemplateColumns: "110px 1fr", gap: 10 }, credentialColumns: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10 }, jumpRow: { display: "grid", gridTemplateColumns: "1fr auto", gap: 5, alignItems: "center", marginBottom: 6 }, check: { display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#f07171" }, actions: { display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 }, error: { padding: "8px 10px", borderRadius: 7, background: "rgba(240,113,113,.15)", color: "#ff8a8a", fontSize: 13 }
+  field: { display: "flex", flexDirection: "column", gap: 5, fontSize: 13 }, hint: { color: "var(--dsw-alias-label-secondary, inherit)", fontWeight: 400 },
+  agentToggle: { display: "inline-flex", alignItems: "center", gap: 7, fontSize: 13, whiteSpace: "nowrap", marginTop: 4, cursor: "pointer", color: "inherit" }, agentToggleBox: { accentColor: "#2ea44f", width: 15, height: 15, margin: 0, cursor: "pointer" }, headerActions: { display: "flex", alignItems: "flex-start", gap: 14, flexShrink: 0 }, input: { width: "100%", boxSizing: "border-box", border: "1px solid var(--dsw-alias-border-l4, rgba(127,127,127,.55))", borderRadius: 7, padding: "7px 8px", background: "var(--dsw-alias-bg-layer-1, #101418)", color: "var(--dsw-alias-label-primary, inherit)", fontSize: 13 }, twoColumns: { display: "grid", gridTemplateColumns: "110px 1fr", gap: 10 }, credentialColumns: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10 }, jumpRow: { display: "grid", gridTemplateColumns: "1fr auto", gap: 5, alignItems: "center", marginBottom: 6 }, check: { display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#f07171" }, actions: { display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 }, error: { padding: "8px 10px", borderRadius: 7, background: "rgba(240,113,113,.15)", color: "#ff8a8a", fontSize: 13 }
 };
 
 function ResourceFormTheme() {
-  return <style>{`.dsh-ssh-ops-resource-modal input::placeholder, .dsh-ssh-ops-resource-modal textarea::placeholder { color: var(--dsw-alias-label-tertiary, #8b93a1); opacity: 1; } .dsh-ssh-ops-resource-modal input:focus-visible, .dsh-ssh-ops-resource-modal select:focus-visible, .dsh-ssh-ops-resource-modal textarea:focus-visible { outline: 2px solid var(--dsw-alias-button-primary-fill, #2d6cdf); outline-offset: 1px; border-color: var(--dsw-alias-button-primary-fill, #2d6cdf); }`}</style>;
+  return <style>{`.dsh-ssh-ops-resource-modal input::placeholder, .dsh-ssh-ops-resource-modal textarea::placeholder { color: var(--dsw-alias-label-tertiary, #8b93a1); opacity: 1; } .dsh-ssh-ops-resource-modal input:focus-visible, .dsh-ssh-ops-resource-modal select:focus-visible, .dsh-ssh-ops-resource-modal textarea:focus-visible { outline: 2px solid var(--dsw-alias-button-primary-fill, #2d6cdf); outline-offset: 1px; border-color: var(--dsw-alias-button-primary-fill, #2d6cdf); } .dsh-ssh-ops-agent-toggle { position: relative; } .dsh-ssh-ops-agent-toggle-tip { position: absolute; top: calc(100% + 8px); right: 0; z-index: 60; width: 340px; max-width: 72vw; padding: 10px 12px; border-radius: 8px; border: 1px solid rgba(0,0,0,.25); background: #2b2f36; color: #fff; font-size: 12px; line-height: 1.6; text-align: left; white-space: normal; box-shadow: 0 8px 24px rgba(0,0,0,.24); opacity: 0; visibility: hidden; transform: translateY(-2px); pointer-events: none; transition: opacity .12s ease .15s, transform .12s ease .15s, visibility 0s linear .27s; } .dsh-ssh-ops-agent-toggle:hover .dsh-ssh-ops-agent-toggle-tip, .dsh-ssh-ops-agent-toggle:focus-within .dsh-ssh-ops-agent-toggle-tip { opacity: 1; visibility: visible; transform: translateY(0); transition-delay: .15s, .15s, 0s; }`}</style>;
 }

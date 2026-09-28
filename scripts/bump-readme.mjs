@@ -14,7 +14,7 @@ const { version } = JSON.parse(readFileSync(join(root, "package.json"), "utf8"))
 // x.y.z so a skipped release still converges.
 const VERSIONED = [
   /version-\d+\.\d+\.\d+/g,                     // shields.io badge
-  /dsh-ssh-ops@\d+\.\d+\.\d+/g,                 // npm install / npx targets
+  /dsh-ssh-ops@\d+\.\d+\.\d+(?![-.])/g,          // npm install / npx targets, not host prerelease badges
   /dsh-ssh-ops-\d+\.\d+\.\d+\.(?:tgz|zip)/g,    // release asset names/links
   /dsh-ssh-ops#v\d+\.\d+\.\d+/g,                // GitHub tag install ref
   /releases\/tag\/v\d+\.\d+\.\d+/g              // GitHub release links

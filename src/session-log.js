@@ -77,8 +77,17 @@ export class SessionLogStore {
     this.streams.set(sessionId, stream);
     const buffered = entry.pending;
     entry.pending = [];
-    for (const chunk of buffered) {
-      try { stream.write(chunk); } catch { /* keep the session alive */ }
+    if (buffered.length > 0) {
+      // Replayed chunks must be covered by flush(): write callbacks fire in
+      // order, so awaiting the LAST one also covers every earlier chunk — and
+      // a read racing begin() sees the data instead of an empty file.
+      this.pending.set(sessionId, new Promise((resolve) => {
+        let done = 0;
+        const onDone = () => { if (++done >= buffered.length) resolve(); };
+        for (const chunk of buffered) {
+          try { stream.write(chunk, onDone); } catch { onDone(); }
+        }
+      }));
     }
     await this.writeMeta(entry).catch(() => {});
     return entry;
@@ -182,6 +191,12 @@ export class SessionLogStore {
     try { size = (await stat(path)).size; } catch { return { ok: false, reason: "no-such-log" }; }
     const start = Math.max(0, Math.min(Number(offset) || 0, size));
     const length = Math.max(1, Math.min(Number(maxBytes) || 65536, 4 * 1024 * 1024));
+    // An empty or fully-consumed log must not reach createReadStream with
+    // end < start: Node throws ERR_OUT_OF_RANGE synchronously there, escaping
+    // the stream's error event. The empty answer is the correct result anyway.
+    if (start >= size) {
+      return { ok: true, data: "", startOffset: start, nextOffset: start, eof: true, size };
+    }
     const chunks = [];
     let read = 0;
     await new Promise((resolve) => {

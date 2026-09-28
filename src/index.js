@@ -7,6 +7,7 @@
 import { createTerminalOutput } from "./terminal-output.js";
 import { randomUUID } from "node:crypto";
 import { findReusableProfileConnection } from "./profile-connection.js";
+import { resolveProfileRef, noConnectionGuidance, AUTO_CONNECT_DISABLED_MESSAGE } from "./agent-connect.js";
 import net from "node:net";
 import { Client } from "ssh2";
 import { Service } from "@deepseek-ai/cordis";
@@ -234,6 +235,23 @@ export const knownHostDomainSpec = defineDomain({
   }
 });
 
+// Operator-level plugin settings (one row, id "main"). New fields must be
+// optional so records written by older builds keep loading.
+const settingsRecordSchema = z.object({
+  agentAutoConnect: z.boolean().optional(),
+  updatedAt: z.string().optional()
+});
+
+export const settingsDomainSpec = defineDomain({
+  name: "ssh_ops_settings",
+  version: 1,
+  tables: {
+    settings: domainTable(settingsRecordSchema)
+  }
+});
+
+const SETTINGS_ROW_ID = "main";
+
 function profileCredentialRefs(profileId) {
   const stem = profileId.replaceAll("-", "").toUpperCase();
   return {
@@ -331,6 +349,12 @@ export default class SshOpsService extends TypertRemoteService {
 
   /** The connection currently represented by the right-side terminal panel. */
   activeConnectionId = null;
+  /**
+   * Agent auto-connect switch (issue #25): when true the agent may connect
+   * saved SSH resources itself (ssh_connect_profile, and ssh_list shows the
+   * saved resources). Persisted in ssh_ops_settings; default OFF.
+   */
+  agentAutoConnect = false;
   profileTable = null;
   groupTable = null;
   credentialTable = null;
@@ -338,6 +362,8 @@ export default class SshOpsService extends TypertRemoteService {
   knownHostTable = null;
   /** KnownHosts adapter over `knownHostTable`; null until [Service.init]. */
   knownHosts = null;
+  /** Operator settings table; null until [Service.init]. */
+  settingsTable = null;
 
   constructor(ctx, config = {}) {
     super(ctx, "sshOps");
@@ -403,6 +429,14 @@ export default class SshOpsService extends TypertRemoteService {
     this.knownHostTable = knownHostDomain.table("known_hosts");
     this.knownHosts = new KnownHosts(this.knownHostTable);
     this.ctx.effect(() => () => knownHostDomain.close(), "ssh-ops: known-host domain close");
+    const settingsDomain = await this.ctx.storageDomain.open(settingsDomainSpec);
+    this.settingsTable = settingsDomain.table("settings");
+    this.ctx.effect(() => () => settingsDomain.close(), "ssh-ops: settings domain close");
+    // Load the persisted operator switch; a missing row (first boot) keeps the
+    // safe default off, and a read failure must not block service startup.
+    try {
+      this.agentAutoConnect = this.settingsTable.get(SETTINGS_ROW_ID)?.agentAutoConnect === true;
+    } catch {}
   }
 
   // ── Remote methods ─────────────────────────────────────────────────────────
@@ -421,9 +455,55 @@ export default class SshOpsService extends TypertRemoteService {
       // Strict Typert results must be JSON-safe: optional fields must be
       // absent, rather than present with an `undefined` value.
       if (c.name !== undefined) connection.name = c.name;
+      // The browser reveals agent-opened sessions, and a new request token
+      // also reveals reused connections whose existing PTY was human-opened.
+      if ([...c.sessions].some((sessionId) => this.sessions?.get(sessionId)?.openedBy === "agent")) connection.agentSession = true;
+      if (c.agentRevealId !== undefined) connection.agentRevealId = c.agentRevealId;
       connections.push(connection);
     }
-    return { ok: true, value: { connections, activeConnectionId: this.activeConnectionId } };
+    const value = { connections, activeConnectionId: this.activeConnectionId };
+    // Saved resources reach the agent only after the operator opted in
+    // (issue #25); with the switch off, ssh_list keeps today's strict
+    // live-connections-only stance.
+    if (this.agentAutoConnect) {
+      try {
+        value.resources = this.savedResourceSummaries();
+      } catch {}
+    }
+    return { ok: true, value };
+  }
+
+  /**
+   * Saved SSH resources as the agent may see them: coordinates only. The
+   * caller gates on `agentAutoConnect`; a storage failure must not take
+   * `list()` down, so callers wrap this in try/catch.
+   */
+  savedResourceSummaries() {
+    const connectedProfileIds = new Set(
+      [...this.connections.values()].map((connection) => connection.profileId).filter(Boolean)
+    );
+    return [...this.requireProfileTable().entries()]
+      .map(([profileId, record]) => ({
+        profileId,
+        name: record.name,
+        host: record.host,
+        port: record.port,
+        username: record.username,
+        connected: connectedProfileIds.has(profileId)
+      }))
+      .sort((left, right) => left.name.localeCompare(right.name, "zh-Hans-CN"));
+  }
+
+  /** Saved resource names for error guidance; failures degrade to an empty list. */
+  savedResourceNameList() {
+    if (!this.agentAutoConnect) return [];
+    try {
+      return [...this.requireProfileTable().values()]
+        .map((record) => record.name)
+        .sort((left, right) => left.localeCompare(right, "zh-Hans-CN"));
+    } catch {
+      return [];
+    }
   }
 
   /**
@@ -436,7 +516,7 @@ export default class SshOpsService extends TypertRemoteService {
   async selectConnection(request) {
     const connection = this.connections.get(request.connectionId);
     if (connection === void 0) {
-      return { ok: false, error: fail("no-connection", `connection "${request.connectionId}" does not exist`) };
+      return { ok: false, error: fail("no-connection", noConnectionGuidance(request.connectionId, this.savedResourceNameList(), this.agentAutoConnect)) };
     }
     if (connection.dead || connection.closing) {
       return { ok: false, error: fail("connection-lost", `connection "${request.connectionId}" is not usable`) };
@@ -1341,6 +1421,93 @@ export default class SshOpsService extends TypertRemoteService {
     }
   }
 
+  // ── agent auto-connect (issue #25) ─────────────────────────────────────────
+
+  async agentSettingsGet() {
+    return { ok: true, value: { agentAutoConnect: this.agentAutoConnect } };
+  }
+
+  async agentSettingsSave(request) {
+    const agentAutoConnect = request.agentAutoConnect === true;
+    try {
+      await this.settingsTable.put(SETTINGS_ROW_ID, {
+        agentAutoConnect,
+        updatedAt: new Date().toISOString()
+      });
+    } catch (error) {
+      return { ok: false, error: fail("agent-settings-save-failed", error.message) };
+    }
+    this.agentAutoConnect = agentAutoConnect;
+    return { ok: true, value: { agentAutoConnect: this.agentAutoConnect } };
+  }
+
+  /**
+   * Connect a saved SSH resource by name/id at the agent's request. The
+   * operator's switch gates the whole verb (the risk is waking a machine, not
+   * switching between live ones). A live connection for the same profile is
+   * reused, the result becomes the active connection so later ssh_exec calls
+   * land on it, and a terminal is opened so the operator can always see which
+   * machine the agent moved to in the right-side panel.
+   */
+  async agentConnectProfile(request) {
+    if (!this.agentAutoConnect) {
+      return { ok: false, error: fail("auto-connect-disabled", AUTO_CONNECT_DISABLED_MESSAGE) };
+    }
+    let resolved;
+    try {
+      resolved = resolveProfileRef(
+        [...this.requireProfileTable().entries()].map(([profileId, record]) => ({ profileId, name: record.name })),
+        request.resource
+      );
+    } catch (error) {
+      return { ok: false, error: fail("profile-list-failed", error.message) };
+    }
+    if (!resolved.ok) return { ok: false, error: fail(resolved.code, resolved.message) };
+    const knownConnectionIds = new Set(this.connections.keys());
+    const previousActiveConnectionId = this.activeConnectionId;
+    const connected = await this.profileConnect({ profileId: resolved.profileId, reuseExisting: true });
+    if (!connected.ok) return connected;
+    const connectionId = connected.value.connectionId;
+    const reused = knownConnectionIds.has(connectionId);
+    const rollback = async (error, openedSessionId = null) => {
+      if (!reused) await this.disconnect({ connectionId }).catch(() => {});
+      else if (openedSessionId !== null) await this.closeSession({ sessionId: openedSessionId }).catch(() => {});
+      this.activeConnectionId = previousActiveConnectionId;
+      return { ok: false, error };
+    };
+    let terminalOpened = false;
+    const connection = this.connections.get(connectionId);
+    if (connection === undefined) return rollback(fail("no-connection", `connection "${connectionId}" disappeared before its terminal opened`));
+    // Visibility is the safeguard: the agent's target machine must appear in
+    // the right-side panel, not just exist as an invisible transport.
+    let openedSessionId = null;
+    if (connection.sessions.size === 0) {
+      const opened = await this.openSession({ connectionId, openedBy: "agent" });
+      if (!opened.ok) return rollback(opened.error);
+      openedSessionId = opened.value.sessionId;
+      terminalOpened = true;
+    }
+    const selected = await this.selectConnection({ connectionId });
+    if (!selected.ok) return rollback(selected.error, openedSessionId);
+    // A new token on every request lets the browser re-open a reused server
+    // after its pane was closed, even when its existing PTY was human-opened.
+    connection.agentRevealId = randomUUID();
+    return {
+      ok: true,
+      value: {
+        connectionId,
+        profileId: resolved.profileId,
+        name: resolved.name,
+        host: connected.value.host,
+        port: connected.value.port,
+        username: connected.value.username,
+        reused,
+        terminalOpened,
+        ...(connected.value.warning !== undefined ? { warning: connected.value.warning } : {})
+      }
+    };
+  }
+
   /** Connect a saved profile, run one command, then disconnect. Batch channel only. */
   async runCommandOnProfile(profileId, command, timeoutMs = 30000) {
     const record = this.requireProfileTable().get(profileId);
@@ -1435,7 +1602,7 @@ export default class SshOpsService extends TypertRemoteService {
 
   async openSession(request) {
     const conn = this.connections.get(request.connectionId);
-    if (conn === void 0) return { ok: false, error: fail("no-connection", `connection "${request.connectionId}" does not exist`) };
+    if (conn === void 0) return { ok: false, error: fail("no-connection", noConnectionGuidance(request.connectionId, this.savedResourceNameList(), this.agentAutoConnect)) };
     if (this.sessions.size >= MAX_SESSIONS) return { ok: false, error: fail("session-limit", `too many live sessions (${MAX_SESSIONS})`) };
     if (!(await this.ensureAlive(conn))) {
       return { ok: false, error: fail("connection-lost", `connection "${request.connectionId}" is down and could not be re-established`) };
@@ -1979,7 +2146,7 @@ export default class SshOpsService extends TypertRemoteService {
 
   async disconnect(request) {
     const conn = this.connections.get(request.connectionId);
-    if (conn === void 0) return { ok: false, error: fail("no-connection", `connection "${request.connectionId}" does not exist`) };
+    if (conn === void 0) return { ok: false, error: fail("no-connection", noConnectionGuidance(request.connectionId, this.savedResourceNameList(), this.agentAutoConnect)) };
     // Explicit disconnect: never auto-reconnect, and stop any in-flight one.
     conn.closing = true;
     if (conn.reconnectTimer !== null) {
@@ -2552,10 +2719,11 @@ export default class SshOpsService extends TypertRemoteService {
    * never has to expose an implementation-only UUID to the user.
    */
   resolveConnection(connectionId) {
+    const resourceNames = this.savedResourceNameList();
     if (connectionId !== undefined) {
       const connection = this.connections.get(connectionId);
       if (connection !== undefined) return { ok: true, connectionId, connection };
-      return { ok: false, error: fail("no-connection", `connection "${connectionId}" does not exist`) };
+      return { ok: false, error: fail("no-connection", noConnectionGuidance(connectionId, resourceNames, this.agentAutoConnect)) };
     }
     if (this.activeConnectionId !== null) {
       const connection = this.connections.get(this.activeConnectionId);
@@ -2569,7 +2737,7 @@ export default class SshOpsService extends TypertRemoteService {
       return { ok: true, connectionId: resolvedId, connection };
     }
     if (this.connections.size === 0) {
-      return { ok: false, error: fail("no-connection", "no active SSH connection; connect a server in the SSH panel first") };
+      return { ok: false, error: fail("no-connection", noConnectionGuidance(undefined, resourceNames, this.agentAutoConnect)) };
     }
     return { ok: false, error: fail("connection-selection-required", "multiple SSH connections are open; select a server in the SSH panel or provide connection_id") };
   }

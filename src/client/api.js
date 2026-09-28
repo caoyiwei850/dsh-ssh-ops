@@ -90,6 +90,14 @@ export class SshApi {
     return this.call("selectConnection", typeof input === "string" ? { connectionId: input } : input);
   }
 
+  agentSettingsGet() {
+    return this.call("agentSettingsGet", {});
+  }
+
+  agentSettingsSave(agentAutoConnect) {
+    return this.call("agentSettingsSave", { agentAutoConnect });
+  }
+
   profileList() {
     return this.call("profileList", {});
   }

@@ -2,7 +2,7 @@
 // offsets, listing order, deletion and the total-budget prune — all against a
 // real temp directory.
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, openSync, closeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readFile } from "node:fs/promises";
@@ -50,6 +50,32 @@ try {
     assert.equal(meta.bytes, 24);
     assert.equal("pending" in meta, false, "internal buffering never leaks into the API shape");
     await lazy.end("s-lazy");
+
+    // ── empty and over-run reads stay total (ERR_OUT_OF_RANGE regression) ──────
+    // A log file exists from begin() before any flush; a flushed-but-empty file
+    // and an offset past the end must both return an empty page, never throw.
+    const emptyStore = new SessionLogStore({ dir: mkdtempSync(join(tmpdir(), "dsh-ssh-ops-logs-empty-")) });
+    try {
+      await emptyStore.begin({ sessionId: "s-empty", host: "h" });
+      // Force the window the bug lives in: log file exists with 0 bytes (the
+      // state between stream open and the first flushed chunk).
+      closeSync(openSync(emptyStore.logPath("s-empty"), "a"));
+      const emptyRead = await emptyStore.read("s-empty", {});
+      assert.equal(emptyRead.ok, true);
+      assert.equal(emptyRead.data, "", "a not-yet-written log reads as empty instead of crashing");
+      assert.equal(emptyRead.eof, true);
+      const overRead = await emptyStore.read("s-empty", { offset: 100 });
+      assert.equal(overRead.ok, true);
+      assert.equal(overRead.data, "", "an offset past the end reads as empty");
+      assert.equal(overRead.eof, true);
+      await emptyStore.append("s-empty", "x");
+      await emptyStore.end("s-empty");
+      const tailRead = await emptyStore.read("s-empty", { offset: 5 });
+      assert.equal(tailRead.data, "", "an offset past a written log still reads as empty");
+      assert.equal(tailRead.eof, true);
+    } finally {
+      rmSync(emptyStore.dir, { recursive: true, force: true });
+    }
   } finally {
     rmSync(lazyDir, { recursive: true, force: true });
   }

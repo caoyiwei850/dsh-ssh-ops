@@ -8,10 +8,12 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.3.13-blue)
+![version](https://img.shields.io/badge/version-0.3.14-blue)
 [![dsh.so risk](https://www.dsh.so/badge/dsh-ssh-ops.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![dsh.so install · dsh 0.1.7-rc.2](https://www.dsh.so/badge/install/dsh-ssh-ops@0.1.7-rc.2.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/caoyiwei850/dsh-ssh-ops)
+
+> **v0.3.14**：新增默认关闭的「AI 自动连接」开关。开启后，Agent 可按名称连接已保存的 SSH 资源，目标终端自动出现在右侧；关闭时，Agent 无法枚举保存资源。修复会话日志空文件读取问题。
 
 > **v0.3.13**：整轮更新——**SFTP 目录批量上传/下载**（新工具 `sftp_upload_dir` / `sftp_download_dir`：小文件并发、大文件独占、单文件失败不中断整批）；**SSH 认证失败结构化诊断**（试过哪些方法、服务器还接受什么、下一步怎么走），并新增 **keyboard-interactive 认证**（保存的密码应答交互提示/MFA 门禁，设备掐断时自动降级纯密码重试）；**数据库连接健壮性三件套**（TCP keepalive、空闲复用前活性 ping + 透明重连、断连时手工事务有界收尾）；**修复** MySQL 未知字符集文本列显示为字节对象的问题；上一版的破坏性操作可逆化（rm 回收站、危险 SQL 自动备份、DROP 隔离改名、绕过向量封堵）一并随本版发布。
 
@@ -29,7 +31,7 @@
 
 ## 兼容性
 
-- **目标宿主**：DSH Desktop / Web Profile `0.1.7` 系列；本项目当前开发环境已验证 `0.1.7-rc.2`和桌面版 。插件使用 DSH 自带的 Node.js 运行时，不要求系统另装 `ssh`、`sftp` 或独立 Node.js。
+- **目标宿主**：DSH Desktop / Web Profile，经四个官方包的 `peerDependencies` 声明为无上界区间 `>=0.1.5-alpha.1`——宿主以 `includePrerelease` 语义按 DSH 运行时版本评估，覆盖 `0.1.5` 起的全部宿主版本（含一切预发布），宿主升级无需发版跟进。当前开发环境已验证 `0.2.0-rc.1` 桌面版。插件使用 DSH 自带的 Node.js 运行时，不要求系统另装 `ssh`、`sftp` 或独立 Node.js。
 - **新版右侧边栏**：宿主同时提供 `sidebarRightTabs` 与 `sidebarRight` 时，SSH 作为官方右侧边栏标签运行，支持宿主分栏、缩放和全屏。
 - **旧版回退**：缺少上述右侧边栏 API 时，插件自动使用原有浮动 SSH 面板；终端、SFTP、隧道、数据库和 Agent 工具仍可用，但不会获得官方边栏标签和分栏体验。
 - **文件字节流**：大文件的浏览器上传／下载路由仅在 Web Profile 同时提供 `webServer` 与请求来源校验服务时注册；不具备该接口的宿主继续使用既有 SFTP 操作。目录归档下载在所有宿主上均返回 `501 archive-unavailable`，避免 SFTP chroot 与 SSH shell 命名空间不一致造成越界。
@@ -96,7 +98,7 @@ Agent 命中上述黑名单时不会被静默拒绝：插件会创建一条一�
 ### 从 GitHub 安装（推荐）
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.13
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.14
 ```
 
 安装后重启 DSH Web：
@@ -109,32 +111,33 @@ dsh web
 
 ### 从发布压缩包安装
 
-从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.13) 下载 `dsh-ssh-ops-0.3.13.tgz` 后：
+从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.14) 下载 `dsh-ssh-ops-0.3.14.tgz` 后：
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.13.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.14.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.3.13.zip` 适用于离线审阅或二次开发；解压后可在目录中执行 `npm install && npm run build`。
+`dsh-ssh-ops-0.3.14.zip` 适用于离线审阅或二次开发；解压后可在目录中执行 `npm install && npm run build`。
 
 ## 使用方式
 
 1. 打开 **设置 → SSH 资源**，新建分组或服务器资源；PEM / `.key` 文件可直接导入。
 2. 保存的资源可直接“连接并打开”，并自动创建右侧 PTY 终端。编辑时秘密字段留空会保持原值；清除凭据需要显式确认。
 3. 顶部 **SSH** 仅控制右侧终端的显示和隐藏；右上角 `+` 可选择已保存资源，或创建不落盘的临时连接。
-4. 在主对话中直接说“查询服务器内存使用情况”或“配置 Nginx SSL 证书”。主 Agent 只能操作当前活动连接，不能枚举保存资源、读取凭据或自动用保存凭据连接。
+4. 在主对话中直接说“查询服务器内存使用情况”或“配置 Nginx SSL 证书”。主 Agent 只能操作当前活动连接，不能读取凭据；默认也不能枚举保存资源或自动用保存凭据连接——在 **设置 → SSH 资源 → AI 自动连接** 打开开关后，Agent 才能按名称连接已保存服务器并切换当前连接（每次连接都会在右侧面板打开终端，操作者始终可见）。
 5. 需要数据库时，让 Agent 调 `db_connect`（或自己在「数据库」页签新建连接），随后即可在对话中查询/执行。
 ### Agent 工具
 
-共 33 个 Agent 工具，省略 `connection_id` / `db_connection_id` 时默认作用于当前活动连接，**无需先调 `ssh_list` / `db_list_connections`**。
+共 34 个 Agent 工具，省略 `connection_id` / `db_connection_id` 时默认作用于当前活动连接，**无需先调 `ssh_list` / `db_list_connections`**。
 
-#### SSH（6）
+#### SSH（7）
 
 | 工具 | 用途 |
 | --- | --- |
-| `ssh_list` | 查看当前活动连接的安全元数据（不包含保存资源或秘密）；仅在用户问“连了哪台”时用 |
+| `ssh_list` | 查看当前活动连接的安全元数据与秘密无关信息；开启「AI 自动连接」后同时列出已保存服务器（不含凭据），仅在需要枚举时用 |
 | `ssh_connect` | 建立 SSH 连接（密码或私钥）并设为当前服务器 |
+| `ssh_connect_profile` | 按名称连接**已保存**的 SSH 资源并设为当前服务器（右侧面板同步打开终端）；仅在操作者开启「AI 自动连接」后可用，未开启时明确报错提示转人工 |
 | `ssh_exec` | 在当前服务器执行 Agent 命令（继承交互 shell 当前目录），回传退出码/输出/cwd/耗时/超时/截断/脱敏状态 |
 | `ssh_read` | 按需读取右侧终端缓冲输出（不静默塞入对话） |
 | `ssh_write` | 向指定终端写入交互输入；`press_enter`（默认 true）自动补回车提交（可传 `connection_id` 指定目标服务器的终端） |
@@ -205,8 +208,8 @@ npm run pack:release
 
 生成物位于 `release/`：
 
-- `dsh-ssh-ops-0.3.13.tgz`：可直接被 DSH 安装。
-- `dsh-ssh-ops-0.3.13.zip`：完整离线源码包。
+- `dsh-ssh-ops-0.3.14.tgz`：可直接被 DSH 安装。
+- `dsh-ssh-ops-0.3.14.zip`：完整离线源码包。
 
 ## 许可
 

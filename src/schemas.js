@@ -102,15 +102,38 @@ export const connectionInfoSchema = z.object({
   port: z.number(),
   username: z.string(),
   connected: z.boolean(),
-  sessions: z.array(z.string())
+  sessions: z.array(z.string()),
+  // True while the connection has a live session opened by the agent
+  // (ssh_connect_profile); the browser auto-reveals the SSH surface for it.
+  agentSession: z.boolean().optional(),
+  agentRevealId: z.string().optional()
+});
+
+// A saved SSH resource as the agent sees it (issue #25): coordinates only —
+// no credentials, no credential ids, no jump chains.
+export const savedResourceInfoSchema = z.object({
+  profileId: z.string(),
+  name: z.string(),
+  host: z.string(),
+  port: z.number(),
+  username: z.string(),
+  connected: z.boolean()
 });
 
 export const listResultSchema = resultSchema(
   z.object({
     connections: z.array(connectionInfoSchema),
-    activeConnectionId: z.string().nullable()
+    activeConnectionId: z.string().nullable(),
+    // Present only while the operator's AI-auto-connect switch is on.
+    resources: z.array(savedResourceInfoSchema).optional()
   })
 );
+
+// ── agent auto-connect settings (operator switch, issue #25) ────────────────
+
+export const agentSettingsGetRequestSchema = z.object({});
+export const agentSettingsResultSchema = resultSchema(z.object({ agentAutoConnect: z.boolean() }));
+export const agentSettingsSaveRequestSchema = z.object({ agentAutoConnect: z.boolean() });
 
 // ── saved SSH resources ────────────────────────────────────────────────────
 

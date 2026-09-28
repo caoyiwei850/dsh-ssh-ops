@@ -20,7 +20,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { isMacPlatform, runFind, searchResultLabel, searchShortcutLabel, searchShortcutMatches } from "./terminal-search.js";
 import { XTERM_CSS } from "./xterm-css.js";
-import { useSshUi, sshUiSetActiveConnection, sshUiSetBusy, sshUiSetConnections, sshUiSetError } from "./store.js";
+import { useSshUi, sshUiSetActiveConnection, sshUiSetBusy, sshUiSetConnections, sshUiSetError, sshUiAnnounceAgentConnections } from "./store.js";
 import { IconRobot16 } from "./IconRobot16.jsx";
 import { SshFiles } from "./SshFiles.jsx";
 import { SshTunnels } from "./SshTunnels.jsx";
@@ -869,6 +869,9 @@ async function refreshConnections(api) {
     const { connections, activeConnectionId } = await api.list();
     sshUiSetConnections(connections);
     sshUiSetActiveConnection(activeConnectionId ?? null);
+    // The panel's own poll is the fast path for agent-connected servers while
+    // the SSH surface is open; the plugin-root poll covers the closed case.
+    sshUiAnnounceAgentConnections(connections);
   } catch (error) {
     sshUiSetError(`无法刷新 SSH 连接列表：${error?.message ?? String(error)}`);
   }

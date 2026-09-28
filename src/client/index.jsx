@@ -26,7 +26,8 @@ import { IconTerminal16 } from "./IconTerminal16.jsx";
 import { SshDrawer } from "./SshDrawer.jsx";
 import { SshSidebarBody } from "./SshSidebarBody.jsx";
 import { SshResources } from "./SshResources.jsx";
-import { getSshUiSnapshot, sshUiSetOpen, sshUiSetSurfaceOpener, useSshUi } from "./store.js";
+import { getSshUiSnapshot, sshUiAnnounceAgentConnections, sshUiSetOpen, sshUiSetSurfaceOpener, useSshUi } from "./store.js";
+import { startAgentConnectionPoll } from "./agent-connection-poll.js";
 import { activateSidebarWhenAvailable } from "./sidebar-lifecycle.js";
 import TYPERT_REMOTE from "../remote.js";
 
@@ -54,6 +55,14 @@ export async function apply(ctx) {
   }
 
   const api = createSshApi(ctx);
+
+  // Agent-connected servers must surface even while the SSH tab is closed
+  // (issue #25 real-machine feedback): ssh_connect_profile opens transport +
+  // session host-side, and without a poll nobody reveals the tab — the user
+  // had to find the terminal by hand, and a second server never appeared
+  // beside the first. The plugin root is always mounted, so it owns the
+  // slow poll; the panel's own refresh is the fast path while it is open.
+  own(startAgentConnectionPoll(api, sshUiAnnounceAgentConnections));
 
   const localeDispose = own(ctx.locale.register(NS, {
     zh: {

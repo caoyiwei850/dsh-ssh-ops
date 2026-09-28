@@ -8,10 +8,12 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.3.13-blue)
+![version](https://img.shields.io/badge/version-0.3.14-blue)
 [![dsh.so risk](https://www.dsh.so/badge/dsh-ssh-ops.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![dsh.so install · dsh 0.1.7-rc.2](https://www.dsh.so/badge/install/dsh-ssh-ops@0.1.7-rc.2.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/caoyiwei850/dsh-ssh-ops)
+
+> **v0.3.14**: adds an operator-controlled, off-by-default AI auto-connect switch. When enabled, the agent can connect saved SSH resources by name and reveal the target terminal on the right. When disabled, saved resources remain hidden from the agent. Also fixes reading empty session logs.
 
 > **v0.3.12**: fixes `db_list_connections` being rejected whenever a database connection exists because its strict output schema omitted `username` (#23). Connection listings now identify the database, non-secret username, TLS mode and SSH route; SQLite shows its file path instead of `:0`. A regression test exercises the real DSH output validator.
 
@@ -29,7 +31,7 @@
 
 ## Compatibility
 
-- **Target host**: the DSH Desktop / Web Profile `0.1.7-rc.1` line; the current development environment is compatible with `0.1.7-rc.1` . The plugin uses DSH's bundled Node.js runtime and does not require a system `ssh`, `sftp`, or standalone Node.js installation.
+- **Target host**: the DSH Desktop / Web Profile, declared via the four official-package `peerDependencies` as the unbounded range `>=0.1.5-alpha.1` — the gate evaluates it against the DSH runtime version with `includePrerelease` semantics, covering every host version from `0.1.5` on (all prereleases included), so host upgrades require no release follow-up. Validated on the `0.2.0-rc.1` desktop build. The plugin uses DSH's bundled Node.js runtime and does not require a system `ssh`, `sftp`, or standalone Node.js installation.
 - **Current right Sidebar**: when the host supplies both `sidebarRightTabs` and `sidebarRight`, SSH runs as an official right-Sidebar tab and uses the host's split, resize, and fullscreen behavior.
 - **Older-host fallback**: if those Sidebar APIs are absent, the plugin automatically keeps the earlier floating SSH panel. Terminal, SFTP, tunnels, databases, and agent tools remain available, but there is no official Sidebar-tab or split-pane experience.
 - **File byte streaming**: browser upload/download routes register only when the Web Profile exposes both `webServer` and the request-origin guard; hosts without them retain the existing SFTP operations. Directory archive download returns `501 archive-unavailable` on every host, preventing traversal across differing SFTP-chroot and SSH-shell filesystem namespaces.
@@ -91,7 +93,7 @@ The same model covers `sftp_delete` (the agent no longer deletes directly; inste
 ### From GitHub (recommended)
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.13
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.14
 ```
 
 Then restart DSH Web:
@@ -104,32 +106,33 @@ Open any session, click the top **SSH** tab, and use the right-side panel to con
 
 ### From a release archive
 
-Download `dsh-ssh-ops-0.3.13.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.13), then:
+Download `dsh-ssh-ops-0.3.14.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.14), then:
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.13.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.14.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.3.13.zip` is for offline review or further development; extract it and run `npm install && npm run build` in the directory.
+`dsh-ssh-ops-0.3.14.zip` is for offline review or further development; extract it and run `npm install && npm run build` in the directory.
 
 ## Usage
 
 1. Open **Settings → SSH Resources** and create a group or server resource; PEM / `.key` files can be imported directly.
 2. A saved resource can be "connect & open" to auto-create a right-side PTY terminal. When editing, leaving a secret field blank keeps the existing value; clearing credentials requires explicit confirmation.
 3. The top **SSH** only toggles the right-side terminal; the `+` in the top-right picks a saved resource or creates a non-persistent temporary connection.
-4. In the main conversation, just say "check server memory usage" or "configure the Nginx SSL certificate". The agent can only operate the active connection; it cannot enumerate saved resources, read credentials, or auto-connect using saved credentials.
+4. In the main conversation, just say "check server memory usage" or "configure the Nginx SSL certificate". The agent can only operate the active connection and cannot read credentials; by default it also cannot enumerate saved resources or auto-connect with saved credentials — after enabling the switch in **Settings → SSH resources → AI auto-connect**, the agent may connect saved servers by name and switch the active connection (every connect opens a terminal in the right-side panel, so the operator always sees which machine the agent is on).
 5. For databases, have the agent call `db_connect` (or create a connection yourself in the Database tab), then query/execute from the conversation.
 ### Agent tools
 
-There are 31 agent tools. Omitting `connection_id` / `db_connection_id` targets the active connection — **no need to call `ssh_list` / `db_list_connections` first**.
+There are 34 agent tools. Omitting `connection_id` / `db_connection_id` targets the active connection — **no need to call `ssh_list` / `db_list_connections` first**.
 
-#### SSH (6)
+#### SSH (7)
 
 | Tool | Purpose |
 | --- | --- |
-| `ssh_list` | List open SSH connections and identify the active server; only when the user asks which is connected |
+| `ssh_list` | List open SSH connections and identify the active server; with AI auto-connect enabled, also lists saved servers (no credentials) |
 | `ssh_connect` | Connect over SSH (password or private key) and make it the current server |
+| `ssh_connect_profile` | Connect a **saved** SSH resource by name and make it the current server (opens its terminal in the right-side panel); only available after the operator enables AI auto-connect, otherwise it fails with a clear "ask the operator" error |
 | `ssh_exec` | Run a command on the current server (inherits the interactive shell's cwd); returns exit code/output/cwd/duration/timeout/truncation/redacted state |
 | `ssh_read` | Read buffered output from the right-side terminal on demand (never silently injected) |
 | `ssh_write` | Send interactive input to a terminal; `press_enter` (default true) appends Enter so prompts are submitted like a real keypress (use `connection_id` to target a specific server's terminal) |
@@ -198,8 +201,8 @@ Pushing a `vX.Y.Z` tag that matches `package.json.version` runs tests, builds th
 
 Artifacts are written to `release/`:
 
-- `dsh-ssh-ops-0.3.13.tgz`: installable directly by DSH.
-- `dsh-ssh-ops-0.3.13.zip`: full offline source archive.
+- `dsh-ssh-ops-0.3.14.tgz`: installable directly by DSH.
+- `dsh-ssh-ops-0.3.14.zip`: full offline source archive.
 
 ## License
 
