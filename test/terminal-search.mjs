@@ -4,12 +4,20 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { SEARCH_DECORATIONS, SEARCH_FIND_OPTIONS, SEARCH_FIND_OPTIONS_PLAIN, isMacPlatform, runFind, searchResultLabel, searchShortcutLabel, searchShortcutMatches } from "../src/client/terminal-search.js";
+import { setLanguage, t } from "../src/i18n/core.js";
 
 // ── the count label ─────────────────────────────────────────────────────────
 assert.equal(searchResultLabel({ resultIndex: 2, resultCount: 7 }, "error"), "3/7", "the addon indexes matches from 0; readers count from 1");
 assert.equal(searchResultLabel({ resultIndex: 0, resultCount: 1 }, "x"), "1/1");
-assert.equal(searchResultLabel({ resultIndex: -1, resultCount: 0 }, "nope"), "无匹配");
-assert.equal(searchResultLabel(null, "nope"), "无匹配");
+// The "no match" wording is bilingual, so the assertion follows the active
+// language rather than hard-coding one of them.
+setLanguage("en");
+assert.equal(searchResultLabel({ resultIndex: -1, resultCount: 0 }, "nope"), "no match");
+assert.equal(searchResultLabel(null, "nope"), "no match");
+setLanguage("zh");
+assert.equal(searchResultLabel({ resultIndex: -1, resultCount: 0 }, "nope"), t("no match"), "the label follows the selected language");
+assert.equal(searchResultLabel(null, "nope"), t("no match"));
+setLanguage("en");
 assert.equal(searchResultLabel({ resultIndex: 1, resultCount: 3 }, "   "), "", "an empty query says nothing");
 assert.equal(searchResultLabel({ resultIndex: -1, resultCount: 3 }, "a"), "1/3", "an unpositioned result reads as the first match");
 assert.equal(searchResultLabel({ resultIndex: 5, resultCount: 3 }, "a"), "1/3", "an out-of-range index never prints nonsense");
@@ -99,12 +107,12 @@ assert.equal(SEARCH_FIND_OPTIONS.incremental, true, "typing re-searches from the
     [/allowProposedApi: true/, "the terminal opts into the proposed API the highlight decorations need"],
     [/runFind\(search, text, \{ warn: console\.warn \}\)/, "typing searches through the degrading helper"],
     [/searchShortcutMatches\(event, isMac\)/, "the shortcut goes through the platform-aware matcher"],
-    [/aria-label="在终端里查找"[\s\S]{0,120}<svg/, "a visible magnifier button is the entry point"],
-    [/title=\{`在终端里查找（\$\{searchShortcutLabel\(/, "the button's tooltip teaches the shortcut"],
+    [/aria-label=\{t\("Find in terminal"\)\}[\s\S]{0,120}<svg/, "a visible magnifier button is the entry point"],
+    [/title=\{t\(`Find in terminal \(\$\{searchShortcutLabel\(/, "the button's tooltip teaches the shortcut"],
     [/runFind\(search, query, \{ backwards, warn: console\.warn \}\)/, "Enter/Shift+Enter search through the same helper"],
     [/clearDecorations\?\.\(\)/, "closing clears the highlights"],
     [/searchResultLabel\(searchResults, query\)/, "the count comes from the label helper"],
-    [/placeholder="在终端里查找…"/, "the bar is labelled for the reader"]
+    [/placeholder=\{t\("Find in terminal…"\)\}/, "the bar is labelled for the reader"]
   ];
   for (const [pattern, label] of checks) {
     assert.match(panel, pattern, `SshPanel.jsx: ${label}`);

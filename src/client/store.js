@@ -22,7 +22,7 @@ let snapshot = {
   open: initialOpen(),
   connections: [],
   activeConnectionId: null,
-  // A settings-page "进入项目" request gives the first mounted SSH pane a
+  // A settings-page "Open project" request gives the first mounted SSH pane a
   // starting SFTP directory matching the guarded terminal cd.
   projectTarget: null,
   busy: false,

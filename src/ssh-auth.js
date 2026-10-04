@@ -1,3 +1,4 @@
+import { t } from "./i18n/core.js";
 /**
  * Authentication-stage diagnostics for dsh-ssh-ops.
  *
@@ -142,7 +143,7 @@ const PROTOCOL_HINTS = [
  */
 export function classifyConnectFailure(error, tracker, creds = {}) {
   if (!(error instanceof Error)) {
-    return { stage: CONNECT_FAILURE_STAGES.UNKNOWN, reason: "unknown", message: String(error ?? "connection failed"), hints: [] };
+    return { stage: CONNECT_FAILURE_STAGES.UNKNOWN, reason: t("unknown"), message: String(error ?? "connection failed"), hints: [] };
   }
   const message = error.message ?? String(error);
 
@@ -178,12 +179,12 @@ export function classifyConnectFailure(error, tracker, creds = {}) {
     };
   }
 
-  return { stage: CONNECT_FAILURE_STAGES.UNKNOWN, reason: "unknown", message, hints: [] };
+  return { stage: CONNECT_FAILURE_STAGES.UNKNOWN, reason: t("unknown"), message, hints: [] };
 }
 
 /** Compose the diagnosis into the final `connect-failed` error text. */
 export function formatConnectFailure(diagnosis, target) {
-  const lines = [`${target}: ${diagnosis.message}`];
+  const lines = [t(`${target}: ${diagnosis.message}`)];
   if (diagnosis.hints.length > 0) {
     lines.push("Likely causes / next steps:");
     for (const hint of diagnosis.hints) lines.push(`- ${hint}`);

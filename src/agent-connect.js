@@ -66,4 +66,4 @@ export function noConnectionGuidance(requestedId, resourceNames, autoConnectEnab
 }
 
 /** Fixed refusal when the agent reaches for a saved resource while the switch is off. */
-export const AUTO_CONNECT_DISABLED_MESSAGE = "AI 自动连接已保存服务器未开启。请操作者在 设置 → SSH 资源 → 「允许 AI 自动连接已保存服务器」打开开关，或由操作者在 SSH 面板手动连接目标服务器。";
+export const AUTO_CONNECT_DISABLED_MESSAGE = "AI auto-connect to saved servers is off. The operator can turn on “Allow the AI to connect saved servers automatically” in Settings → SSH Resources, or connect the target server manually in the SSH panel.";

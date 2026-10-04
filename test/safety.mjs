@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { assessShellCommand, isPrefillable } from "../src/safety.js";
 import { redactForModel } from "../src/redact.js";
 import SshOpsService, { normalizeTerminalEol } from "../src/index.js";
+import { setLanguage, t } from "../src/i18n/core.js";
 
 const safeCommands = [
   "free -h",
@@ -93,8 +94,19 @@ assert.equal(safeInput.blockedReason, null);
 const blockedSession = { inputLine: "", inputKnown: true, buffer: "" };
 const blockedInput = service.prepareTerminalInput(blockedSession, "rm -rf /\r");
 assert.equal(blockedInput.forwarded, "rm -rf /\x15");
-assert.match(blockedInput.blockedReason, /安全策略已阻止/);
-assert.match(blockedSession.buffer, /DSH SSH 安全策略/);
+// Policy wording is bilingual: assert the English default and then that the
+// very same notice is produced in Chinese, so the seam is covered rather than
+// just the default.
+assert.match(blockedInput.blockedReason, /Blocked by the safety policy/);
+assert.match(blockedSession.buffer, /\[DSH SSH safety policy\]/);
+{
+  setLanguage("zh");
+  const zhSession = { inputLine: "", inputKnown: true, buffer: "" };
+  const zhInput = service.prepareTerminalInput(zhSession, "rm -rf /\r");
+  assert.match(zhInput.blockedReason, /安全策略已阻止/, "the block reason follows the selected language");
+  assert.match(zhSession.buffer, /DSH SSH 安全策略/, "the terminal notice follows the selected language");
+  setLanguage("en");
+}
 
 const captureSession = { buffer: "", captureBuffer: "", lastPrompt: null };
 service.appendSessionOutput(captureSession, "root@iZ2vc27mmzgpr2oszj1kplZ:~# ");
@@ -138,7 +150,7 @@ const rejectedExec = await service.execOnConnection("missing", "DROP DATABASE pr
 assert.equal(rejectedExec.blocked, true);
 assert.equal(rejectedExec.value.command, "DROP DATABASE production");
 assert.equal(rejectedExec.value.prefilled, false);
-assert.match(rejectedExec.value.reason, /删除数据库/);
+assert.match(rejectedExec.value.reason, /Delete database data or objects/);
 
 // A blocked command is queued for confirmation without being written to the
 // terminal input line; the operator can only execute it via the panel's
@@ -153,8 +165,8 @@ assert.equal(prefilledExec.blocked, true);
 assert.equal(prefilledExec.value.prefilled, false);
 assert.equal(prefilledExec.value.queued, true);
 assert.equal(prefilledExec.value.command, "shred /tmp/x");
-assert.match(prefilledExec.value.reason, /删除文件或目录/);
-assert.match(service.sessions.get("live-sess").buffer, /弹出确认卡片/);
+assert.match(prefilledExec.value.reason, /Delete files or directories/);
+assert.match(service.sessions.get("live-sess").buffer, /confirmation card/);
 assert.equal(service.sessions.get("live-sess").inputLine, "", "the command is not prefilled into the terminal");
 
 // Each dangerous action is queued independently; approvals submit exactly once.
@@ -226,7 +238,7 @@ assert.equal(ctrlExec.value.prefilled, false);
   assert.equal(queued.blocked, true, "the rm still waits for the operator");
   assert.equal(queued.value.queued, true);
   assert.equal(sent, null, "no exec happens before approval");
-  assert.equal(queued.value.reason, "删除文件或目录", "the reason text is unchanged");
+  assert.equal(queued.value.reason, t("Delete files or directories"), "the reason carries the category, translated for the active language");
   const pending = trashService.pendingConfirmationList().value.confirmations[0];
   assert.ok(pending, "a confirmation card is queued");
   const stored = [...trashService.pendingConfirmations.values()][0];
@@ -341,21 +353,23 @@ for (const [name, [args, value]] of Object.entries(renderFixtures)) {
 }
 
 // A blocked ssh_exec renders a copyable command card, not a thrown error.
+// The card is bilingual: the English wording is asserted here, and the same
+// render is checked against the Chinese dictionary further down.
 {
   const sshExecTool = registeredTools.find((t) => t.name === "ssh_exec");
   const baseBlocked = { connectionId: "live", host: "192.0.2.10", exitCode: null, stdout: "", stderr: "", cwd: null, commandId: "(blocked)", startedAt: "2026-08-20T00:00:00.000Z", finishedAt: "2026-08-20T00:00:00.000Z", durationMs: 0, truncated: false, timedOut: false, redacted: false };
-  const prefilledCard = sshExecTool.output.render({}, { ...baseBlocked, blocked: true, reason: "删除文件或目录", command: "rm -rf /tmp/x", prefilled: false, queued: true });
+  const prefilledCard = sshExecTool.output.render({}, { ...baseBlocked, blocked: true, reason: t("Delete files or directories"), command: "rm -rf /tmp/x", prefilled: false, queued: true });
   assert.equal(prefilledCard.length, 1);
-  assert.match(prefilledCard[0].text, /已拦截：删除文件或目录/);
-  assert.match(prefilledCard[0].text, /未执行/);
-  assert.match(prefilledCard[0].text, /确认卡片/);
+  assert.match(prefilledCard[0].text, /Blocked: Delete files or directories/);
+  assert.match(prefilledCard[0].text, /not run/);
+  assert.match(prefilledCard[0].text, /confirmation card/);
   assert.match(prefilledCard[0].text, /```bash\nrm -rf \/tmp\/x\n```/);
-  assert.match(prefilledCard[0].text, /请勿重试/);
-  assert.match(prefilledCard[0].text, /绕行/);
-  const copyCard = sshExecTool.output.render({}, { ...baseBlocked, blocked: true, reason: "删除文件或目录", command: "rm -rf /tmp/x", prefilled: false, queued: false });
-  assert.match(copyCard[0].text, /粘贴到右侧终端执行/);
+  assert.match(prefilledCard[0].text, /Do not retry/);
+  assert.match(prefilledCard[0].text, /work around/);
+  const copyCard = sshExecTool.output.render({}, { ...baseBlocked, blocked: true, reason: t("Delete files or directories"), command: "rm -rf /tmp/x", prefilled: false, queued: false });
+  assert.match(copyCard[0].text, /paste it into the terminal on the right/i);
   assert.match(copyCard[0].text, /```bash/);
-  assert.match(copyCard[0].text, /请勿重试/);
+  assert.match(copyCard[0].text, /Do not retry/);
   // Normal (non-blocked) ssh_exec output renders the cwd note, then output.
   const normalCard = sshExecTool.output.render({}, { connectionId: "live", host: "192.0.2.10", exitCode: 0, stdout: "ok\n", stderr: "", cwd: "/root/KVideo", commandId: "cmd-1", startedAt: "x", finishedAt: "x", durationMs: 1, truncated: false, timedOut: false, redacted: false });
   assert.equal(normalCard[0].text, "[cwd: /root/KVideo]\nok\n");
@@ -376,14 +390,14 @@ for (const [name, [args, value]] of Object.entries(renderFixtures)) {
   assert.equal(sftpRes.queued, true);
   assert.equal(sftpRes.path, "/tmp/foo");
   assert.equal(sftpRes.command, "rm -rf '/tmp/foo'");
-  assert.equal(sftpRes.reason, "删除文件或目录（SFTP）", "reason text unchanged");
+  assert.equal(sftpRes.reason, t("Delete files or directories (SFTP)"), "the SFTP reason is translated too");
   const sftpStored = [...service.pendingConfirmations.values()].find((item) => item.command === "rm -rf '/tmp/foo'");
   assert.ok(sftpStored.trashScript && sftpStored.trashScript.includes("'/tmp/foo'"), "the card silently carries the prepared trash script");
   const sftpCard = sftpTool.output.render({}, sftpRes);
-  assert.match(sftpCard[0].text, /确认卡片/);
+  assert.match(sftpCard[0].text, /confirmation card/);
   assert.match(sftpCard[0].text, /```bash\nrm -rf '\/tmp\/foo'\n```/);
-  assert.match(sftpCard[0].text, /请勿重试/);
-  assert.ok(!sftpCard[0].text.includes("回收站"), "the card text is unchanged — no trash advertising");
+  assert.match(sftpCard[0].text, /Do not retry/);
+  assert.ok(!/回收站|trash/i.test(sftpCard[0].text), "the card text is unchanged — no trash advertising");
   // Omitted connection_id must resolve to the current right-side connection,
   // otherwise the card would claim a queue entry while none exists.
   service.activeConnectionId = "sftp-conn";
@@ -397,7 +411,7 @@ for (const [name, [args, value]] of Object.entries(renderFixtures)) {
   const tabRes = await sftpTool.execute({ path: "/tmp/a\tb", connection_id: "sftp-conn" });
   assert.equal(tabRes.blocked, true);
   assert.equal(tabRes.queued, false);
-  assert.match(sftpTool.output.render({}, tabRes)[0].text, /粘贴到右侧终端执行/);
+  assert.match(sftpTool.output.render({}, tabRes)[0].text, /paste it into the terminal on the right/i);
 }
 
 // db_execute blocked SQL returns a copyable SQL card (not a thrown error); only
@@ -406,9 +420,11 @@ for (const [name, [args, value]] of Object.entries(renderFixtures)) {
 {
   const dbTool = registeredTools.find((t) => t.name === "db_execute");
   let seenOrigin;
+  // The guard's message is a plain string produced by the db layer; this stub
+  // plays the role of that message, so it is written in the source language.
   service.dbExecute = async (request) => {
     seenOrigin = request.origin;
-    return { ok: false, error: { code: "unsafe-sql", message: "TRUNCATE 不可恢复或会停库，已拦截" } };
+    return { ok: false, error: { code: "unsafe-sql", message: "TRUNCATE is irreversible and stops the database; blocked" } };
   };
   const dbRes = await dbTool.execute({ db_connection_id: "x", sql: "TRUNCATE TABLE t" });
   assert.equal(seenOrigin, "agent", "the tool declares the agent origin to the guard");
@@ -417,24 +433,24 @@ for (const [name, [args, value]] of Object.entries(renderFixtures)) {
   assert.equal(dbRes.sql, "TRUNCATE TABLE t");
   assert.match(dbRes.reason, /TRUNCATE/);
   const dbCard = dbTool.output.render({}, dbRes);
-  assert.match(dbCard[0].text, /已拦截：TRUNCATE/);
-  assert.match(dbCard[0].text, /未执行/);
+  assert.match(dbCard[0].text, /Blocked: TRUNCATE/);
+  assert.match(dbCard[0].text, /did not run/);
   assert.match(dbCard[0].text, /```sql\nTRUNCATE TABLE t\n```/);
-  assert.match(dbCard[0].text, /请勿重试/);
+  assert.match(dbCard[0].text, /Do not retry/);
 
   // A guard envelope with backups surfaces the backup list on the card.
-  service.dbExecute = async () => ({ ok: false, error: { code: "unsafe-sql", message: "已拦截", backup: [{ target: "t", path: "/tmp/b.csv", bytes: 12, truncated: false, error: null }] } });
+  service.dbExecute = async () => ({ ok: false, error: { code: "unsafe-sql", message: "Blocked", backup: [{ target: "t", path: "/tmp/b.csv", bytes: 12, truncated: false, error: null }] } });
   const backupRes = await dbTool.execute({ db_connection_id: "x", sql: "TRUNCATE TABLE t" });
   assert.deepEqual(backupRes.backup, [{ target: "t", path: "/tmp/b.csv", bytes: 12, truncated: false, error: null }]);
-  assert.match(dbTool.output.render({}, backupRes)[0].text, /已自动备份/);
+  assert.match(dbTool.output.render({}, backupRes)[0].text, /Automatically backed up/);
   assert.match(dbTool.output.render({}, backupRes)[0].text, /\/tmp\/b\.csv/);
 
   // A quarantined DROP renders the rename and the operator-only next step.
-  const quarantinedValue = { affectedRows: 0, truncated: false, quarantined: true, renamedTo: "t_to_be_dropped_20260924", notice: "彻底删除请由操作者在数据库面板执行：DROP TABLE t_to_be_dropped_20260924", backup: [{ target: "t", path: "/tmp/b.csv", bytes: 12, truncated: false, error: null }] };
+  const quarantinedValue = { affectedRows: 0, truncated: false, quarantined: true, renamedTo: "t_to_be_dropped_20260924", notice: "Run the final drop yourself in the database panel: DROP TABLE t_to_be_dropped_20260924", backup: [{ target: "t", path: "/tmp/b.csv", bytes: 12, truncated: false, error: null }] };
   const quarantineCard = dbTool.output.render({}, quarantinedValue);
-  assert.match(quarantineCard[0].text, /♻️ DROP 已转换为隔离改名/);
+  assert.match(quarantineCard[0].text, /♻️ DROP was converted to a quarantine rename/);
   assert.match(quarantineCard[0].text, /t_to_be_dropped_20260924/);
-  assert.match(quarantineCard[0].text, /已自动备份/);
+  assert.match(quarantineCard[0].text, /Automatically backed up/);
 
   service.dbExecute = async () => ({ ok: false, error: { code: "db-execute-failed", message: "boom" } });
   await assert.rejects(() => dbTool.execute({ db_connection_id: "x", sql: "INSERT 1" }), /db_execute failed: boom/);
@@ -452,7 +468,8 @@ for (const [name, [args, value]] of Object.entries(renderFixtures)) {
   const mirrorSession = service.sessions.get("mirror");
   const guarded = service.prepareTerminalInput(mirrorSession, "\r");
   assert.equal(guarded.forwarded, "\x15");
-  assert.match(guarded.blockedReason, /安全策略已阻止/);
+  assert.match(guarded.blockedReason, /Blocked by the safety policy/);
+  assert.equal(guarded.blockedReason, t("Blocked by the safety policy: Delete files or directories. Do not retry or work around it; the operator must confirm execution in the terminal on the right."), "the agent-driven Enter is refused with the same category message the policy layer builds");
   // Operator's own Enter (raw path) still submits and resets the mirror.
   await service.write({ sessionId: "mirror", data: enc("\r") });
   assert.equal(service.sessions.get("mirror").inputLine, "");

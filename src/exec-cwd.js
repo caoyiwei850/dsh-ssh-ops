@@ -1,3 +1,4 @@
+import { t } from "./i18n/core.js";
 /** Resolve a unique foreground POSIX shell on this SSH transport, never by PID age. */
 export const EXEC_CWD_MARKER = '__DSH_SSH_OPS_CWD_V2__';
 export const EXEC_CWD_ERROR_PREFIX = 'ssh_exec:';
@@ -76,5 +77,5 @@ export function extractExecCwd(stdout) {
 }
 export function execEchoWarning(cwd) {
   if (cwd !== null) return null;
-  return '\x1b[90m[ssh_exec · 未确认交互目录；请以退出码和错误信息确认是否执行，未探测到终端时使用登录初始目录]\x1b[0m';
+  return t('\x1b[90m[ssh_exec · interactive directory not confirmed; check the exit code and error output to verify execution. When no terminal is detected, the initial login directory is used]\x1b[0m');
 }

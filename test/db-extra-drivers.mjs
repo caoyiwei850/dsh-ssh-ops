@@ -67,8 +67,8 @@ assert.equal(buildPreviewSql("sqlite", "main.hosts", 1, 0).sql, 'SELECT * FROM "
   const escaped = translateClickHouseParams("SELECT 'it''s ?' AS s, ? AS x", [7]);
   assert.equal(escaped.sql, "SELECT 'it''s ?' AS s, {p1:UInt64} AS x");
 
-  assert.throws(() => translateClickHouseParams("SELECT ?", []), /参数个数多于/);
-  assert.throws(() => translateClickHouseParams("SELECT 1", ["v"]), /不一致/);
+  assert.throws(() => translateClickHouseParams("SELECT ?", []), /More ClickHouse parameters than/);
+  assert.throws(() => translateClickHouseParams("SELECT 1", ["v"]), /does not match/);
   assert.equal(translateClickHouseParams("SELECT 1", []).sql, "SELECT 1");
 }
 
@@ -105,7 +105,7 @@ assert.equal(buildPreviewSql("sqlite", "main.hosts", 1, 0).sql, 'SELECT * FROM "
   assert.ok(queryCall.url.includes("param_p1=x"), "bindings travel as URL parameters");
   assert.ok(queryCall.url.includes("result_overflow_mode=break"));
 
-  await assert.rejects(() => clickhouseQuery(record, "SELECT 1 FORMAT CSV", [], { fetchImpl }), /FORMAT 子句/);
+  await assert.rejects(() => clickhouseQuery(record, "SELECT 1 FORMAT CSV", [], { fetchImpl }), /FORMAT clause/);
 
   await clickhouseExecute(record, "INSERT INTO t VALUES (?)", [5], { fetchImpl });
   assert.equal(calls.at(-1).body, "INSERT INTO t VALUES ({p1:UInt64})", "write path keeps the statement free of values");
@@ -132,12 +132,12 @@ const sqliteSupported = await import("node:sqlite").then(() => true, () => false
 if (!sqliteSupported) {
   console.log(`db extra drivers: skipping the SQLite round trip — this runtime (${process.version}) has no node:sqlite`);
   const unavailable = await openSqlite("/tmp/would-be.db").then(() => null, (error) => error);
-  assert.match(String(unavailable?.message ?? ""), /不提供内置 SQLite/, "an unsupported runtime is refused with the documented message");
+  assert.match(String(unavailable?.message ?? ""), /does not provide a built-in SQLite/, "an unsupported runtime is refused with the documented message");
 }
 const dir = sqliteSupported ? mkdtempSync(join(tmpdir(), "dsh-ssh-ops-sqlite-")) : null;
 if (sqliteSupported) try {
   const file = join(dir, "ops.db");
-  await assert.rejects(() => openSqlite(""), /需要填写数据库文件路径/);
+  await assert.rejects(() => openSqlite(""), /needs the database file path/);
 
   const db = await openSqlite(file);
   sqliteExecute(db, "CREATE TABLE hosts (id INTEGER PRIMARY KEY, name TEXT NOT NULL, tags TEXT)");

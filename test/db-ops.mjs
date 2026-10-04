@@ -211,7 +211,7 @@ console.log("db-ops connection list: account discriminator passed");
   value = await check("db_execute", { db_connection_id: "db-1", sql: "DROP TABLE users" },
     "db_execute blocked card passes the DSH validator");
   assert.equal(value.blocked, true);
-  assert.match(tool("db_execute").output.render({}, value)[0].text, /已拦截/);
+  assert.match(tool("db_execute").output.render({}, value)[0].text, /Blocked/);
   assert.match(tool("db_execute").output.render({}, value)[0].text, /```sql\nDROP TABLE users\n```/);
 
   // db_tx_execute: SELECT verification rows (mysql branch)

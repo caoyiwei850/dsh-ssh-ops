@@ -1,3 +1,4 @@
+import { t } from "../i18n/core.js";
 /**
  * Terminal search helpers: the copy and the option set the terminal pane uses.
  * The searching itself is xterm's search addon; this module owns what the
@@ -37,7 +38,7 @@ export function searchResultLabel(results, query) {
   const count = Number(results?.resultCount ?? 0);
   const index = Number(results?.resultIndex ?? -1);
   if (String(query ?? "").trim() === "") return "";
-  if (count <= 0) return "无匹配";
+  if (count <= 0) return t("no match");
   const position = index >= 0 && index < count ? index + 1 : 1;
   return `${position}/${count}`;
 }
@@ -104,11 +105,11 @@ export function runFind(search, text, { backwards = false, warn = () => {} } = {
   try {
     return { ok: attempt(SEARCH_FIND_OPTIONS) !== false, decorated: true };
   } catch (error) {
-    warn("terminal search: highlights unavailable, searching without decorations", error);
+    warn(t("terminal search: highlights unavailable, searching without decorations"), error);
     try {
       return { ok: attempt(SEARCH_FIND_OPTIONS_PLAIN) !== false, decorated: false };
     } catch (plainError) {
-      warn("terminal search: find failed", plainError);
+      warn(t("terminal search: find failed"), plainError);
       return { ok: false, decorated: false };
     }
   }

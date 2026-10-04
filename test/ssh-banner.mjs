@@ -60,7 +60,7 @@ test("planBannerRepair: a rewrite preserves the software version verbatim", () =
 
 test("planBannerRepair: rejects name the reason, not just the failure", () => {
   assert.match(planBannerRepair("SSH-1.5-OpenSSH_3.9p1\r\n").reason, /SSH-1\.5/);
-  assert.match(planBannerRepair("SSH-2.0-\r\n").reason, /软件版本/);
+  assert.match(planBannerRepair("SSH-2.0-\r\n").reason, /software version/);
 });
 
 test("isIdentMismatchError: only ssh2's banner rejection, not a generic failure", () => {
@@ -275,7 +275,7 @@ test("stray-space banner: ssh2 alone dies on it, the service repairs and connect
   const result = await service.connect({ ...creds, port: proxy.port, retries: 0 });
   assert.equal(result.ok, true, `banner repair must connect: ${result.error?.message ?? ""}`);
   assert.equal(result.value.bannerRepair, true, "the caller is told the banner was rewritten");
-  assert.match(result.value.warning ?? "", /横幅/, "the user gets a visible warning");
+  assert.match(result.value.warning ?? "", /banner/, "the user gets a visible warning");
 
   assert.match(await readShellMarker(service, result.value.connectionId), new RegExp(SHELL_MARKER),
     "the repaired stream carries a full shell session, so no bytes were lost");
@@ -333,7 +333,7 @@ test("empty software version: fails with a named reason instead of ssh2's wordin
   const service = makeService(t);
   const result = await service.connect({ ...creds, port: proxy.port, retries: 0 });
   assert.equal(result.ok, false);
-  assert.match(result.error.message, /软件版本/);
+  assert.match(result.error.message, /software version/);
   assert.doesNotMatch(result.error.message, /Invalid identification string/);
 });
 
@@ -362,7 +362,7 @@ test("withRepairedBanner: splices any duplex, which is what a jump hop gives us"
 
   assert.equal(Buffer.concat(seen).toString(), "SSH-2.0-OpenSSH_9.6\r\nAFTER-BANNER\r\n");
   assert.equal(Buffer.concat(written).toString(), "CLIENT-BYTES", "writes reach the forwarded stream");
-  assert.match(record.bannerRepairNote ?? "", /不规范/, "the record explains what was rewritten");
+  assert.match(record.bannerRepairNote ?? "", /is malformed/, "the record explains what was rewritten");
 
   stream.destroy();
   upstream.destroy();

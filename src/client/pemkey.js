@@ -1,3 +1,4 @@
+import { t } from "../i18n/core.js";
 /**
  * Pre-flight validation for pasted/imported PEM private keys. A truncated or
  * empty-shell paste used to survive the form and surface later as a bare
@@ -11,21 +12,21 @@ export function privateKeyProblem(secret) {
   const begin = key.match(/^-----BEGIN ([A-Z ]*PRIVATE KEY)-----/);
   const end = key.match(/-----END ([A-Z ]*PRIVATE KEY)-----$/);
   if (!begin || !end) {
-    return "私钥内容不完整：应以 -----BEGIN … PRIVATE KEY----- 开头、-----END … PRIVATE KEY----- 结尾，请检查是否拷贝完整";
+    return t("The private key is incomplete: it must start with -----BEGIN … PRIVATE KEY----- and end with -----END … PRIVATE KEY-----. Check that you copied it in full.");
   }
   if (begin[1] !== end[1]) {
-    return `私钥首尾行不匹配：BEGIN 是 ${begin[1]}，END 是 ${end[1]}，请检查是否拷贝完整`;
+    return t(`The private key's BEGIN/END labels do not match: BEGIN is ${begin[1]}, END is ${end[1]}. Check that you copied it in full.`);
   }
   const body = key.slice(begin[0].length, key.length - end[0].length);
   const lines = body.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   if (lines.length === 0) {
-    return "私钥主体为空：只有 BEGIN/END 首尾行，请检查是否拷贝完整";
+    return t("The private key body is empty: it contains only the BEGIN/END lines. Check that you copied it in full.");
   }
   // Base64 body lines, plus "Proc-Type:"/"DEK-Info:" headers that appear in
   // traditional encrypted PEM.
   const ok = lines.every((line) => /^[A-Za-z0-9+/]+={0,2}$/.test(line) || /^[A-Za-z][A-Za-z0-9-]*:\s*\S/.test(line));
   if (!ok) {
-    return "私钥主体包含非法字符，请检查是否拷贝了完整的 PEM 内容";
+    return t("The private key body contains invalid characters. Check that you copied the complete PEM contents.");
   }
   return null;
 }

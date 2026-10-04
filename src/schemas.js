@@ -135,6 +135,16 @@ export const agentSettingsGetRequestSchema = z.object({});
 export const agentSettingsResultSchema = resultSchema(z.object({ agentAutoConnect: z.boolean() }));
 export const agentSettingsSaveRequestSchema = z.object({ agentAutoConnect: z.boolean() });
 
+// ── interface language (settings -> SSH resources -> Language) ──────────────
+
+/**
+ * `language` is null when the operator has never chosen one explicitly, which
+ * tells the settings page to adopt DSH's own Settings -> Language.
+ */
+export const languageSettingsGetRequestSchema = z.object({});
+export const languageSettingsResultSchema = resultSchema(z.object({ language: z.enum(["zh", "en"]).nullable() }));
+export const languageSettingsSaveRequestSchema = z.object({ language: z.enum(["zh", "en"]).nullable() });
+
 // ── saved SSH resources ────────────────────────────────────────────────────
 
 const profileIdSchema = z.string().uuid();
@@ -147,7 +157,7 @@ export const profileAuthKindSchema = z.enum(["password", "key"]);
 // different meanings for one saved value.
 const projectDirectorySchema = z.string().min(1).max(1024).refine(
   (path) => path.startsWith("/") && !/[\x00-\x1f\x7f]/.test(path),
-  "项目目录必须是绝对路径，且不能包含控制字符"
+  "The project directory must be an absolute path and must not contain control characters"
 );
 const legacySavedJumpSchema = z.object({
   host: z.string().min(1).max(255), port: z.number().int().min(1).max(65535).default(22),

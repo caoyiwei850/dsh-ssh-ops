@@ -280,10 +280,10 @@ function connection(id, overrides = {}) {
   assert.deepEqual(validateJsonSchemaValue(connectTool.output.schema, connectValue, "value"), []);
   assert.deepEqual(validateJsonSchemaValue(connectTool.output.schema, { ...connectValue, warning: "legacy fallback used" }, "value"), [], "the optional warning shape stays valid");
   const connectRendered = connectTool.output.render({}, connectValue)[0].text;
-  assert.match(connectRendered, /已连接保存的服务器「dev」/);
-  assert.match(connectRendered, /可在右侧 SSH 面板查看/);
+  assert.match(connectRendered, /Connected to the saved server/);
+  assert.match(connectRendered, /see the machine in the SSH panel on the right/);
   const reusedRendered = connectTool.output.render({}, { ...connectValue, reused: true })[0].text;
-  assert.match(reusedRendered, /复用了该服务器已有的连接/);
+  assert.match(reusedRendered, /Reused the server's existing connection/);
 }
 
 console.log("agent auto-connect: resolution, guidance, gating and tool contracts passed");

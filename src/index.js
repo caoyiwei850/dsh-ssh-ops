@@ -25,7 +25,7 @@ import { isIdentMismatchError, withRepairedBanner } from "./ssh-banner.js";
 import { createAuthTracker, makeAuthHandler, classifyConnectFailure, formatConnectFailure, wasAuthCut } from "./ssh-auth.js";
 import { processTerminalInput } from "./terminal-input.js";
 import { fail } from "./envelope.js";
-import { POLICY_NOTICE_PREFIX, DANGEROUS_DEFAULT_REASON } from "./policy-messages.js";
+import { policyNoticePrefix, dangerousDefaultReason } from "./policy-messages.js";
 import { DbOpsManager } from "./db-ops.js";
 import { defaultDbPort } from "./db-drivers.js";
 import { attachSocks5 } from "./socks5.js";
@@ -49,6 +49,7 @@ import { registerTunnelTools } from "./tools/tunnel.js";
 import { registerBatchTools } from "./tools/batch.js";
 import { registerDbTools } from "./tools/db.js";
 import { registerSessionLogTools } from "./tools/session-log.js";
+import { t, setLanguage } from "./i18n/core.js";
 
 const MAX_BUFFER_BYTES = 2 * 1024 * 1024;
 const MAX_COMMAND_OUTPUT_BYTES = 64 * 1024;
@@ -239,6 +240,9 @@ export const knownHostDomainSpec = defineDomain({
 // optional so records written by older builds keep loading.
 const settingsRecordSchema = z.object({
   agentAutoConnect: z.boolean().optional(),
+  // The plugin's interface language. Absent means "never chosen explicitly", so
+  // the settings page adopts whatever DSH Settings -> Language is showing.
+  language: z.enum(["zh", "en"]).optional(),
   updatedAt: z.string().optional()
 });
 
@@ -355,6 +359,12 @@ export default class SshOpsService extends TypertRemoteService {
    * saved resources). Persisted in ssh_ops_settings; default OFF.
    */
   agentAutoConnect = false;
+  /**
+   * Interface language chosen by the operator ("zh" | "en"), or null when the
+   * plugin should follow DSH's own Settings -> Language. Persisted in
+   * ssh_ops_settings; the browser half mirrors it into the shared dictionary.
+   */
+  language = null;
   profileTable = null;
   groupTable = null;
   credentialTable = null;
@@ -395,7 +405,7 @@ export default class SshOpsService extends TypertRemoteService {
       this.pendingConfirmations.clear();
       this.activeConnectionId = null;
       try { this.dbOps?.closeAll().catch(() => {}); } catch {}
-    }, "ssh-ops: cleanup");
+    }, t("ssh-ops: cleanup"));
     this.dbOps = new DbOpsManager(this, this.config.maxDbRows);
     this.registerTools(ctx);
     // Streaming file routes (workbench S6 patch): reactive inject — no hard
@@ -410,7 +420,7 @@ export default class SshOpsService extends TypertRemoteService {
         handler: (req, res) => {
           this.handleStreamRoute(req, res, hostCtx.connection);
         }
-      }), "ssh-ops: streaming file routes");
+      }), t("ssh-ops: streaming file routes"));
     });
   }
 
@@ -418,24 +428,30 @@ export default class SshOpsService extends TypertRemoteService {
     const domain = await this.ctx.storageDomain.open(profileDomainSpec);
     this.profileTable = domain.table("profiles");
     this.groupTable = domain.table("groups");
-    this.ctx.effect(() => () => domain.close(), "ssh-ops: profile domain close");
+    this.ctx.effect(() => () => domain.close(), t("ssh-ops: profile domain close"));
     const credentialDomain = await this.ctx.storageDomain.open(credentialDomainSpec);
     this.credentialTable = credentialDomain.table("credentials");
-    this.ctx.effect(() => () => credentialDomain.close(), "ssh-ops: credential domain close");
+    this.ctx.effect(() => () => credentialDomain.close(), t("ssh-ops: credential domain close"));
     const dbDomain = await this.ctx.storageDomain.open(dbProfileDomainSpec);
     this.dbProfileTable = dbDomain.table("profiles");
-    this.ctx.effect(() => () => dbDomain.close(), "ssh-ops: db profile domain close");
+    this.ctx.effect(() => () => dbDomain.close(), t("ssh-ops: db profile domain close"));
     const knownHostDomain = await this.ctx.storageDomain.open(knownHostDomainSpec);
     this.knownHostTable = knownHostDomain.table("known_hosts");
     this.knownHosts = new KnownHosts(this.knownHostTable);
-    this.ctx.effect(() => () => knownHostDomain.close(), "ssh-ops: known-host domain close");
+    this.ctx.effect(() => () => knownHostDomain.close(), t("ssh-ops: known-host domain close"));
     const settingsDomain = await this.ctx.storageDomain.open(settingsDomainSpec);
     this.settingsTable = settingsDomain.table("settings");
-    this.ctx.effect(() => () => settingsDomain.close(), "ssh-ops: settings domain close");
+    this.ctx.effect(() => () => settingsDomain.close(), t("ssh-ops: settings domain close"));
     // Load the persisted operator switch; a missing row (first boot) keeps the
     // safe default off, and a read failure must not block service startup.
     try {
-      this.agentAutoConnect = this.settingsTable.get(SETTINGS_ROW_ID)?.agentAutoConnect === true;
+      const stored = this.settingsTable.get(SETTINGS_ROW_ID);
+      this.agentAutoConnect = stored?.agentAutoConnect === true;
+      // An explicit choice drives the host half from the first message it
+      // builds. With no choice stored, the host keeps its default and the
+      // browser half adopts DSH's language and writes it back.
+      this.language = stored?.language === "zh" || stored?.language === "en" ? stored.language : null;
+      if (this.language !== null) setLanguage(this.language);
     } catch {}
   }
 
@@ -548,7 +564,7 @@ export default class SshOpsService extends TypertRemoteService {
         const seen = new Set();
         const proxyJump = [];
         for (const profileId of request.proxyJumpProfileIds) {
-          if (seen.has(profileId)) return { ok: false, error: fail("jump-duplicate", "同一条跳板链不能重复选择同一台服务器") };
+          if (seen.has(profileId)) return { ok: false, error: fail("jump-duplicate", "The same server cannot appear twice in one jump chain") };
           seen.add(profileId);
           const profile = this.requireProfileTable().get(profileId);
           if (profile === undefined) return { ok: false, error: fail("no-profile", `jump-host profile "${profileId}" does not exist`) };
@@ -656,7 +672,7 @@ export default class SshOpsService extends TypertRemoteService {
     // should know the connection only exists because the line was repaired.
     if (record.bannerRepair) {
       value.bannerRepair = true;
-      warnings.push(`对端的 SSH 横幅不符合 RFC 4253，ssh2 会直接拒绝这条连接；本次已按规范化后的横幅完成握手。${record.bannerRepairNote ?? ""}`);
+      warnings.push(t(`The peer's SSH banner does not comply with RFC 4253, which ssh2 rejects outright; this connection completed the handshake using the normalized banner. ${record.bannerRepairNote ?? ""}`));
     }
     if (warnings.length > 0) value.warning = warnings.join("\n");
     // A newly connected server is the natural target for the conversation,
@@ -722,7 +738,7 @@ export default class SshOpsService extends TypertRemoteService {
       return fail("host-key-unseen", `host key for ${where} is not previously trusted (mode ${m.mode}). Presented SHA256:${m.got}; verify it out of band. Strict mode will not create a trust record; follow your approved process before changing the profile policy.`);
     }
     if (m.reason === "host-key-mismatch") {
-      return fail("host-key-mismatch", `host key for ${where} changed (mode ${m.mode}). Expected SHA256:${m.expected}; presented SHA256:${m.got}. This may be a man-in-the-middle or a re-provisioned server. Verify it out of band; if legitimate, use "忘记主机指纹" and reconnect.`);
+      return fail("host-key-mismatch", `host key for ${where} changed (mode ${m.mode}). Expected SHA256:${m.expected}; presented SHA256:${m.got}. This may be a man-in-the-middle or a re-provisioned server. Verify it out of band; if legitimate, use "Forget host key" and reconnect.`);
     }
     return fail("host-key-error", `host key verification error for ${where} (mode ${m.mode}): ${m.message ?? m.reason}`);
   }
@@ -1174,7 +1190,7 @@ export default class SshOpsService extends TypertRemoteService {
       const table = this.requireCredentialTable();
       if (table.get(request.credentialId) === undefined) return { ok: true, value: { deleted: false } };
       const usedBy = [...this.requireProfileTable().entries()].find(([, profile]) => profile.credentialId === request.credentialId || profile.proxyJump?.some((hop) => hop.credentialId === request.credentialId));
-      if (usedBy) return { ok: false, error: fail("credential-in-use", "此凭据仍被 SSH 资源或跳板机引用；请先改用其他凭据") };
+      if (usedBy) return { ok: false, error: fail("credential-in-use", "This credential is still referenced by SSH resources or jump hosts; point them at another credential first") };
       await Promise.all(Object.values(sharedCredentialRefs(request.credentialId)).map(async (ref) => await this.ctx.credentials.unset(credentialRef(ref))));
       await table.delete(request.credentialId);
       return { ok: true, value: { deleted: true } };
@@ -1244,7 +1260,7 @@ export default class SshOpsService extends TypertRemoteService {
       if (request.credentialId !== null && request.credentialId !== undefined) {
         const credential = this.requireCredentialTable().get(request.credentialId);
         if (credential === undefined) return { ok: false, error: fail("no-credential", `SSH credential "${request.credentialId}" does not exist`) };
-        if (credential.authKind !== request.authKind) return { ok: false, error: fail("credential-auth-mismatch", "所选共享凭据的认证方式与服务器不一致") };
+        if (credential.authKind !== request.authKind) return { ok: false, error: fail("credential-auth-mismatch", "The selected shared credential uses a different authentication method than the server") };
       }
       const proxyJump = request.proxyJump ?? previous?.proxyJump ?? [];
       const defaultProjectPath = Object.hasOwn(request, "defaultProjectPath")
@@ -1253,8 +1269,8 @@ export default class SshOpsService extends TypertRemoteService {
       const seenJumpProfiles = new Set();
       for (const hop of proxyJump) {
         if (hop.profileId) {
-          if (hop.profileId === profileId) return { ok: false, error: fail("jump-cycle", "服务器不能把自己设为跳板机") };
-          if (seenJumpProfiles.has(hop.profileId)) return { ok: false, error: fail("jump-duplicate", "同一条跳板链不能重复选择同一台服务器") };
+          if (hop.profileId === profileId) return { ok: false, error: fail("jump-cycle", "A server cannot be its own jump host") };
+          if (seenJumpProfiles.has(hop.profileId)) return { ok: false, error: fail("jump-duplicate", "The same server cannot appear twice in one jump chain") };
           seenJumpProfiles.add(hop.profileId);
           if (this.requireProfileTable().get(hop.profileId) === undefined) return { ok: false, error: fail("no-profile", `jump-host profile "${hop.profileId}" does not exist`) };
           continue;
@@ -1309,7 +1325,7 @@ export default class SshOpsService extends TypertRemoteService {
 
   /**
    * Disconnect every live connection opened for a saved profile. The
-   * resources page owns this path so a "已连接" badge always has a matching
+   * resources page owns this path so a "Connected" badge always has a matching
    * operator control, including connections re-adopted after a page reload.
    */
   async profileDisconnect(request) {
@@ -1349,7 +1365,7 @@ export default class SshOpsService extends TypertRemoteService {
       const seenHops = new Set();
       for (const [index, hop] of configuredHops.entries()) {
         if (hop.profileId) {
-          if (hop.profileId === request.profileId || seenHops.has(hop.profileId)) return { ok: false, error: fail("jump-cycle", "跳板链不能包含当前服务器或重复服务器") };
+          if (hop.profileId === request.profileId || seenHops.has(hop.profileId)) return { ok: false, error: fail("jump-cycle", "The jump chain cannot contain the current server or duplicate servers") };
           seenHops.add(hop.profileId);
           const jump = this.requireProfileTable().get(hop.profileId);
           if (jump === undefined) return { ok: false, error: fail("no-profile", `jump-host profile "${hop.profileId}" does not exist`) };
@@ -1426,7 +1442,6 @@ export default class SshOpsService extends TypertRemoteService {
   async agentSettingsGet() {
     return { ok: true, value: { agentAutoConnect: this.agentAutoConnect } };
   }
-
   async agentSettingsSave(request) {
     const agentAutoConnect = request.agentAutoConnect === true;
     try {
@@ -1439,6 +1454,49 @@ export default class SshOpsService extends TypertRemoteService {
     }
     this.agentAutoConnect = agentAutoConnect;
     return { ok: true, value: { agentAutoConnect: this.agentAutoConnect } };
+  }
+
+  // ── interface language ─────────────────────────────────────────────────────
+
+  /**
+   * The stored language, or null when the operator never chose one.
+   *
+   * `null` is meaningful rather than a default: the settings page answers it by
+   * adopting DSH's own Settings -> Language instead of guessing. The host half
+   * keeps the value in memory after boot so agent-facing messages and the
+   * safety-policy notices follow the same language as the panel.
+   */
+  async languageGet() {
+    return { ok: true, value: { language: this.language } };
+  }
+
+  /**
+   * Persist the interface language and apply it to the host half immediately.
+   * `null` clears the explicit choice, which returns the plugin to following
+   * DSH's own language on the next settings-page load.
+   */
+  async languageSave(request) {
+    const requested = request.language === null || request.language === undefined
+      ? null
+      : (request.language === "zh" || request.language === "en" ? request.language : undefined);
+    if (requested === undefined) {
+      return { ok: false, error: fail("language-unsupported", `the plugin supports "zh" and "en", not "${request.language}"`) };
+    }
+    try {
+      await this.settingsTable.put(SETTINGS_ROW_ID, {
+        ...(this.settingsTable.get(SETTINGS_ROW_ID) ?? {}),
+        language: requested ?? undefined,
+        updatedAt: new Date().toISOString()
+      });
+    } catch (error) {
+      return { ok: false, error: fail("language-save-failed", error.message) };
+    }
+    this.language = requested;
+    // The host half is a module singleton, so this switches the wording of
+    // tool results and safety notices without a restart; the browser half
+    // switches itself and is not affected by this call.
+    if (requested !== null) setLanguage(requested);
+    return { ok: true, value: { language: this.language } };
   }
 
   /**
@@ -1704,7 +1762,7 @@ export default class SshOpsService extends TypertRemoteService {
           // agent-originated dangerous command.  Keyboard Enter cannot submit
           // it, while Ctrl-C and any edit revoke the pending approval first.
           if (text === "\r" || text === "\n") {
-            this.appendTerminalNotice(session, "此危险命令不会因回车执行：请使用面板弹出的确认卡片，点击“执行”或“撤销”。");
+            this.appendTerminalNotice(session, t("This dangerous command does not run on Enter: use the confirmation card in the panel and click “Run” or “Undo”."));
             return { ok: true, value: { written: 0 } };
           }
           if (text === "\x03") {
@@ -1737,7 +1795,7 @@ export default class SshOpsService extends TypertRemoteService {
   /** Explicit UI action: refuse drafts, foreground jobs, and ambiguous PTYs. */
   async changeDirectory(request) {
     if (typeof request.path !== "string" || !request.path.startsWith("/") || /[\x00-\x1f\x7f]/.test(request.path)) {
-      return { ok: false, error: fail("bad-path", "目录必须是绝对路径，且不能包含控制字符") };
+      return { ok: false, error: fail("bad-path", "The directory must be an absolute path and must not contain control characters") };
     }
     const session = this.sessions.get(request.sessionId);
     const conn = session && this.connections.get(session.connectionId);
@@ -1745,19 +1803,19 @@ export default class SshOpsService extends TypertRemoteService {
       && !conn.dead && !conn.closing && session.exited === null && session.stream
       && session.inputKnown === true && session.inputLine === ""
       && !this.pendingForSession(session.id) && conn.sessions.size === 1;
-    if (!ready()) return { ok: false, error: fail("terminal-not-ready", "请先结束前台程序、清空未提交输入，并仅保留一个交互终端") };
+    if (!ready()) return { ok: false, error: fail("terminal-not-ready", "Finish the foreground program, clear unsubmitted input, and keep exactly one interactive terminal") };
     const revision = session.inputRevision ?? 0;
     const client = conn.client;
     try {
       if (!posixLoginShell(await this.resolveLoginShell(conn))) {
-        return { ok: false, error: fail("unsupported-shell", "无法确认此 shell 的空闲状态，请在终端手动切换目录") };
+        return { ok: false, error: fail("unsupported-shell", "Could not confirm that this shell is idle; change directory manually in the terminal") };
       }
       const probe = await this.collectExecOutput(client, buildCwdAwareCommand(":"), 5000);
       if (probe.exitCode !== 0 || extractExecCwd(probe.stdout).cwd === null) {
-        return { ok: false, error: fail("terminal-busy", "未确认空闲交互 shell，请结束前台程序后重试或手动 cd") };
+        return { ok: false, error: fail("terminal-busy", "The interactive shell was not confirmed idle; finish the foreground program and try again, or cd manually") };
       }
       if (!ready() || client !== conn.client || revision !== (session.inputRevision ?? 0)) {
-        return { ok: false, error: fail("terminal-changed", "终端输入已变化，请检查后重试") };
+        return { ok: false, error: fail("terminal-changed", "The terminal input changed; review it and retry") };
       }
       const quoted = "'" + request.path.replace(/'/g, "'\\''") + "'";
       return this.write({ sessionId: session.id, data: encodeData(`cd -- ${quoted}\r`) });
@@ -1781,18 +1839,18 @@ export default class SshOpsService extends TypertRemoteService {
       && !conn.dead && !conn.closing && session.exited === null && session.stream
       && session.inputKnown === true && session.inputLine === ""
       && !this.pendingForSession(session.id) && conn.sessions.size === 1;
-    if (!ready()) return { ok: false, error: fail("terminal-not-ready", "请先结束前台程序、清空未提交输入，并仅保留一个交互终端") };
+    if (!ready()) return { ok: false, error: fail("terminal-not-ready", "Finish the foreground program, clear unsubmitted input, and keep exactly one interactive terminal") };
     try {
       if (!posixLoginShell(await this.resolveLoginShell(conn))) {
-        return { ok: false, error: fail("unsupported-shell", "无法确认此 shell 的空闲状态，请在终端手动启用") };
+        return { ok: false, error: fail("unsupported-shell", "Could not confirm that this shell is idle; enable it manually in the terminal") };
       }
       const client = conn.client;
       const probe = await this.collectExecOutput(client, buildCwdAwareCommand(":"), 5000);
       if (probe.exitCode !== 0) {
-        return { ok: false, error: fail("terminal-busy", "未确认空闲交互 shell，请结束前台程序后重试") };
+        return { ok: false, error: fail("terminal-busy", "The interactive shell was not confirmed idle; finish the foreground program and try again") };
       }
       if (!ready() || client !== conn.client) {
-        return { ok: false, error: fail("terminal-changed", "终端状态已变化，请重试") };
+        return { ok: false, error: fail("terminal-changed", "The terminal state changed; try again") };
       }
       // Which flavour of snippet fits is the shell's own answer: a single line
       // is parsed whole, so handing zsh syntax to sh (or the reverse) would
@@ -1991,8 +2049,8 @@ export default class SshOpsService extends TypertRemoteService {
 
   async batchRun(request) {
     const task = this.batchTasks.get(request.batchId);
-    if (!task) return { ok: false, error: fail("batch-missing", `批量任务 "${request.batchId}" 不存在或已执行`) };
-    if (request.profileIds.length === 0) return { ok: false, error: fail("batch-no-targets", "未选择任何服务器") };
+    if (!task) return { ok: false, error: fail("batch-missing", `Batch task "${request.batchId}" does not exist or has already run`) };
+    if (request.profileIds.length === 0) return { ok: false, error: fail("batch-no-targets", "No servers selected") };
     this.batchTasks.delete(request.batchId);
     // Fixed worker pool over the target list; results keep the requested order
     // via index-addressed slots.
@@ -2023,11 +2081,11 @@ export default class SshOpsService extends TypertRemoteService {
 
   async pendingConfirmationApprove(request) {
     const pending = this.pendingConfirmations.get(request.confirmationId);
-    if (!pending) return { ok: false, error: fail("confirmation-missing", "待确认命令不存在或已处理") };
+    if (!pending) return { ok: false, error: fail("confirmation-missing", "The command awaiting confirmation does not exist or was already handled") };
     const session = this.sessions.get(pending.sessionId);
     if (!session || session.exited !== null || session.stream === null) {
       this.removePendingConfirmation(pending.confirmationId);
-      return { ok: false, error: fail("confirmation-session-closed", "终端已关闭，无法执行待确认命令") };
+      return { ok: false, error: fail("confirmation-session-closed", "The terminal is closed, so the command awaiting confirmation cannot run") };
     }
     if (pending.trashScript) {
       // The approved command runs as the reversible trash move on the exec
@@ -2044,7 +2102,7 @@ export default class SshOpsService extends TypertRemoteService {
           this.removePendingConfirmation(pending.confirmationId);
           const result = await this.runPreparedExec(pending.connectionId, pending.trashScript, pending.command, true, 30000, false);
           if (!result.ok) {
-            this.appendTerminalNotice(session, `回收站移动未能执行：${result.error.message}。命令未执行。`);
+            this.appendTerminalNotice(session, t(`The move to the trash could not be performed: ${result.error.message}. The command did not run.`));
             return { ok: true, value: { executed: false } };
           }
           return { ok: true, value: { executed: true } };
@@ -2053,7 +2111,7 @@ export default class SshOpsService extends TypertRemoteService {
     }
     if (pending.prefilled && (!session.inputKnown || session.inputLine !== pending.command)) {
       this.removePendingConfirmation(pending.confirmationId);
-      return { ok: false, error: fail("confirmation-modified", "终端命令已变化，待确认项已作废") };
+      return { ok: false, error: fail("confirmation-modified", "The terminal command changed; the pending confirmation is void") };
     }
     try {
       this.removePendingConfirmation(pending.confirmationId);
@@ -2071,7 +2129,7 @@ export default class SshOpsService extends TypertRemoteService {
 
   pendingConfirmationCancel(request) {
     const pending = this.pendingConfirmations.get(request.confirmationId);
-    if (!pending) return { ok: false, error: fail("confirmation-missing", "待确认命令不存在或已处理") };
+    if (!pending) return { ok: false, error: fail("confirmation-missing", "The command awaiting confirmation does not exist or was already handled") };
     const session = this.sessions.get(pending.sessionId);
     this.removePendingConfirmation(pending.confirmationId);
     if (pending.prefilled && session && session.exited === null && session.stream !== null) {
@@ -2570,7 +2628,7 @@ export default class SshOpsService extends TypertRemoteService {
    * command contains control characters that would be unsafe to send to a PTY).
    * The operator — never the agent — is the one who presses Enter.
    */
-  prefillBlockedCommand(connectionId, command, reason = DANGEROUS_DEFAULT_REASON, trashScript = null) {
+  prefillBlockedCommand(connectionId, command, reason = dangerousDefaultReason(), trashScript = null) {
     // Agent tools commonly omit connection_id to mean the selected right-side
     // server. Resolve it here so safety confirmations follow exactly the same
     // current-connection semantics as ssh_exec and the other SFTP tools.
@@ -2600,7 +2658,7 @@ export default class SshOpsService extends TypertRemoteService {
             ...(trashScript ? { trashScript } : {})
           };
           this.pendingConfirmations.set(confirmation.confirmationId, confirmation);
-          this.appendTerminalNotice(session, `危险命令已被拦截并弹出确认卡片，请在右侧 SSH 面板点击“执行”或“撤销”：${command}`);
+          this.appendTerminalNotice(session, t(`The dangerous command was blocked and a confirmation card opened; click “Run” or “Undo” in the SSH panel on the right: ${command}`));
           return { queued: true, prefilled: false, confirmationId: confirmation.confirmationId };
         }
         return { queued: false, prefilled: false };
@@ -2661,7 +2719,7 @@ export default class SshOpsService extends TypertRemoteService {
 
   /** Add a local policy notice to the same buffer rendered by the terminal. */
   appendTerminalNotice(session, message) {
-    this.appendSessionOutput(session, `\r\n\x1b[33m${POLICY_NOTICE_PREFIX} ${message}\x1b[0m\r\n`);
+    this.appendSessionOutput(session, `\r\n\x1b[33m${policyNoticePrefix()} ${message}\x1b[0m\r\n`);
   }
 
   /**
@@ -2977,7 +3035,7 @@ export default class SshOpsService extends TypertRemoteService {
         sftp.stat(remotePath, (error, attrs) => (error ? reject(error) : resolve(attrs)));
       });
     } catch (error) {
-      this.streamJson(res, /No such file/i.test(error.message) ? 404 : 502, "sftp-stat-failed", `${remotePath}: ${error.message}`);
+      this.streamJson(res, /No such file/i.test(error.message) ? 404 : 502, "sftp-stat-failed", t(`${remotePath}: ${error.message}`));
       return null;
     }
   }
@@ -3052,7 +3110,7 @@ export default class SshOpsService extends TypertRemoteService {
     const openError = await this.streamAwaitOpen(stream);
     if (openError !== null) {
       stream.destroy();
-      this.streamJson(res, /No such file/i.test(openError.message) ? 404 : 502, "sftp-read-failed", `${remotePath}: ${openError.message}`);
+      this.streamJson(res, /No such file/i.test(openError.message) ? 404 : 502, "sftp-read-failed", t(`${remotePath}: ${openError.message}`));
       return;
     }
     res.writeHead(200, {
@@ -3108,7 +3166,7 @@ export default class SshOpsService extends TypertRemoteService {
     const openError = await this.streamAwaitOpen(out);
     if (openError !== null) {
       out.destroy();
-      this.streamJson(res, 502, "sftp-write-failed", `${remotePath}: ${openError.message}`);
+      this.streamJson(res, 502, "sftp-write-failed", t(`${remotePath}: ${openError.message}`));
       return;
     }
     let bytes = 0;
@@ -3147,7 +3205,7 @@ export default class SshOpsService extends TypertRemoteService {
         // the consumer-side cleanup (Workbench backend) owns the final delete.
         prepared.sftp.unlink(remotePath, () => {});
       }
-      this.streamJson(res, 502, "upload-cancelled", `${remotePath}: ${reason}`);
+      this.streamJson(res, 502, "upload-cancelled", t(`${remotePath}: ${reason}`));
     };
     // Zombie-upload backstop 2: connection teardown sweeps in-flight uploads
     // (destroy the SFTP write stream + 502 reply), so no paused handler
@@ -3175,7 +3233,7 @@ export default class SshOpsService extends TypertRemoteService {
       settled = true;
       finalizeIo();
       try { req.destroy(); } catch {}
-      this.streamJson(res, 502, "sftp-write-failed", `${remotePath}: ${error.message}`);
+      this.streamJson(res, 502, "sftp-write-failed", t(`${remotePath}: ${error.message}`));
     });
     out.on("close", () => {
       if (settled || discarded) return;
@@ -3875,11 +3933,11 @@ export default class SshOpsService extends TypertRemoteService {
   async sessionLogRead(request) {
     const store = this.sessionLogStore();
     if (store === null) {
-      return { ok: false, error: fail("session-log-disabled", "会话录制已关闭（config.sessionLogEnabled = false）") };
+      return { ok: false, error: fail("session-log-disabled", "Session recording is off (config.sessionLogEnabled = false)") };
     }
     const result = await store.read(request.sessionId, { offset: request.offset, maxBytes: request.maxBytes });
     if (result.ok !== true) {
-      return { ok: false, error: fail("no-session-log", `会话日志不存在：${request.sessionId}`) };
+      return { ok: false, error: fail("no-session-log", `Session log does not exist: ${request.sessionId}`) };
     }
     return {
       ok: true,
@@ -3893,11 +3951,11 @@ export default class SshOpsService extends TypertRemoteService {
   async sessionLogSearch(request) {
     const store = this.sessionLogStore();
     if (store === null) {
-      return { ok: false, error: fail("session-log-disabled", "会话录制已关闭（config.sessionLogEnabled = false）") };
+      return { ok: false, error: fail("session-log-disabled", "Session recording is off (config.sessionLogEnabled = false)") };
     }
     const result = await store.search(request.sessionId, { query: request.query, maxHits: request.maxHits });
     if (result.ok !== true) {
-      return { ok: false, error: fail("no-session-log", `会话日志不存在：${request.sessionId}`) };
+      return { ok: false, error: fail("no-session-log", `Session log does not exist: ${request.sessionId}`) };
     }
     return {
       ok: true,

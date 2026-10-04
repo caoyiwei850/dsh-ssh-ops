@@ -12,6 +12,7 @@ import {
   looksBinary
 } from "../src/client/file-editor.js";
 import { favoritesKey, readFavorites, toggleFavorite, writeFavorites } from "../src/client/sftp-favorites.js";
+import { setLanguage } from "../src/i18n/core.js";
 
 const utf8 = (text) => new TextEncoder().encode(text);
 
@@ -29,9 +30,12 @@ assert.equal(MAX_EDITABLE_BYTES, 10 * 1024 * 1024);
   assert.equal(bom.text, "配置", "a UTF-8 BOM is stripped, not shown as content");
   assert.equal(bom.replaced, false);
 
+  // Editor refusals are user-facing and bilingual; assert the English wording
+  // and, separately, that the same refusal is translated for a Chinese reader.
+  setLanguage("en");
   const binary = decodeEditableText(Uint8Array.from([0x7F, 0x45, 0x4C, 0x46, 0x00, 0x01]));
   assert.equal(binary.ok, false);
-  assert.match(binary.reason, /二进制/);
+  assert.match(binary.reason, /binary file/i);
 
   const invalid = decodeEditableText(Uint8Array.from([0x41, 0xC3, 0x28, 0x42]));
   assert.equal(invalid.ok, true);
@@ -42,7 +46,12 @@ assert.equal(MAX_EDITABLE_BYTES, 10 * 1024 * 1024);
 
   const big = decodeEditableText(new Uint8Array(MAX_EDITABLE_BYTES + 1));
   assert.equal(big.ok, false);
-  assert.match(big.reason, /编辑上限/);
+  assert.match(big.reason, /editing limit/i);
+
+  setLanguage("zh");
+  assert.match(decodeEditableText(Uint8Array.from([0x7F, 0x45, 0x4C, 0x46, 0x00, 0x01])).reason, /二进制/, "the refusal is translated for a Chinese reader");
+  assert.match(decodeEditableText(new Uint8Array(MAX_EDITABLE_BYTES + 1)).reason, /编辑上限/);
+  setLanguage("en");
 
   const beyondWindow = new Uint8Array(BINARY_PROBE_BYTES + 10).fill(0x41);
   beyondWindow[BINARY_PROBE_BYTES + 5] = 0;

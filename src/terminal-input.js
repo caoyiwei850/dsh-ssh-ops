@@ -10,7 +10,7 @@
  *   verbatim; the mirror is only kept honest so a later agent-driven Enter
  *   cannot submit a human-typed destructive line invisibly.
  */
-import { UNVERIFIED_LINE_REASON } from "./policy-messages.js";
+import { unverifiedLineReason } from "./policy-messages.js";
 
 export const MAX_INPUT_LINE_LENGTH = 8192;
 
@@ -30,7 +30,7 @@ export function processTerminalInput(state, text, decide) {
       if (decide !== null) {
         const decision = state.inputKnown
           ? decide(state.inputLine)
-          : { ok: false, reason: UNVERIFIED_LINE_REASON };
+          : { ok: false, reason: unverifiedLineReason() };
         if (decision.ok) {
           forwarded += char;
         } else {

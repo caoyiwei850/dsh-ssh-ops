@@ -13,6 +13,7 @@
 import * as React from "react";
 import { useSshUi, sshUiSetOpen } from "./store.js";
 import { SshPanel } from "./SshPanel.jsx";
+import { t } from "../i18n/core.js";
 
 const { useEffect, useRef, useState } = React;
 
@@ -89,6 +90,7 @@ function ensureDrawerStyles() {
   if (drawerStylesInjected) return;
   drawerStylesInjected = true;
   const style = document.createElement("style");
+  // Plain CSS, never routed through t(): it is not user-facing text.
   style.textContent = `
 html[data-dsh-ssh-ops-panel-open] [class*="centerCol"] {
   margin-right: var(--dsh-ssh-ops-panel-space, 496px) !important;
@@ -260,15 +262,15 @@ export function SshDrawer({ api, credentials }) {
         style={drawerStyles.resizeHandle}
         onPointerDown={beginResize}
         role="separator"
-        aria-label="调整 SSH 终端宽度"
+        aria-label={t("Resize the SSH terminal")}
         aria-orientation="vertical"
-        title="拖动以调整 SSH 终端宽度"
+        title={t("Drag to resize the SSH terminal")}
       />
       <div data-dsh-ssh-ops-panel-header="true" style={drawerStyles.header}>
-        <span style={drawerStyles.title}>SSH 终端</span>
+        <span style={drawerStyles.title}>{t("SSH Terminal")}</span>
         {/* Hide, not disconnect: connections and pooled terminals survive. */}
         <button onClick={() => sshUiSetOpen(false)} disabled={ui.busy} style={drawerStyles.btnSmall}
-          title="隐藏 SSH 终端面板（不断开连接）">×
+          title={t("Hide the SSH terminal panel (without disconnecting)")}>×
         </button>
       </div>
       <SshPanel api={api} credentials={credentials} />

@@ -9,7 +9,7 @@ const panelSource = source.slice(source.indexOf("export function SshPanel"));
 
 assert.match(
   panelSource,
-  /\["snippets", "快捷命令"\]/,
+  /\["snippets", t\("Snippets"\)\]/,
   "command library must have its own panel tab"
 );
 assert.match(
@@ -18,7 +18,7 @@ assert.match(
   "command picker search state must be declared"
 );
 assert.doesNotMatch(panelSource, /snippetPickerOpen|snippetMenu/, "command library must not overlay the connection tabs");
-assert.match(panelSource, /＋ 自定义/, "custom commands must be managed inside the command-library tab");
+assert.match(panelSource, /t\("\+ Custom"\)/, "custom commands must be managed inside the command-library tab");
 assert.doesNotMatch(source.slice(0, source.indexOf("export function SshPanel")), /snippetPickerOpen/, "the connection dialog must not own command-library state");
 
 console.log("ssh panel command picker state: passed");

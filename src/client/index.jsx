@@ -30,8 +30,37 @@ import { getSshUiSnapshot, sshUiAnnounceAgentConnections, sshUiSetOpen, sshUiSet
 import { startAgentConnectionPoll } from "./agent-connection-poll.js";
 import { activateSidebarWhenAvailable } from "./sidebar-lifecycle.js";
 import TYPERT_REMOTE from "../remote.js";
+import { t, subscribeLanguage } from "../i18n/core.js";
 
 const NS = "ssh-ops";
+
+/**
+ * Dictionaries handed to DSH's own locale service.
+ *
+ * These are NOT the plugin's translation source — the plugin's own two-language
+ * layer (`src/i18n/core.js`) owns every plugin string. This pair exists so DSH
+ * has a namespace for the registrations below and re-renders them when DSH's
+ * own language changes; the copied wording matches what the plugin shows in
+ * each language so the two never visibly disagree.
+ */
+const LOCALE_DICTIONARIES = {
+  zh: {
+    sshAction: "SSH 终端",
+    sshActionClose: "关闭 SSH 终端",
+    sidebarTabTitle: "SSH 终端",
+    openSidebarTab: "打开或聚焦 SSH 终端标签",
+    guideTitle: "SSH 终端",
+    guideDescription: "连接服务器，使用终端、远程文件、转发、快捷命令与数据库工具"
+  },
+  en: {
+    sshAction: "SSH Terminal",
+    sshActionClose: "Close SSH terminal",
+    sidebarTabTitle: "SSH Terminal",
+    openSidebarTab: "Open or focus the SSH terminal tab",
+    guideTitle: "SSH Terminal",
+    guideDescription: "Connect to servers with a terminal, remote files, tunnels, snippets, and database tools"
+  }
+};
 
 /** The tab kind this plugin owns in the official Sidebar, and its registry id. */
 export const SSH_TAB_KIND = "ssh";
@@ -64,33 +93,47 @@ export async function apply(ctx) {
   // slow poll; the panel's own refresh is the fast path while it is open.
   own(startAgentConnectionPoll(api, sshUiAnnounceAgentConnections));
 
-  const localeDispose = own(ctx.locale.register(NS, {
-    zh: {
-      sshAction: "SSH 终端",
-      sshActionClose: "关闭 SSH 终端",
-      sidebarTabTitle: "SSH 终端",
-      openSidebarTab: "打开或聚焦 SSH 终端标签",
-      guideTitle: "SSH 终端",
-      guideDescription: "连接服务器，使用终端、远程文件、转发、快捷命令与数据库工具"
-    },
-    en: {
-      sshAction: "SSH Terminal",
-      sshActionClose: "Close SSH terminal",
-      sidebarTabTitle: "SSH Terminal",
-      openSidebarTab: "Open or focus the SSH terminal tab",
-      guideTitle: "SSH Terminal",
-      guideDescription: "Connect to servers with a terminal, remote files, tunnels, snippets, and database tools"
+  // The plugin's own two-language layer owns every plugin string, including the
+  // Sidebar tab title and the guide entry. DSH's locale service is still used
+  // for the registration below (it is what triggers a re-render when DSH's own
+  // language changes), but the wording comes from the plugin dictionary so the
+  // Settings combobox controls it.
+  // `ctx.effect` is the DSH convention for this call (55 of the 58 registrations
+  // shipped inside DSH use it): it gives the registration an owner so the pair
+  // is removed on unload. The guard matters just as much — `locale.register`
+  // throws on a duplicate namespace+locale, and a throw in `apply` aborts every
+  // registration after it, leaving Settings -> SSH Resources completely empty.
+  // A duplicate means a previous apply's pair is still live (hot reload,
+  // re-activation), which is harmless here: the dictionaries are identical, so
+  // we keep the existing registration instead of failing the whole plugin.
+  own(ctx.effect(() => {
+    try {
+      return ctx.locale.register(NS, { zh: LOCALE_DICTIONARIES.zh, en: LOCALE_DICTIONARIES.en });
+    } catch (error) {
+      console.warn("[dsh-ssh-ops] locale dictionaries already registered; keeping the existing pair:", error?.message ?? error);
+      return undefined;
+    }
+  }, "dsh-ssh-ops: locale dictionaries"));
+
+  // Every plugin surface reads the wording through `t()` from the shared
+  // dictionary, so a language switch in Settings -> SSH Resources repaints
+  // without a reload. `subscribeLanguage` re-runs the registrations whose
+  // labels DSH pulls through these callbacks.
+  const repaintLabels = own(subscribeLanguage(() => {
+    try {
+      ctx.sidebarRight?.notifyTabsChanged?.();
+    } catch {
+      // The Sidebar face is absent in drawer mode and on older hosts; the
+      // callbacks below are re-read on DSH's own next render there.
     }
   }));
-
-  const t = ctx.locale.bind(NS);
 
   // Start with the legacy drawer so older DSH releases remain usable. Newer
   // hosts provide their Sidebar faces asynchronously; a one-time ctx.get()
   // snapshot here races that startup and permanently selects the drawer.
   own(activateSidebarWhenAvailable(ctx, {
     registerLegacy: (legacyCtx) => applyLegacyRegistrations(legacyCtx, { api }),
-    registerSidebar: (sidebarCtx) => applySidebarRegistrations(sidebarCtx, { api, t }),
+    registerSidebar: (sidebarCtx) => applySidebarRegistrations(sidebarCtx, { api }),
     onSidebarError: (error) => {
       console.error("[dsh-ssh-ops] sidebar tab registration failed; keeping legacy drawer:", error);
     }
@@ -100,20 +143,33 @@ export async function apply(ctx) {
   // Models. Keeping them under Settings → Plugins made an operational
   // inventory look like implementation detail and forced an extra tab click.
   // The header SSH button remains only a terminal visibility toggle.
-  own(ctx.slots.inject("settings.section", () =>
-    ctx.slots.register(
-      {
-        name: "settings.section",
-        id: "ssh-ops-resources",
-        order: 35,
-        label: "SSH 资源",
-        icon: "terminal",
-        locale: NS,
-        inject: () => ({ api, credentials: ctx.remote?.credentials })
-      },
-      SshResources
-    )
-  ));
+  //
+  // `label` is a function so DSH re-reads it from the live dictionary instead
+  // of freezing the wording at plugin load. The `locale: NS` registration is
+  // what makes DSH re-render this section, and every other outlet, when its own
+  // language changes.
+  //
+  // Wrapped so a rejection here degrades to a logged error instead of an
+  // unhandled failure in `apply`: this section is the only place the whole
+  // resources UI is reachable, and losing it looks like a broken plugin.
+  try {
+    own(ctx.slots.inject("settings.section", () =>
+      ctx.slots.register(
+        {
+          name: "settings.section",
+          id: "ssh-ops-resources",
+          order: 35,
+          label: () => t("SSH Resources"),
+          icon: "terminal",
+          locale: NS,
+          inject: () => ({ api, credentials: ctx.remote?.credentials, locale: ctx.locale })
+        },
+        SshResources
+      )
+    ));
+  } catch (error) {
+    console.error("[dsh-ssh-ops] settings.section registration failed:", error);
+  }
 
   return async () => {
     for (const d of disposers.reverse()) await d();
@@ -121,7 +177,7 @@ export async function apply(ctx) {
 }
 
 /** Official Sidebar registrations: both stages live under one disposable scope. */
-function applySidebarRegistrations(ctx, { api, t }) {
+function applySidebarRegistrations(ctx, { api }) {
   const disposers = [];
   const own = (dispose) => {
     if (typeof dispose === "function") disposers.push(dispose);
@@ -144,11 +200,11 @@ function applySidebarRegistrations(ctx, { api, t }) {
       id: SSH_TAB_ID,
       kind: SSH_TAB_KIND,
       priority: "extension",
-      title: () => t("sidebarTabTitle"),
+      title: () => t("SSH Terminal"),
       guide: [{
         order: 20,
-        title: () => t("guideTitle"),
-        description: () => t("guideDescription"),
+        title: () => t("SSH Terminal"),
+        description: () => t("Connect to servers with a terminal, remote files, tunnels, snippets, and database tools"),
         icon: IconTerminal16
       }]
     }));
@@ -188,8 +244,8 @@ function applySidebarRegistrations(ctx, { api, t }) {
                 return false;
               }
             },
-            title: t("openSidebarTab"),
-            ariaLabel: t("sidebarTabTitle"),
+            title: t("Open or focus the SSH terminal tab"),
+            ariaLabel: t("SSH Terminal"),
             watchActive: true
           });
         }
@@ -369,9 +425,9 @@ function SshDrawerTabAction() {
   return React.createElement(SshTabButtonHost, {
     press: () => sshUiSetOpen(!getSshUiSnapshot().open),
     isActive: () => getSshUiSnapshot().open,
-    title: "打开 SSH 终端",
-    activeTitle: "关闭 SSH 终端",
-    ariaLabel: "SSH 终端",
+    title: t("Open SSH terminal"),
+    activeTitle: t("Close SSH terminal"),
+    ariaLabel: t("SSH Terminal"),
     watchActive: false
   });
 }

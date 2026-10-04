@@ -229,11 +229,11 @@ service.batchTasks = new Map();
   assert.ok(danger.reason);
 
   const card = batchTool.output.render({}, { batchId: "b1", command: "df -h", dangerous: false, reason: null });
-  assert.match(card[0].text, /已创建批量任务/);
-  assert.match(card[0].text, /勾选服务器/);
-  const dangerCard = batchTool.output.render({}, { batchId: "b2", command: "rm -rf /", dangerous: true, reason: "删除文件或目录" });
-  assert.match(dangerCard[0].text, /危险命令/);
-  assert.match(dangerCard[0].text, /等待操作者在面板确认/);
+  assert.match(card[0].text, /Batch task created/);
+  assert.match(card[0].text, /tick the servers/);
+  const dangerCard = batchTool.output.render({}, { batchId: "b2", command: "rm -rf /", dangerous: true, reason: "Delete files or directories" });
+  assert.match(dangerCard[0].text, /dangerous command/);
+  assert.match(dangerCard[0].text, /waiting for the operator/);
 }
 
 console.log("batch: all tests passed");

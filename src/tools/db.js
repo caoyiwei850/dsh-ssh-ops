@@ -14,6 +14,7 @@
  */
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { backupSummary, pickSshConnectionId } from "../db-ops.js";
+import { t } from "../i18n/core.js";
 
 /** Cooperative tool-call budget; the db layer's own ceilings are all lower. */
 export const DB_TOOL_TIMEOUT_MS = 60000;
@@ -22,7 +23,7 @@ export function registerDbTools(ctx, service) {
   ctx.tools.register(defineTool({
     name: "db_connect",
     timeoutMs: DB_TOOL_TIMEOUT_MS,
-    description: "Connect to a database (MySQL, PostgreSQL, openGauss, SQLite, ClickHouse, Redis, or MongoDB) so the agent can query or run commands in later db_query/db_execute/db_run calls. When an SSH server is connected, a loopback host (127.0.0.1/localhost) is automatically tunneled through the current server (via_ssh=auto), so 'connect to the database on the server' works without an internal connection id; pass via_ssh='no' to force a local connection, or ssh_connection_id to pick a specific server. For cloud-managed databases requiring TLS, set ssl to 'verify' (public-CA certs) or 'preferred' (self-signed certs). Returns a db_connection_id.",
+    description: t("Connect to a database (MySQL, PostgreSQL, openGauss, SQLite, ClickHouse, Redis, or MongoDB) so the agent can query or run commands in later db_query/db_execute/db_run calls. When an SSH server is connected, a loopback host (127.0.0.1/localhost) is automatically tunneled through the current server (via_ssh=auto), so 'connect to the database on the server' works without an internal connection id; pass via_ssh='no' to force a local connection, or ssh_connection_id to pick a specific server. For cloud-managed databases requiring TLS, set ssl to 'verify' (public-CA certs) or 'preferred' (self-signed certs). Returns a db_connection_id."),
     parameters: {
       type: { type: "string", enum: ["mysql", "postgresql", "opengauss", "sqlite", "clickhouse", "redis", "mongodb"], required: true, description: "Database type." },
       host: { type: "string", description: "Database host (required for every type except sqlite). When reached via SSH, this is the address as seen from the SSH server (127.0.0.1 if the DB runs on that server)." },
@@ -30,9 +31,9 @@ export function registerDbTools(ctx, service) {
       database: { type: "string", description: "Database/schema name (MySQL/PostgreSQL/openGauss/ClickHouse, optional), the SQLite file path (required for sqlite), or numeric DB index (Redis)." },
       username: { type: "string", description: "Database username (not needed for Redis)." },
       password: { type: "string", description: "Database password." },
-      ssl: { type: "string", enum: ["disabled", "preferred", "verify"], description: "TLS mode: 'disabled' (default) plain TCP; 'preferred' encrypt without cert verification (self-signed cloud DBs); 'verify' encrypt and verify CA (public-CA cloud DBs)." },
+      ssl: { type: "string", enum: ["disabled", "preferred", "verify"], description: t("TLS mode: 'disabled' (default) plain TCP; 'preferred' encrypt without cert verification (self-signed cloud DBs); 'verify' encrypt and verify CA (public-CA cloud DBs).") },
       ssh_connection_id: { type: "string", description: "Optional. An existing SSH connection id to tunnel through, reaching databases on private networks. Takes precedence over via_ssh." },
-      via_ssh: { type: "string", enum: ["auto", "yes", "no"], description: "Tunnel routing when ssh_connection_id is omitted: 'auto' (default) tunnels loopback hosts (127.0.0.1/localhost) through the current SSH server; 'yes' always tunnels through the current server; 'no' always connects directly." },
+      via_ssh: { type: "string", enum: ["auto", "yes", "no"], description: t("Tunnel routing when ssh_connection_id is omitted: 'auto' (default) tunnels loopback hosts (127.0.0.1/localhost) through the current SSH server; 'yes' always tunnels through the current server; 'no' always connects directly.") },
       name: { type: "string", description: "Optional display name." }
     },
     output: {
@@ -117,7 +118,7 @@ export function registerDbTools(ctx, service) {
   ctx.tools.register(defineTool({
     name: "db_query",
     timeoutMs: DB_TOOL_TIMEOUT_MS,
-    description: "Run a read-only SQL query on a connected MySQL or PostgreSQL database and return columns and rows. Read-only is LEXICALLY ENFORCED: only SELECT/SHOW/DESCRIBE/EXPLAIN/WITH(read-only) statements pass; write verbs, SELECT INTO, FOR UPDATE locking reads and data-modifying CTEs are rejected (use db_execute for writes, db_tx_* for verified change workflows). For Redis or MongoDB, use db_run instead. Results stream and are capped at 200 rows; queries time out after 30s.",
+    description: t("Run a read-only SQL query on a connected MySQL or PostgreSQL database and return columns and rows. Read-only is LEXICALLY ENFORCED: only SELECT/SHOW/DESCRIBE/EXPLAIN/WITH(read-only) statements pass; write verbs, SELECT INTO, FOR UPDATE locking reads and data-modifying CTEs are rejected (use db_execute for writes, db_tx_* for verified change workflows). For Redis or MongoDB, use db_run instead. Results stream and are capped at 200 rows; queries time out after 30s."),
     parameters: {
       db_connection_id: { type: "string", required: true, description: "A db_connection_id from db_connect." },
       sql: { type: "string", required: true, description: "SELECT statement. MySQL uses ? placeholders, PostgreSQL uses $1 placeholders." },
@@ -136,7 +137,7 @@ export function registerDbTools(ctx, service) {
       render(args, value) {
         const header = value.columns.join("\t");
         const body = value.rows.map((r) => value.columns.map((c) => r[c] ?? "").join("\t")).join("\n");
-        let text = header.length > 0 ? `${header}\n${body}` : "(empty)";
+        let text = header.length > 0 ? `${header}\n${body}` : t("(empty)");
         if (value.truncated) text += "\n[truncated to 200 rows]";
         return [{ type: "text", text }];
       }
@@ -151,7 +152,7 @@ export function registerDbTools(ctx, service) {
   ctx.tools.register(defineTool({
     name: "db_execute",
     timeoutMs: DB_TOOL_TIMEOUT_MS,
-    description: "Run a write SQL statement (INSERT/UPDATE/DELETE/CREATE/ALTER) on a connected MySQL or PostgreSQL database. Destructive statements (DROP/TRUNCATE/SHUTDOWN, detected by leading statement verb so keywords inside string literals or comments are not false-positives) are NOT executed and must never be retried or worked around: DROP TABLE is instead backed up and quarantined by rename (result reports quarantined/renamedTo), while DROP DATABASE/TRUNCATE/SHUTDOWN are blocked after an automatic backup of the affected tables. Only the operator, via the database panel, can finalize any real deletion. For Redis or MongoDB, use db_run instead.",
+    description: t("Run a write SQL statement (INSERT/UPDATE/DELETE/CREATE/ALTER) on a connected MySQL or PostgreSQL database. Destructive statements (DROP/TRUNCATE/SHUTDOWN, detected by leading statement verb so keywords inside string literals or comments are not false-positives) are NOT executed and must never be retried or worked around: DROP TABLE is instead backed up and quarantined by rename (result reports quarantined/renamedTo), while DROP DATABASE/TRUNCATE/SHUTDOWN are blocked after an automatic backup of the affected tables. Only the operator, via the database panel, can finalize any real deletion. For Redis or MongoDB, use db_run instead."),
     parameters: {
       db_connection_id: { type: "string", required: true },
       sql: { type: "string", required: true, description: "Write statement. MySQL uses ? placeholders, PostgreSQL uses $1 placeholders." },
@@ -189,16 +190,16 @@ export function registerDbTools(ctx, service) {
       },
       render(_args, value) {
         if (value.quarantined) {
-          const lines = [`♻️ DROP 已转换为隔离改名（数据未删除，可随时改回）：${value.sql} → ${value.renamedTo}`];
+          const lines = [t(`♻️ DROP was converted to a quarantine rename (no data deleted; it can be renamed back at any time): ${value.sql} → ${value.renamedTo}`)];
           if (Array.isArray(value.backup) && value.backup.length > 0) {
             lines.push(backupSummary(value.backup));
           }
-          lines.push(value.notice ?? "彻底删除请由操作者在数据库面板执行。");
+          lines.push(value.notice ?? t("The final deletion must be performed by the operator in the database panel."));
           return [{ type: "text", text: lines.join("\n") }];
         }
         if (value.blocked) {
           const backupNote = Array.isArray(value.backup) && value.backup.length > 0 ? `\n${backupSummary(value.backup)}` : "";
-          return [{ type: "text", text: `⚠️ 已拦截：${value.reason ?? ""}\nSQL 未执行，请在数据库面板 SQL 编辑器粘贴执行：\n\`\`\`sql\n${value.sql ?? ""}\n\`\`\`${backupNote}\n请勿重试/绕行，由人工执行。` }];
+          return [{ type: "text", text: t(`⚠️ Blocked: ${value.reason ?? ""}\nThe SQL did not run; paste it into the SQL editor of the database panel to execute it:\n\`\`\`sql\n${value.sql ?? ""}\n\`\`\`${backupNote}\nDo not retry or work around it; a human must run it.`) }];
         }
         let text = `Affected ${value.affectedRows} row(s).`;
         if (value.insertId !== undefined) text += ` Insert id: ${value.insertId}.`;
@@ -245,7 +246,7 @@ export function registerDbTools(ctx, service) {
   ctx.tools.register(defineTool({
     name: "db_describe_table",
     timeoutMs: DB_TOOL_TIMEOUT_MS,
-    description: "Full structural introspection of a table in a connected MySQL or PostgreSQL database: columns (name, type, nullable, default), indexes, foreign keys, row-count/data-size estimates from planner statistics, and the MySQL SHOW CREATE TABLE DDL.",
+    description: t("Full structural introspection of a table in a connected MySQL or PostgreSQL database: columns (name, type, nullable, default), indexes, foreign keys, row-count/data-size estimates from planner statistics, and the MySQL SHOW CREATE TABLE DDL."),
     parameters: {
       db_connection_id: { type: "string", required: true },
       table: { type: "string", required: true, description: "Table name." }
@@ -360,7 +361,7 @@ export function registerDbTools(ctx, service) {
         const body = value.rows.map((r) => value.columns.map((c) => r[c] ?? "").join("\t")).join("\n");
         const range = value.rowCount > 0 ? `${value.offset + 1}-${value.offset + value.rowCount}` : "0";
         const est = value.estimatedTotal != null ? ` (estimate ~${value.estimatedTotal})` : "";
-        let text = `${value.table} rows ${range}${est}:\n${header.length > 0 ? `${header}\n${body}` : "(empty)"}`;
+        let text = `${value.table} rows ${range}${est}:\n${header.length > 0 ? `${header}\n${body}` : t("(empty)")}`;
         if (value.truncated) text += "\n[truncated to 200 rows]";
         return [{ type: "text", text }];
       }
@@ -443,7 +444,7 @@ export function registerDbTools(ctx, service) {
   ctx.tools.register(defineTool({
     name: "db_tx_begin",
     timeoutMs: DB_TOOL_TIMEOUT_MS,
-    description: "Begin an interactive transaction on a dedicated connection (MySQL/PostgreSQL) for verified change workflows: db_tx_begin → db_tx_execute (the write) → db_tx_execute (SELECT to verify) → db_tx_commit or db_tx_rollback. Idle transactions are rolled back automatically after 5 minutes.",
+    description: t("Begin an interactive transaction on a dedicated connection (MySQL/PostgreSQL) for verified change workflows: db_tx_begin → db_tx_execute (the write) → db_tx_execute (SELECT to verify) → db_tx_commit or db_tx_rollback. Idle transactions are rolled back automatically after 5 minutes."),
     parameters: {
       db_connection_id: { type: "string", required: true }
     },
@@ -484,7 +485,7 @@ export function registerDbTools(ctx, service) {
         if (value.rowCount > 0) {
           const columns = value.rows[0] ? Object.keys(value.rows[0]) : [];
           const body = value.rows.map((r) => columns.map((c) => r[c] ?? "").join("\t")).join("\n");
-          const header = columns.length > 0 ? `${columns.join("\t")}\n${body}` : "(empty)";
+          const header = columns.length > 0 ? `${columns.join("\t")}\n${body}` : t("(empty)");
           const suffix = value.truncated ? "\n[truncated to 200 rows]" : "";
           return [{ type: "text", text: `${header}${suffix}` }];
         }
@@ -535,7 +536,7 @@ export function registerDbTools(ctx, service) {
   ctx.tools.register(defineTool({
     name: "db_run",
     timeoutMs: DB_TOOL_TIMEOUT_MS,
-    description: "Run a command on a connected Redis or MongoDB database. Redis: pass {command, args} (e.g. command='GET', args=['mykey'], or command='KEYS', args=['*']). MongoDB: pass {collection, operation} where operation is 'find'|'findOne'|'insertOne'|'updateOne'|'deleteOne'|'countDocuments', plus filter/document/update as needed. For MySQL/PostgreSQL, use db_query or db_execute instead.",
+    description: t("Run a command on a connected Redis or MongoDB database. Redis: pass {command, args} (e.g. command='GET', args=['mykey'], or command='KEYS', args=['*']). MongoDB: pass {collection, operation} where operation is 'find'|'findOne'|'insertOne'|'updateOne'|'deleteOne'|'countDocuments', plus filter/document/update as needed. For MySQL/PostgreSQL, use db_query or db_execute instead."),
     parameters: {
       db_connection_id: { type: "string", required: true },
       command: { type: "string", description: "Redis command name (e.g. GET, SET, KEYS, HGETALL)." },

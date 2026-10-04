@@ -1,51 +1,57 @@
 // Operator-owned command snippets. Never place passwords, tokens, or other
 // secrets here: this is ordinary browser local storage, not the credential vault.
+import { t } from "../i18n/core.js";
+
 const KEY = "dsh-ssh-ops.command-snippets.v1";
 
 export const STARTER_COMMAND_SNIPPETS = [
-  ["查看系统负载", "uptime"], ["查看磁盘空间", "df -h"], ["查看内存", "free -h"],
-  ["查看监听端口", "ss -tlnp"], ["查看 Docker 容器", "docker ps"],
-  ["查看 Nginx 状态", "systemctl status nginx --no-pager"], ["查看 Nginx 日志", "journalctl -u nginx -n 100 --no-pager"],
-  ["Ubuntu：刷新软件索引（会变更）", "sudo apt-get update"],
-  ["Ubuntu：升级已装软件（会变更）", "sudo apt-get upgrade"],
-  ["Ubuntu：安装 Nginx（会变更）", "sudo apt-get install -y nginx"],
-  ["RHEL：刷新 DNF 缓存（会变更）", "sudo dnf makecache"],
-  ["RHEL：升级已装软件（会变更）", "sudo dnf upgrade"],
-  ["RHEL：安装 Nginx（会变更）", "sudo dnf install -y nginx"],
-  ["旧版 CentOS：更新软件（会变更）", "sudo yum update"],
-  ["旧版 CentOS：安装 Nginx（会变更）", "sudo yum install -y nginx"],
-  ["服务：查看状态", "systemctl status <服务> --no-pager"],
-  ["服务：查看最近日志", "journalctl -u <服务> -n 100 --no-pager"],
-  ["服务：重启（会变更）", "sudo systemctl restart <服务>"],
-  ["Docker：查看全部容器", "docker ps -a"],
-  ["Docker Compose：服务状态", "docker compose ps"],
-  ["Docker Compose：最近日志", "docker compose logs --tail=100 <服务>"],
-  ["Docker：清理未使用镜像（会变更）", "docker image prune"],
-  ["日志：查看末尾 100 行", "tail -n 100 <日志路径>"],
-  ["日志：持续跟踪", "tail -f <日志路径>"],
-  ["日志：筛选错误", "grep -n 'error' <日志路径> | tail -n 50"],
-  ["进程：内存占用前列", "ps aux --sort=-%mem | head"],
-  ["网络：健康检查", "curl -fsS http://127.0.0.1:<端口>/health"],
-  ["网络：网卡地址", "ip addr"],
-  ["网络：路由表", "ip route"],
-  ["网络：DNS 查询", "dig <域名>"],
-  ["网络：连通性测试", "ping -c 4 <主机>"],
-  ["磁盘：目录总大小", "du -sh <目录>"],
-  ["磁盘：一级目录大小", "du -xh <目录> --max-depth=1 | sort -h"],
-  ["文件：查找 30 天前文件", "find <目录> -type f -mtime +30"],
-  ["文件：详细列出目录", "ls -lah <目录>"],
-  ["系统：内核信息", "uname -a"],
-  ["系统：发行版信息", "cat /etc/os-release"],
-  ["安全：最近登录", "last -n 20"],
-  ["计划任务：当前用户", "crontab -l"],
-  ["计划任务：systemd 定时器", "systemctl list-timers --all"]
+  ["System load", "uptime"], ["Disk usage", "df -h"], ["Memory usage", "free -h"],
+  ["Listening ports", "ss -tlnp"], ["List Docker containers", "docker ps"],
+  ["Nginx status", "systemctl status nginx --no-pager"], ["Nginx logs", "journalctl -u nginx -n 100 --no-pager"],
+  ["Ubuntu: refresh package index (changes state)", "sudo apt-get update"],
+  ["Ubuntu: upgrade installed packages (changes state)", "sudo apt-get upgrade"],
+  ["Ubuntu: install Nginx (changes state)", "sudo apt-get install -y nginx"],
+  ["RHEL: refresh DNF cache (changes state)", "sudo dnf makecache"],
+  ["RHEL: upgrade installed packages (changes state)", "sudo dnf upgrade"],
+  ["RHEL: install Nginx (changes state)", "sudo dnf install -y nginx"],
+  ["Legacy CentOS: update software (changes state)", "sudo yum update"],
+  ["Legacy CentOS: install Nginx (changes state)", "sudo yum install -y nginx"],
+  ["Service: status", "systemctl status <service> --no-pager"],
+  ["Service: recent logs", "journalctl -u <service> -n 100 --no-pager"],
+  ["Service: restart (changes state)", "sudo systemctl restart <service>"],
+  ["Docker: list all containers", "docker ps -a"],
+  ["Docker Compose: service status", "docker compose ps"],
+  ["Docker Compose: recent logs", "docker compose logs --tail=100 <service>"],
+  ["Docker: prune unused images (changes state)", "docker image prune"],
+  ["Logs: last 100 lines", "tail -n 100 <log-path>"],
+  ["Logs: follow", "tail -f <log-path>"],
+  ["Logs: filter errors", "grep -n 'error' <log-path> | tail -n 50"],
+  ["Processes: top by memory", "ps aux --sort=-%mem | head"],
+  ["Network: health check", "curl -fsS http://127.0.0.1:<port>/health"],
+  ["Network: interface addresses", "ip addr"],
+  ["Network: routing table", "ip route"],
+  ["Network: DNS lookup", "dig <domain>"],
+  ["Network: connectivity test", "ping -c 4 <host>"],
+  ["Disk: total size of a directory", "du -sh <directory>"],
+  ["Disk: first-level directory sizes", "du -xh <directory> --max-depth=1 | sort -h"],
+  ["Files: find files older than 30 days", "find <directory> -type f -mtime +30"],
+  ["Files: long listing of a directory", "ls -lah <directory>"],
+  ["System: kernel info", "uname -a"],
+  ["System: distribution info", "cat /etc/os-release"],
+  ["Security: recent logins", "last -n 20"],
+  ["Scheduled tasks: current user", "crontab -l"],
+  ["Scheduled tasks: systemd timers", "systemctl list-timers --all"]
 ];
 
-/** Built-ins are available immediately and never need writing to localStorage. */
+/**
+ * Built-ins are available immediately and never need writing to localStorage.
+ * Names are translated on every call rather than at module load, so switching
+ * the language re-labels the whole command library.
+ */
 export function defaultCommandSnippets() {
   return STARTER_COMMAND_SNIPPETS.map(([name, command], index) => ({
     id: `builtin-${index}`,
-    name,
+    name: t(name),
     command,
     scope: "global",
     scopeId: null,
@@ -77,9 +83,18 @@ export function searchCommandSnippets(items, query) {
   return items.filter((item) => `${item.name}\n${item.command}`.toLocaleLowerCase().includes(needle));
 }
 
-/** Merge persisted custom commands with built-ins, without showing duplicates. */
+/**
+ * Merge persisted custom commands with built-ins, without showing duplicates.
+ * Dedup keys use the untranslated starter names, because `item.name` follows
+ * the active language and would otherwise stop matching after a switch.
+ */
 export function availableCommandSnippets(customItems) {
   const builtIns = defaultCommandSnippets();
-  const keys = new Set(builtIns.map((item) => `${item.name}\u0000${item.command}`));
-  return [...builtIns, ...customItems.filter((item) => !keys.has(`${item.name}\u0000${item.command}`))];
+  const keys = new Set(STARTER_COMMAND_SNIPPETS.map(([name, command]) => `${name}\u0000${command}`));
+  const translatedCommands = new Set(STARTER_COMMAND_SNIPPETS.map(([, command]) => command));
+  return [
+    ...builtIns,
+    ...customItems.filter((item) => !keys.has(`${item.name}\u0000${item.command}`)
+      && !translatedCommands.has(item.command))
+  ];
 }

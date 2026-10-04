@@ -1,3 +1,4 @@
+import { t } from "../i18n/core.js";
 /**
  * Remote-file editor policy: what may open in the text editor, and how its
  * bytes become editor text and back. Kept out of the JSX so the decisions run
@@ -26,10 +27,10 @@ export function looksBinary(bytes) {
  */
 export function decodeEditableText(bytes) {
   if (bytes.length > MAX_EDITABLE_BYTES) {
-    return { ok: false, reason: `文件 ${bytes.length} 字节，超过 ${Math.round(MAX_EDITABLE_BYTES / 1024 / 1024)} MB 的编辑上限；请下载后编辑或改用命令行工具` };
+    return { ok: false, reason: t(`The file is ${bytes.length} bytes, over the ${Math.round(MAX_EDITABLE_BYTES / 1024 / 1024)} MB editing limit; download it and edit locally, or use a command-line tool`) };
   }
   if (looksBinary(bytes)) {
-    return { ok: false, reason: "看起来是二进制文件（前 8 KB 内含空字节），不在文本编辑器中打开" };
+    return { ok: false, reason: t("This looks like a binary file (null byte within the first 8 KB); not opening it in the text editor") };
   }
   // A UTF-8 BOM is an encoding marker, not content: strip it so the editor
   // does not show it and a save does not stack a second one.

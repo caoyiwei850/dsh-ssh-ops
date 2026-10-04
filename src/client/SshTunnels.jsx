@@ -3,6 +3,7 @@
  * connected server, and list active tunnels.
  */
 import * as React from "react";
+import { t } from "../i18n/core.js";
 const { useEffect, useState } = React;
 
 export function SshTunnels({ api, connectionId }) {
@@ -95,9 +96,9 @@ export function SshTunnels({ api, connectionId }) {
   return (
     <div style={tunnelStyles.root}>
       <div style={tunnelStyles.toolbar}>
-        <span style={tunnelStyles.title}>端口转发</span>
-        <button onClick={() => setShowForm(!showForm)} style={tunnelStyles.btn} title="新建转发">＋</button>
-        <button onClick={load} disabled={busy} style={tunnelStyles.btn} title="刷新">↻</button>
+        <span style={tunnelStyles.title}>{t("Port forwarding")}</span>
+        <button onClick={() => setShowForm(!showForm)} style={tunnelStyles.btn} title={t("New tunnel")}>{t("+")}</button>
+        <button onClick={load} disabled={busy} style={tunnelStyles.btn} title={t("Refresh")}>↻</button>
       </div>
 
       {error && <div style={tunnelStyles.error}>{error}</div>}
@@ -106,55 +107,55 @@ export function SshTunnels({ api, connectionId }) {
         <div style={tunnelStyles.form}>
           <div style={tunnelStyles.formRow}>
             <select value={kind} onChange={(e) => setKind(e.target.value)} style={tunnelStyles.input}>
-              <option value="local">本地转发（本机 → 服务器可达目标）</option>
-              <option value="remote">远程转发（服务器 → 本机）</option>
-              <option value="dynamic">动态 SOCKS5（ssh -D，本机做代理出口）</option>
+              <option value="local">{t("Local forward (this machine → a target reachable from the server)")}</option>
+              <option value="remote">{t("Remote forward (server → this machine)")}</option>
+              <option value="dynamic">{t("Dynamic SOCKS5 (ssh -D; this machine becomes a proxy exit)")}</option>
             </select>
           </div>
           <div style={tunnelStyles.formRow}>
-            <input value={bindAddr} onChange={(e) => setBindAddr(e.target.value)} placeholder="绑定地址" style={tunnelStyles.input} />
-            <input value={bindPort} onChange={(e) => setBindPort(e.target.value)} placeholder="绑定端口 (0=随机)" style={tunnelStyles.input} />
+            <input value={bindAddr} onChange={(e) => setBindAddr(e.target.value)} placeholder={t("Bind address")} style={tunnelStyles.input} />
+            <input value={bindPort} onChange={(e) => setBindPort(e.target.value)} placeholder={t("Bind port (0 = random)")} style={tunnelStyles.input} />
           </div>
           {!isDynamic && (
             <div style={tunnelStyles.formRow}>
-              <input value={remoteHost} onChange={(e) => setRemoteHost(e.target.value)} placeholder={kind === "local" ? "远程目标主机" : "服务器监听主机"} style={tunnelStyles.input} />
-              <input value={remotePort} onChange={(e) => setRemotePort(e.target.value)} placeholder={kind === "local" ? "远程目标端口" : "服务器监听端口"} style={tunnelStyles.input} />
+              <input value={remoteHost} onChange={(e) => setRemoteHost(e.target.value)} placeholder={kind === "local" ? t("Remote target host") : t("Server listen host")} style={tunnelStyles.input} />
+              <input value={remotePort} onChange={(e) => setRemotePort(e.target.value)} placeholder={kind === "local" ? t("Remote target port") : t("Server listen port")} style={tunnelStyles.input} />
             </div>
           )}
           {isDynamic && (
-            <div style={tunnelStyles.empty}>客户端连到绑定地址后自行选择目标，流量都从这台服务器出去；需要固定端口时把绑定端口填上一个非 0 值。</div>
+            <div style={tunnelStyles.empty}>{t("Clients pick their own destination after connecting to the bind address, and all traffic leaves through this server. For a fixed port, set the bind port to a non-zero value.")}</div>
           )}
           {kind === "remote" && (
             <div style={tunnelStyles.formRow}>
-              <input value={targetHost} onChange={(e) => setTargetHost(e.target.value)} placeholder="本机目标主机" style={tunnelStyles.input} />
-              <input value={targetPort} onChange={(e) => setTargetPort(e.target.value)} placeholder="本机目标端口" style={tunnelStyles.input} />
+              <input value={targetHost} onChange={(e) => setTargetHost(e.target.value)} placeholder={t("Local target host")} style={tunnelStyles.input} />
+              <input value={targetPort} onChange={(e) => setTargetPort(e.target.value)} placeholder={t("Local target port")} style={tunnelStyles.input} />
             </div>
           )}
           <div style={tunnelStyles.formRow}>
             <button onClick={start} disabled={busy || !canStart} style={tunnelStyles.btnPrimary}>
-              {busy ? "启动中…" : "启动"}
+              {busy ? t("Starting…") : t("Start")}
             </button>
-            <button onClick={() => setShowForm(false)} style={tunnelStyles.btn}>取消</button>
+            <button onClick={() => setShowForm(false)} style={tunnelStyles.btn}>{t("Cancel")}</button>
           </div>
         </div>
       )}
 
       <div style={tunnelStyles.list}>
         {!tunnels ? (
-          <div style={tunnelStyles.empty}>加载中…</div>
+          <div style={tunnelStyles.empty}>{t("Loading…")}</div>
         ) : tunnels.length === 0 ? (
-          <div style={tunnelStyles.empty}>暂无转发。点「＋」新建，或在对话里让我用 tunnel_start 建立。</div>
+          <div style={tunnelStyles.empty}>{t("No tunnels yet. Click “+” to add one, or ask me in the conversation to create one with tunnel_start.")}</div>
         ) : (
           tunnels.map((t) => (
             <div key={t.tunnelId} style={tunnelStyles.row}>
               <div style={tunnelStyles.rowBody}>
                 <div style={tunnelStyles.rowTitle}>
                   <span style={{ ...tunnelStyles.dot, background: t.active ? "#3fb950" : "#8b93a1" }} />
-                  <span>{t.kind === "dynamic" ? "动态 SOCKS5" : t.kind === "local" ? "本地" : "远程"}</span>
+                  <span>{t.kind === "dynamic" ? t("Dynamic SOCKS5") : t.kind === "local" ? t("Local") : t("Remote")}</span>
                   <span style={tunnelStyles.rowAddr}>{t.bindAddr}:{t.bindPort}</span>
                   {t.kind === "dynamic" ? (
                     <span style={tunnelStyles.rowAddr}>
-                      {t.connections > 0 ? `活动连接 ${t.connections}` : "等待连接"}
+                      {t.connections > 0 ? t(`Active connections ${t.connections}`) : t("Waiting for a connection")}
                     </span>
                   ) : (
                     <>
@@ -165,7 +166,7 @@ export function SshTunnels({ api, connectionId }) {
                 </div>
                 <div style={tunnelStyles.rowId}>{t.tunnelId}</div>
               </div>
-              <button onClick={() => stop(t.tunnelId)} disabled={busy} style={tunnelStyles.btnDanger}>停止</button>
+              <button onClick={() => stop(t.tunnelId)} disabled={busy} style={tunnelStyles.btnDanger}>{t("Stop")}</button>
             </div>
           ))
         )}

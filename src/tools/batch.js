@@ -7,6 +7,7 @@
  * requested, every open connection upgraded).
  */
 import { defineTool } from "@deepseek-ai/dsh-tools";
+import { t } from "../i18n/core.js";
 
 export function registerBatchTools(ctx, service) {
   ctx.tools.register(defineTool({
@@ -25,8 +26,8 @@ export function registerBatchTools(ctx, service) {
       } },
       render(_args, value) {
         return [{ type: "text", text: value.dangerous
-          ? `已创建批量任务（危险命令，等待操作者在面板确认）：${value.command}`
-          : `已创建批量任务，请在右侧 SSH 面板勾选服务器后执行：${value.command}（任务 ${value.batchId}）` }];
+          ? t(`Batch task created (dangerous command; waiting for the operator to confirm it in the panel): ${value.command}`)
+          : t(`Batch task created; tick the servers in the SSH panel on the right and run it: ${value.command} (task ${value.batchId})`) }];
       }
     },
     async execute(args) {

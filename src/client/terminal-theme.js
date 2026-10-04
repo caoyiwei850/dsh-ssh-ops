@@ -1,3 +1,4 @@
+import { t } from "../i18n/core.js";
 // xterm renders to its own canvas. It cannot inherit DSH's CSS text color,
 // so every terminal theme must provide the full contrast-critical palette.
 const DARK_TERMINAL_THEME = Object.freeze({
@@ -34,7 +35,7 @@ export function getTerminalTheme({
   root = typeof document === "undefined" ? undefined : document.documentElement,
   body = typeof document === "undefined" ? undefined : document.body,
   getComputedStyle = typeof window === "undefined" ? undefined : window.getComputedStyle,
-  media = typeof window === "undefined" ? undefined : window.matchMedia?.("(prefers-color-scheme: dark)")
+  media = typeof window === "undefined" ? undefined : window.matchMedia?.(t("(prefers-color-scheme: dark)"))
 } = {}) {
   const hint = rootThemeHint(root, root && getComputedStyle ? getComputedStyle(root) : undefined);
   const bodyHint = hint ?? rootThemeHint(body, body && getComputedStyle ? getComputedStyle(body) : undefined);
@@ -52,7 +53,7 @@ export function createTerminalThemeWatcher({
   root = typeof document === "undefined" ? undefined : document.documentElement,
   body = typeof document === "undefined" ? undefined : document.body,
   getComputedStyle = typeof window === "undefined" ? undefined : window.getComputedStyle,
-  media = typeof window === "undefined" ? undefined : window.matchMedia?.("(prefers-color-scheme: dark)"),
+  media = typeof window === "undefined" ? undefined : window.matchMedia?.(t("(prefers-color-scheme: dark)")),
   MutationObserver = typeof window === "undefined" ? undefined : window.MutationObserver,
   apply
 } = {}) {

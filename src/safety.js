@@ -8,13 +8,18 @@
  * terminal is not intercepted by this agent-command guard.
  */
 import { policyBlockedReason } from "./policy-messages.js";
+import { t } from "./i18n/core.js";
 
 /**
  * Stable identifier for the file-deletion category. The trash rewrite keys on
  * this (not on the display string) so editing the human-facing message can
  * never silently disable the rewrite.
+ *
+ * The identifier is deliberately untranslated: `index.js` compares it and the
+ * decision is made on the regex, so only the message built from it is
+ * localized (see `blocked`).
  */
-export const CATEGORY_DELETE_FILES = "删除文件或目录";
+export const CATEGORY_DELETE_FILES = "Delete files or directories";
 
 const IRREVERSIBLE_BLOCKS = [
   [/(?:^|\s)(?:rm|unlink|shred|rmdir)\b/i, CATEGORY_DELETE_FILES],
@@ -25,17 +30,17 @@ const IRREVERSIBLE_BLOCKS = [
   // python/perl/ruby/php/node. A deny-list can never be exhaustive (any
   // script or pipeline can hide a deletion); the recoverable-trash and
   // backup layers are the consequence backstop, this list only narrows it.
-  [/\bfind\b[\s\S]*\s-delete\b/i, "批量删除文件"],
-  [/\bfind\b[\s\S]*\s-exec(?:dir)?\b[\s\S]*\b(?:rm|unlink)\b/i, "批量删除文件"],
-  [/\bxargs\b[^|;&]*\b(?:rm|unlink)\b/i, "批量删除文件"],
+  [/\bfind\b[\s\S]*\s-delete\b/i, "Delete files in bulk"],
+  [/\bfind\b[\s\S]*\s-exec(?:dir)?\b[\s\S]*\b(?:rm|unlink)\b/i, "Delete files in bulk"],
+  [/\bxargs\b[^|;&]*\b(?:rm|unlink)\b/i, "Delete files in bulk"],
   [/\brimraf\b/i, CATEGORY_DELETE_FILES],
-  [/\b(?:python3?|perl|ruby|php|node)\b[\s\S]*\b(?:unlink(?:Sync)?|rmtree|rmSync|rimraf|os\.remove|shutil\.rmtree|fs\.rm(?:Sync)?|fs\.unlink(?:Sync)?)\b/i, "通过脚本解释器删除文件"],
-  [/\b(?:drop\s+(?:database|schema|table|view|user)|truncate\b|delete\s+from\b)\b/i, "删除数据库数据或对象"],
-  [/\b(?:mkfs(?:\.|\b)|dd\b|wipefs\b|fdisk\b|parted\b|sgdisk\b)\b/i, "格式化或改写磁盘"],
-  [/\b(?:docker\s+(?:system\s+prune|container\s+prune|image\s+prune|volume\s+prune)|docker\s+(?:rm|rmi|volume\s+rm))\b/i, "删除容器、镜像或卷"],
-  [/\b(?:kubectl\s+delete|helm\s+uninstall|terraform\s+destroy)\b/i, "销毁已部署资源"],
-  [/\bgit\s+(?:reset\s+--hard|clean\s+-[a-z]*f)\b/i, "不可恢复地清理代码工作区"],
-  [/\b(?:reboot|shutdown|poweroff|halt)\b/i, "重启或关闭服务器"]
+  [/\b(?:python3?|perl|ruby|php|node)\b[\s\S]*\b(?:unlink(?:Sync)?|rmtree|rmSync|rimraf|os\.remove|shutil\.rmtree|fs\.rm(?:Sync)?|fs\.unlink(?:Sync)?)\b/i, "Delete files through a script interpreter"],
+  [/\b(?:drop\s+(?:database|schema|table|view|user)|truncate\b|delete\s+from\b)\b/i, "Delete database data or objects"],
+  [/\b(?:mkfs(?:\.|\b)|dd\b|wipefs\b|fdisk\b|parted\b|sgdisk\b)\b/i, "Format or overwrite a disk"],
+  [/\b(?:docker\s+(?:system\s+prune|container\s+prune|image\s+prune|volume\s+prune)|docker\s+(?:rm|rmi|volume\s+rm))\b/i, "Delete containers, images or volumes"],
+  [/\b(?:kubectl\s+delete|helm\s+uninstall|terraform\s+destroy)\b/i, "Destroy deployed resources"],
+  [/\bgit\s+(?:reset\s+--hard|clean\s+-[a-z]*f)\b/i, "Irreversibly clean the code workspace"],
+  [/\b(?:reboot|shutdown|poweroff|halt)\b/i, "Reboot or shut down the server"]
 ];
 
 function blocked(category) {
@@ -45,7 +50,9 @@ function blocked(category) {
     // Short reason: surfaced on the ssh_write path (Enter was blocked) and as
     // the card title on ssh_exec/sftp_delete. Kept terse so the key advice
     // (don't retry, don't bypass, a human confirms) is visible at a glance.
-    reason: policyBlockedReason(category)
+    // The category is translated here, at call time, so the notice follows the
+    // active language while the identifier above stays stable.
+    reason: policyBlockedReason(t(category))
   };
 }
 
@@ -55,7 +62,7 @@ function blocked(category) {
  * allow-list; normal DSH approval remains the primary permissions layer.
  */
 export function assessShellCommand(command) {
-  if (typeof command !== "string") return blocked("命令不是文本");
+  if (typeof command !== "string") return blocked(t("The command is not text"));
   const value = command.trim();
   if (!value) return { ok: true };
 

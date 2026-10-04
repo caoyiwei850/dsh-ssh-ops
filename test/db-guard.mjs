@@ -67,7 +67,7 @@ function spyInternals(manager) {
   assert.equal(result.value.quarantined, true);
   assert.match(result.value.renamedTo, /^hosts_to_be_dropped_\d{8}$/);
   assert.equal(result.value.affectedRows, 0);
-  assert.match(result.value.notice, /彻底删除请由操作者在数据库面板执行/);
+  assert.match(result.value.notice, /must run this in the database panel/);
 
   // Backup happened BEFORE the rename and carries rows + schema.
   assert.ok(callOrder.indexOf("export") !== -1, "an export ran");
@@ -95,7 +95,7 @@ function spyInternals(manager) {
   const result = await manager.execute({ dbConnectionId: "db-1", sql: `DROP TABLE ${renamed}`, origin: "agent" });
   assert.equal(result.ok, false);
   assert.equal(result.error.code, "unsafe-sql");
-  assert.match(result.error.message, /必须由操作者在数据库面板执行/);
+  assert.match(result.error.message, /must be performed by the operator in the database panel/);
   assert.equal(db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE name = ?").get(renamed).n, 1, "the quarantine table survives");
 }
 
@@ -124,7 +124,7 @@ function spyInternals(manager) {
   const result = await manager.execute({ dbConnectionId: "db-1", sql: "DROP TABLE IF EXISTS never_existed", origin: "agent" });
   assert.equal(result.ok, true);
   assert.equal(result.value.quarantined, false);
-  assert.match(result.value.notice, /表不存在/);
+  assert.match(result.value.notice, /does not exist, so nothing was changed/);
 }
 
 // ── TRUNCATE: blocked after backup, rows intact (agent + panel) ───────────────
@@ -133,7 +133,7 @@ function spyInternals(manager) {
   const agentResult = await manager.execute({ dbConnectionId: "db-1", sql: "TRUNCATE TABLE extra", origin: "agent" });
   assert.equal(agentResult.ok, false);
   assert.equal(agentResult.error.code, "unsafe-sql");
-  assert.match(agentResult.error.message, /TRUNCATE 无法隔离改名/);
+  assert.match(agentResult.error.message, /TRUNCATE cannot be quarantined/);
   assert.ok(Array.isArray(agentResult.error.backup) && agentResult.error.backup.length === 1, "the agent envelope carries the backup list");
   assert.equal(db.prepare("SELECT count(*) AS n FROM extra").get().n, 1, "rows intact");
 
@@ -148,7 +148,7 @@ function spyInternals(manager) {
   const manager = makeManager();
   const result = await manager.execute({ dbConnectionId: "db-1", sql: "DROP DATABASE ops", origin: "agent" });
   assert.equal(result.ok, false);
-  assert.match(result.error.message, /整库删除无法自动隔离/);
+  assert.match(result.error.message, /whole-database drop cannot be quarantined/);
   assert.ok(Array.isArray(result.error.backup) && result.error.backup.length >= 2, `both tables backed up: ${JSON.stringify(result.error.backup)}`);
   assert.ok(result.error.backup.every((entry) => entry.error === null));
 }

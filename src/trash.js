@@ -1,3 +1,4 @@
+import { t } from "./i18n/core.js";
 /**
  * Reversible deletion for agent-initiated file removal (ssh_exec, sftp_delete).
  *
@@ -196,7 +197,7 @@ export function buildTrashCommand(targets, { retentionMs = TRASH_RETENTION_MS } 
     "if [ -f \"$__dsh_m\" ]; then",
     `  __dsh_cut=$((__dsh_n - ${retentionSec}))`,
     '  __dsh_tmp="$__dsh_t/.purge.$$"',
-    "  awk -F'\\t' -v c=\"$__dsh_cut\" '$3+0 > 0 && $3+0 < c { print $1 }' \"$__dsh_m\" > \"$__dsh_tmp\" 2>/dev/null || : > \"$__dsh_tmp\"",
+    t("  awk -F'\\t' -v c=\"$__dsh_cut\" '$3+0 > 0 && $3+0 < c { print $1 }' \"$__dsh_m\" > \"$__dsh_tmp\" 2>/dev/null || : > \"$__dsh_tmp\""),
     '  __dsh_purged=0',
     '  while IFS= read -r __dsh_x; do',
     '    case "$__dsh_x" in ""|"."|".."|*/*) continue ;; esac',
@@ -210,7 +211,7 @@ export function buildTrashCommand(targets, { retentionMs = TRASH_RETENTION_MS } 
     "fi",
     "__dsh_i=0",
     `for __dsh_p in ${list}; do`,
-    '  case "$__dsh_p" in /*) : ;; *) __dsh_p="./$__dsh_p" ;; esac',
+    t('  case "$__dsh_p" in /*) : ;; *) __dsh_p="./$__dsh_p" ;; esac'),
     '  __dsh_q=$__dsh_p',
     '  while : ; do case "$__dsh_q" in */) __dsh_q="${__dsh_q%/}" ;; *) break ;; esac; done',
     '  case "$__dsh_q" in /*) __dsh_abs=$__dsh_q ;; *) __dsh_abs="$(pwd -P 2>/dev/null || pwd)/${__dsh_q#./}" ;; esac',
@@ -298,7 +299,7 @@ export function buildRestoreCommand(entry) {
   const parent = entry.original.replace(/\/+[^/]*$/, "") || "/";
   return [
     `__dsh_f="$HOME/.dsh-trash/"${shellSingleQuote(entry.name)}`,
-    'if [ ! -e "$__dsh_f" ] && [ ! -L "$__dsh_f" ]; then echo "trash entry not found: $__dsh_f" >&2; exit 1; fi',
+    t('if [ ! -e "$__dsh_f" ] && [ ! -L "$__dsh_f" ]; then echo "trash entry not found: $__dsh_f" >&2; exit 1; fi'),
     `if [ -e ${shellSingleQuote(entry.original)} ] || [ -L ${shellSingleQuote(entry.original)} ]; then echo "restore target already exists: ${entry.original.replace(/'/g, "'\\''")}" >&2; exit 1; fi`,
     `mkdir -p ${shellSingleQuote(parent)} || exit 1`,
     `if mv "$__dsh_f" ${shellSingleQuote(entry.original)}; then`,

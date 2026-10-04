@@ -1,3 +1,4 @@
+import { t } from "./i18n/core.js";
 /**
  * Minimal SOCKS5 server (RFC 1928) backing the dynamic forwarding tunnel —
  * the `ssh -D` equivalent. Only CONNECT is implemented: each accepted client
@@ -25,7 +26,7 @@ export function replyCodeForError(error) {
   const message = String(error?.message ?? error ?? "").toLowerCase();
   if (message.includes("refused")) return SOCKS_REPLY.CONNECTION_REFUSED;
   if (message.includes("unreachable") || message.includes("no route")) return SOCKS_REPLY.NETWORK_UNREACHABLE;
-  if (message.includes("unknown") || message.includes("not found") || message.includes("enotfound") || message.includes("resolve")) return SOCKS_REPLY.HOST_UNREACHABLE;
+  if (message.includes(t("unknown")) || message.includes("not found") || message.includes("enotfound") || message.includes("resolve")) return SOCKS_REPLY.HOST_UNREACHABLE;
   return SOCKS_REPLY.GENERAL_FAILURE;
 }
 

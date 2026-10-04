@@ -44,6 +44,7 @@ import {
   subscribePaneSessions,
   viewSession
 } from "./pane-selection.js";
+import { t } from "../i18n/core.js";
 
 const { useEffect, useRef, useState, useSyncExternalStore, Component } = React;
 
@@ -63,7 +64,7 @@ class TabErrorBoundary extends Component {
     if (this.state.error) {
       return React.createElement("div", {
         style: { margin: "auto", padding: 16, fontSize: 12, color: "#f85149", textAlign: "center" }
-      }, `此页签出错：${this.state.error?.message ?? String(this.state.error)}`);
+      }, t(`This tab hit an error: ${this.state.error?.message ?? String(this.state.error)}`));
     }
     return this.props.children;
   }
@@ -249,7 +250,7 @@ function XtermView({ api, sessionId, connectionId }) {
     container.addEventListener("keydown", onKeyDown, true);
 
     const controller = new AbortController();
-    const NO_SESSION_NOTICE = `\r\n\x1b[31m[终端会话已失效：DSH 服务已重启或该连接已关闭。请到 设置 → SSH 资源 重新连接]\x1b[0m\r\n`;
+    const NO_SESSION_NOTICE = t(`\r\n\x1b[31m[Terminal session is no longer valid: the DSH service restarted or the connection was closed. Reconnect from Settings → SSH Resources]\x1b[0m\r\n`);
     const EXIT_NOTICE = `\r\n\x1b[90m[session exited]\x1b[0m\r\n`;
     const markClosed = () => {
       // The closed flag belongs to the session, not this mount: a remount
@@ -400,8 +401,8 @@ function XtermView({ api, sessionId, connectionId }) {
             setTimeout(() => searchInputRef.current?.focus(), 0);
           }}
           style={panelStyles.searchOpenBtn}
-          title={`在终端里查找（${searchShortcutLabel(isMacPlatform(globalThis.navigator?.platform ?? globalThis.navigator?.userAgent))}）`}
-          aria-label="在终端里查找"
+          title={t(`Find in terminal (${searchShortcutLabel(isMacPlatform(globalThis.navigator?.platform ?? globalThis.navigator?.userAgent))})`)}
+          aria-label={t("Find in terminal")}
         >
           <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
             <circle cx="6.5" cy="6.5" r="4.5" stroke="currentColor" strokeWidth="1.5" />
@@ -428,14 +429,14 @@ function XtermView({ api, sessionId, connectionId }) {
               if (event.key === "Enter") { event.preventDefault(); runSearch(event.shiftKey); }
               else if (event.key === "Escape") { event.preventDefault(); closeSearch(); }
             }}
-            placeholder="在终端里查找…"
-            aria-label="在终端里查找"
+            placeholder={t("Find in terminal…")}
+            aria-label={t("Find in terminal")}
             style={panelStyles.searchInput}
           />
           <span style={panelStyles.searchCount} aria-live="polite">{searchResultLabel(searchResults, query)}</span>
-          <button type="button" onClick={() => runSearch(true)} style={panelStyles.searchBtn} title="上一个匹配 (Shift+Enter)">↑</button>
-          <button type="button" onClick={() => runSearch(false)} style={panelStyles.searchBtn} title="下一个匹配 (Enter)">↓</button>
-          <button type="button" onClick={closeSearch} style={panelStyles.searchBtn} title="关闭 (Esc)">×</button>
+          <button type="button" onClick={() => runSearch(true)} style={panelStyles.searchBtn} title={t("Previous match (Shift+Enter)")}>↑</button>
+          <button type="button" onClick={() => runSearch(false)} style={panelStyles.searchBtn} title={t("Next match (Enter)")}>↓</button>
+          <button type="button" onClick={closeSearch} style={panelStyles.searchBtn} title={t("Close (Esc)")}>×</button>
         </div>
       )}
     </div>
@@ -493,12 +494,12 @@ function ConnectDialog({ api, credentials, onClose, onConnected }) {
   const importSshConfig = async () => {
     setBusy(true);
     setError(null);
-    setStatus("正在读取 ~/.ssh/config…");
+    setStatus(t("Reading ~/.ssh/config…"));
     try {
       const result = await api.sshConfigImport();
       setStatus(null);
       if (!result || !result.hosts || result.hosts.length === 0) {
-        setError("~/.ssh/config 里没有可导入的主机（Host * 会被跳过）");
+        setError(t("~/.ssh/config has no importable hosts (Host * is skipped)"));
         return;
       }
       const first = result.hosts[0];
@@ -513,13 +514,13 @@ function ConnectDialog({ api, credentials, onClose, onConnected }) {
         passphrase: ""
       }));
       if (result.hosts.length > 1) {
-        setError(`已导入第 1 台「${first.name}」，共 ${result.hosts.length} 台。其余请在设置里逐台添加。`);
+        setError(t(`Imported the first host, “${first.name}”, out of ${result.hosts.length}. Add the rest one by one in Settings.`));
       } else {
-        setError(`已导入「${first.name}」（${first.host}），请补充认证信息后连接。`);
+        setError(t(`Imported “${first.name}” (${first.host}); add the credentials and connect.`));
       }
     } catch (err) {
       setStatus(null);
-      setError(`导入失败：${err?.message ?? String(err)}`);
+      setError(t(`Import failed: ${err?.message ?? String(err)}`));
     } finally {
       setBusy(false);
     }
@@ -530,7 +531,7 @@ function ConnectDialog({ api, credentials, onClose, onConnected }) {
     // empty-shell paste up front instead of surfacing it as a bare auth
     // failure 20 seconds later. Saved profiles keep their keys server-side.
     if (proxyJumps.some((hop) => !hop.profileId)) {
-      setError("请选择每台跳板服务器");
+      setError(t("Choose a server for every jump hop"));
       return;
     }
     if (!selectedProfileId && !form.credentialId) {
@@ -545,7 +546,7 @@ function ConnectDialog({ api, credentials, onClose, onConnected }) {
     setBusy(true);
     setError(null);
     sshUiSetError(null);
-    setStatus("正在连接服务器，最多需要 20 秒…");
+    setStatus(t("Connecting to the server; this can take up to 20 seconds…"));
     try {
       const connection = selectedProfileId
         ? await api.profileConnect({ profileId: selectedProfileId, readyTimeout: 15000, retries: 0, reuseExisting: reuseExisting && proxyJumps.length === 0, ...(proxyJumps.length > 0 ? { proxyJumpProfileIds: proxyJumps.map((hop) => hop.profileId) } : {}) })
@@ -572,7 +573,7 @@ function ConnectDialog({ api, credentials, onClose, onConnected }) {
         await api.openSession(connection.connectionId, 100, 30);
         await refreshConnections(api);
       } catch (sessionError) {
-        sshUiSetError(`已连接，但无法自动打开终端：${sessionError?.message ?? String(sessionError)}`);
+        sshUiSetError(t(`Connected, but the terminal could not be opened automatically: ${sessionError?.message ?? String(sessionError)}`));
       }
       setStatus(null);
       onClose();
@@ -589,15 +590,15 @@ function ConnectDialog({ api, credentials, onClose, onConnected }) {
   /** Save the temporary form as a durable SSH resource, then connect via it. */
   const submitSaveAndConnect = async () => {
     if (!credentials) {
-      setError("当前 DSH 未提供凭据服务，不能安全保存 SSH 认证信息");
+      setError(t("This DSH build provides no credential service, so SSH credentials cannot be stored safely"));
       return;
     }
     if (!form.name.trim() || !form.host.trim() || !form.username.trim()) {
-      setError("请填写名称、主机和用户名（名称会用于保存的资源）");
+      setError(t("Enter a name, host and username (the name is used for the saved resource)"));
       return;
     }
     if (proxyJumps.some((hop) => !hop.profileId)) {
-      setError("请选择每台跳板服务器");
+      setError(t("Choose a server for every jump hop"));
       return;
     }
     if (form.authKind === "key") {
@@ -610,7 +611,7 @@ function ConnectDialog({ api, credentials, onClose, onConnected }) {
     setBusy(true);
     setError(null);
     sshUiSetError(null);
-    setStatus("正在保存并连接…");
+    setStatus(t("Saving and connecting…"));
     try {
       const saved = await api.profileSave({
         name: form.name.trim(),
@@ -626,15 +627,15 @@ function ConnectDialog({ api, credentials, onClose, onConnected }) {
       const secret = form.authKind === "password" ? form.password : form.privateKey;
       if (secret) {
         const response = await credentials.set(primaryRef, secret);
-        if (response && !response.ok) throw new Error(response.error?.message ?? "无法保存凭据");
+        if (response && !response.ok) throw new Error(response.error?.message ?? t("Could not save the credentials"));
       }
       if (form.authKind === "key" && form.passphrase) {
         const response = await credentials.set(saved.credentialRefs.passphrase, form.passphrase);
-        if (response && !response.ok) throw new Error(response.error?.message ?? "无法保存私钥口令");
+        if (response && !response.ok) throw new Error(response.error?.message ?? t("Could not save the private key passphrase"));
       }
       // profileSave returns { profile: { profileId, ... }, credentialRefs }.
       const profileId = saved?.profile?.profileId;
-      if (!profileId) throw new Error("保存资源后未能取得 profileId");
+      if (!profileId) throw new Error(t("Saving the resource did not return a profileId"));
       const connection = await api.profileConnect({ profileId, readyTimeout: 15000, retries: 0 });
       onConnected?.(connection.connectionId);
       await refreshConnections(api);
@@ -642,7 +643,7 @@ function ConnectDialog({ api, credentials, onClose, onConnected }) {
         await api.openSession(connection.connectionId, 100, 30);
         await refreshConnections(api);
       } catch (sessionError) {
-        sshUiSetError(`已连接，但无法自动打开终端：${sessionError?.message ?? String(sessionError)}`);
+        sshUiSetError(t(`Connected, but the terminal could not be opened automatically: ${sessionError?.message ?? String(sessionError)}`));
       }
       setStatus(null);
       onClose();
@@ -662,17 +663,17 @@ function ConnectDialog({ api, credentials, onClose, onConnected }) {
     event.target.value = "";
     if (!file) return;
     if (file.size > 1024 * 1024) {
-      setError("私钥文件不能超过 1 MB");
+      setError(t("The private key file must not exceed 1 MB"));
       return;
     }
     try {
       const privateKey = await file.text();
-      if (!privateKey.trim()) throw new Error("所选私钥文件为空");
+      if (!privateKey.trim()) throw new Error(t("The chosen private key file is empty"));
       setForm((current) => ({ ...current, privateKey }));
       setKeyFileName(file.name);
       setError(null);
     } catch (err) {
-      setError(err?.message ?? "无法读取私钥文件");
+      setError(err?.message ?? t("Could not read the private key file"));
     }
   };
 
@@ -694,7 +695,7 @@ function ConnectDialog({ api, credentials, onClose, onConnected }) {
     if (ids.length === 0) return;
     setBatchBusy(true);
     setError(null);
-    setStatus(`正在批量连接 ${ids.length} 台服务器…`);
+    setStatus(t(`Connecting to ${ids.length} servers in a batch…`));
     let ok = 0;
     let fail = 0;
     for (const profileId of ids) {
@@ -716,20 +717,20 @@ function ConnectDialog({ api, credentials, onClose, onConnected }) {
     if (fail === 0) {
       onClose();
     } else {
-      setError(`批量连接完成：${ok} 台成功，${fail} 台失败`);
+      setError(t(`Batch connect finished: ${ok} succeeded, ${fail} failed`));
     }
   };
 
   return (
     <div style={panelStyles.dialogBackdrop} onClick={busy ? undefined : onClose}>
       <div style={panelStyles.dialog} onClick={(e) => e.stopPropagation()}>
-        <div style={panelStyles.dialogTitle}>连接服务器</div>
+        <div style={panelStyles.dialogTitle}>{t("Connect to a server")}</div>
         {profiles.length > 0 && (
           <div style={panelStyles.savedProfileRow}>
             <label style={{ ...panelStyles.field, flex: 1 }}>
-              <span>已保存的服务器（单选连接）</span>
+              <span>{t("Saved servers (pick one to connect)")}</span>
               <select value={selectedProfileId} onChange={selectProfile} style={panelStyles.input}>
-                <option value="">选择一台服务器…</option>
+                <option value="">{t("Choose a server…")}</option>
                 {profiles.map((profile) => (
                   <option key={profile.profileId} value={profile.profileId}>
                     {profile.name || profile.host} — {profile.username}@{profile.host}:{profile.port}
@@ -738,56 +739,56 @@ function ConnectDialog({ api, credentials, onClose, onConnected }) {
               </select>
             </label>
             {selectedProfileId && (
-              <label style={panelStyles.reuseToggle} title="默认各自一条独立通道；勾选后本栏将加入已打开的那条连接，与另一栏共用同一个终端">
+              <label style={panelStyles.reuseToggle} title={t("Each pane gets its own channel by default; tick this to join the connection already open in this pane and share one terminal")}>
                 <input type="checkbox" checked={reuseExisting} onChange={(event) => setReuseExisting(event.target.checked)} />
-                <span>复用已打开的连接</span>
+                <span>{t("Reuse the open connection")}</span>
               </label>
             )}
           </div>
         )}
-        {!selectedProfileId && <><div style={panelStyles.temporaryTitle}>临时连接（不会保存）</div><div style={panelStyles.formRow}>
+        {!selectedProfileId && <><div style={panelStyles.temporaryTitle}>{t("Temporary connection (not saved)")}</div><div style={panelStyles.formRow}>
           <label style={panelStyles.field}>
-            <span>名称（可选）</span>
+            <span>{t("Name (optional)")}</span>
             <input value={form.name} onChange={set("name")} placeholder="my-server" style={panelStyles.input} />
           </label>
           <label style={panelStyles.field}>
-            <span>主机</span>
+            <span>{t("Host")}</span>
             <input value={form.host} onChange={set("host")} placeholder="192.168.1.100" style={panelStyles.input} />
           </label>
         </div><div style={panelStyles.formRow}>
           <label style={panelStyles.field}>
-            <span>端口</span>
+            <span>{t("Port")}</span>
             <input value={form.port} onChange={set("port")} style={panelStyles.input} />
           </label>
           <label style={panelStyles.field}>
-            <span>用户名</span>
+            <span>{t("Username")}</span>
             <input value={form.username} onChange={set("username")} style={panelStyles.input} />
           </label>
         </div><div style={panelStyles.formRow}>
           <label style={panelStyles.field}>
-            <span>认证方式</span>
+            <span>{t("Authentication")}</span>
             <select value={form.authKind} onChange={(event) => setForm((current) => ({ ...current, authKind: event.target.value, credentialId: "" }))} style={panelStyles.input}>
-              <option value="password">密码</option>
-              <option value="key">私钥</option>
+              <option value="password">{t("Password")}</option>
+              <option value="key">{t("Private key")}</option>
             </select>
           </label>
           <label style={panelStyles.field}>
-            <span>复用共享凭据（可选）</span>
+            <span>{t("Reuse a shared credential (optional)")}</span>
             <select value={form.credentialId} onChange={set("credentialId")} style={panelStyles.input}>
-              <option value="">不复用，临时输入{form.authKind === "password" ? "密码" : "私钥"}</option>
+              <option value="">{t("Do not reuse; enter temporarily")}{form.authKind === "password" ? t("Password") : t("Private key")}</option>
               {sharedCredentials.filter((credential) => credential.authKind === form.authKind && credential.credentialConfigured).map((credential) => <option key={credential.credentialId} value={credential.credentialId}>{credential.name}</option>)}
             </select>
           </label>
         </div>
         {!form.credentialId && (form.authKind === "password" ? (
           <label style={panelStyles.field}>
-            <span>密码</span>
+            <span>{t("Password")}</span>
             <input type="password" value={form.password} onChange={set("password")} style={panelStyles.input} />
           </label>
         ) : (
           <>
             <label style={panelStyles.field}>
-              <span>私钥文件（PEM / .key，粘贴或导入）</span>
+              <span>{t("Private key file (PEM / .key, paste or import)")}</span>
               <textarea value={form.privateKey} onChange={set("privateKey")} rows={4} style={{ ...panelStyles.input, fontFamily: "monospace" }} />
             </label>
             <div style={panelStyles.keyImportRow}>
@@ -798,13 +799,11 @@ function ConnectDialog({ api, credentials, onClose, onConnected }) {
                 onChange={importPrivateKey}
                 style={panelStyles.hiddenFileInput}
               />
-              <button type="button" onClick={() => keyFileInputRef.current?.click()} style={panelStyles.btnSecondary}>
-                导入 PEM / 私钥文件
-              </button>
-              <span style={panelStyles.keyImportHint}>{keyFileName ? `已导入：${keyFileName}` : "不会保存到本机"}</span>
+              <button type="button" onClick={() => keyFileInputRef.current?.click()} style={panelStyles.btnSecondary}>{t("Import PEM / private key file")}</button>
+              <span style={panelStyles.keyImportHint}>{keyFileName ? t(`Imported: ${keyFileName}`) : t("Not saved on this machine")}</span>
             </div>
             <label style={panelStyles.field}>
-              <span>私钥口令</span>
+              <span>{t("Private key passphrase")}</span>
               <input type="password" value={form.passphrase} onChange={set("passphrase")} style={panelStyles.input} />
             </label>
           </>
@@ -812,45 +811,43 @@ function ConnectDialog({ api, credentials, onClose, onConnected }) {
         {(
           <div style={panelStyles.proxyJumpSection}>
             <button type="button" onClick={() => setShowProxyJump(!showProxyJump)} style={panelStyles.proxyJumpToggle}>
-              {showProxyJump ? "▼" : "▶"} 跳板机（ProxyJump）{selectedProfileId ? " · 留空沿用已保存配置" : ""}
+              {showProxyJump ? "▼" : "▶"}{t(" Jump host (ProxyJump)")}{selectedProfileId ? t(" · leave empty to keep the saved configuration") : ""}
             </button>
             {showProxyJump && (
               <div style={panelStyles.proxyJumpList}>
                 {proxyJumps.map((hop, index) => (
                   <div key={index} style={panelStyles.proxyJumpRow}>
                     <select value={hop.profileId} onChange={(e) => updateProxyJump(index, "profileId", e.target.value)} style={panelStyles.input}>
-                      <option value="">选择已保存服务器</option>
+                      <option value="">{t("Choose a saved server")}</option>
                       {profiles.map((profile) => <option key={profile.profileId} value={profile.profileId}>{profile.name} · {profile.username}@{profile.host}:{profile.port}</option>)}
                     </select>
                     <button type="button" onClick={() => removeProxyJump(index)} style={panelStyles.btnSmall}>✕</button>
                   </div>
                 ))}
-                <button type="button" onClick={addProxyJump} style={panelStyles.btnSecondary}>＋ 添加跳板</button>
+                <button type="button" onClick={addProxyJump} style={panelStyles.btnSecondary}>{t("+ Add jump host")}</button>
               </div>
             )}
           </div>
         )}
         <div style={panelStyles.sshConfigRow}>
-          <button type="button" onClick={importSshConfig} disabled={busy} style={panelStyles.btnSecondary}>
-            从 ~/.ssh/config 导入
-          </button>
+          <button type="button" onClick={importSshConfig} disabled={busy} style={panelStyles.btnSecondary}>{t("Import from ~/.ssh/config")}</button>
         </div>
         {status && <div style={panelStyles.dialogStatus} role="status" aria-live="polite">{status}</div>}
         {error && <div style={panelStyles.dialogError} role="alert">{error}</div>}
         <div style={panelStyles.dialogActions}>
-          <button onClick={onClose} disabled={busy} style={panelStyles.btnSecondary}>取消</button>
+          <button onClick={onClose} disabled={busy} style={panelStyles.btnSecondary}>{t("Cancel")}</button>
           {!selectedProfileId && (
             <button
               onClick={submitSaveAndConnect}
               disabled={busy || !form.host.trim()}
               style={panelStyles.btnSecondary}
-              title="保存为 SSH 资源并连接（名称、主机、认证信息存入本机 DSH 凭据库）"
+              title={t("Save as an SSH resource and connect (name, host and credentials go into the local DSH credential store)")}
             >
-              {busy ? "保存中…" : "保存并连接"}
+              {busy ? t("Saving…") : t("Save and connect")}
             </button>
           )}
           <button onClick={submit} disabled={busy || (!selectedProfileId && !form.host.trim())} style={panelStyles.btnPrimary}>
-            {busy ? "连接中…" : selectedProfileId ? "连接并打开" : "临时连接"}
+            {busy ? t("Connecting…") : selectedProfileId ? t("Connect and open") : t("Temporary connection")}
           </button>
         </div>
       </div>
@@ -873,7 +870,7 @@ async function refreshConnections(api) {
     // the SSH surface is open; the plugin-root poll covers the closed case.
     sshUiAnnounceAgentConnections(connections);
   } catch (error) {
-    sshUiSetError(`无法刷新 SSH 连接列表：${error?.message ?? String(error)}`);
+    sshUiSetError(t(`Could not refresh the SSH connection list: ${error?.message ?? String(error)}`));
   }
 }
 
@@ -894,7 +891,7 @@ function PendingConfirmations({ confirmations, busyId, onApprove, onCancel, onCo
   }, [confirmations]);
 
   if (confirmations.length === 0) {
-    return <div style={panelStyles.emptyState}>暂无待确认的危险操作。</div>;
+    return <div style={panelStyles.emptyState}>{t("No dangerous operations are waiting for confirmation.")}</div>;
   }
   return (
     <div style={panelStyles.pendingList}>
@@ -907,7 +904,7 @@ function PendingConfirmations({ confirmations, busyId, onApprove, onCancel, onCo
               <button
                 type="button"
                 style={{ ...panelStyles.pendingToggle, cursor: alwaysExpand ? "default" : "pointer" }}
-                title={expanded ? item.command : `${item.command}（点击展开完整信息）`}
+                title={expanded ? item.command : t(`${item.command} (click to expand the full details)`)}
                 onClick={() => {
                   if (!alwaysExpand) setExpandedId(expanded ? null : item.confirmationId);
                 }}
@@ -918,21 +915,20 @@ function PendingConfirmations({ confirmations, busyId, onApprove, onCancel, onCo
             </div>
             {expanded && (
               <>
-                <div style={panelStyles.pendingMeta}>
-                  来源：Agent · {new Date(item.createdAt).toLocaleString()}
+                <div style={panelStyles.pendingMeta}>{t("Source: agent · ")}{new Date(item.createdAt).toLocaleString()}
                 </div>
-                <div style={panelStyles.pendingReason}>风险：{item.reason}</div>
+                <div style={panelStyles.pendingReason}>{t("Risk: ")}{item.reason}</div>
                 <pre style={panelStyles.pendingCommand}>{item.command}</pre>
               </>
             )}
             <div style={panelStyles.pendingActions}>
               {expanded && (
-                <button type="button" style={panelStyles.btnSecondary} onClick={() => onCopy(item.command)}>复制命令</button>
+                <button type="button" style={panelStyles.btnSecondary} onClick={() => onCopy(item.command)}>{t("Copy command")}</button>
               )}
               <button type="button" style={panelStyles.btnDanger} disabled={busyId === item.confirmationId} onClick={() => onApprove(item.confirmationId)}>
-                {busyId === item.confirmationId ? "处理中…" : "执行"}
+                {busyId === item.confirmationId ? t("Working…") : t("Run")}
               </button>
-              <button type="button" style={panelStyles.btnSecondary} disabled={busyId === item.confirmationId} onClick={() => onCancel(item.confirmationId)}>撤销</button>
+              <button type="button" style={panelStyles.btnSecondary} disabled={busyId === item.confirmationId} onClick={() => onCancel(item.confirmationId)}>{t("Undo")}</button>
             </div>
           </section>
         );
@@ -982,14 +978,12 @@ function BatchDialog({ api, task, onDone }) {
   return (
     <div style={panelStyles.dialogBackdrop} onClick={busy ? undefined : onDone}>
       <div style={{ ...panelStyles.dialog, width: 480 }} onClick={(e) => e.stopPropagation()}>
-        <div style={panelStyles.dialogTitle}>批量执行</div>
+        <div style={panelStyles.dialogTitle}>{t("Run in batch")}</div>
         {task.dangerous && (
-          <div style={{ fontSize: 12, color: "#ffb86b", background: "rgba(255,184,107,.12)", border: "1px solid #4a3520", borderRadius: 6, padding: "7px 8px" }}>
-            ⚠️ 危险命令：{task.reason}。确认将对勾选的全部服务器执行。
-          </div>
+          <div style={{ fontSize: 12, color: "#ffb86b", background: "rgba(255,184,107,.12)", border: "1px solid #4a3520", borderRadius: 6, padding: "7px 8px" }}>{t("⚠️ Dangerous command: ")}{task.reason}{t(". It will run on every ticked server.")}</div>
         )}
         <pre style={panelStyles.pendingCommand}>{task.command}</pre>
-        <div style={panelStyles.batchTitle}>目标服务器（每次手动勾选）</div>
+        <div style={panelStyles.batchTitle}>{t("Target servers (ticked manually each time)")}</div>
         <div style={panelStyles.batchList}>
           {profiles.map((p) => (
             <label key={p.profileId} style={panelStyles.batchItem}>
@@ -1005,13 +999,13 @@ function BatchDialog({ api, task, onDone }) {
             {results.map((r, i) => (
               <div key={i} style={{ padding: "6px 8px", background: "#101418", borderRadius: 6, border: `1px solid ${r.ok ? "#3fb950" : "#f85149"}` }}>
                 <div style={{ fontSize: 12, fontWeight: 600, color: r.ok ? "#3fb950" : "#f85149" }}>{r.name || r.host}</div>
-                <pre style={{ fontSize: 11, color: "#d7dbe2", margin: "4px 0 0", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>{r.error || r.stdout || "(无输出)"}</pre>
+                <pre style={{ fontSize: 11, color: "#d7dbe2", margin: "4px 0 0", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>{r.error || r.stdout || t("(no output)")}</pre>
               </div>
             ))}
           </div>
         )}
         <div style={panelStyles.dialogActions}>
-          <button type="button" style={panelStyles.btnSecondary} disabled={busy} onClick={() => { api.batchCancel(task.batchId).catch(() => {}); onDone(); }}>取消</button>
+          <button type="button" style={panelStyles.btnSecondary} disabled={busy} onClick={() => { api.batchCancel(task.batchId).catch(() => {}); onDone(); }}>{t("Cancel")}</button>
           <button
             type="button"
             style={panelStyles.btnPrimary}
@@ -1020,7 +1014,7 @@ function BatchDialog({ api, task, onDone }) {
             disabled={busy || results !== null || !Object.values(selected).some(Boolean)}
             onClick={run}
           >
-            {busy ? "执行中…" : `执行（${Object.values(selected).filter(Boolean).length} 台）`}
+            {busy ? t("Running…") : t(`Run (${Object.values(selected).filter(Boolean).length} servers)`)}
           </button>
         </div>
       </div>
@@ -1055,7 +1049,6 @@ export function SshPanel({ api, credentials, locale, viewId = DRAWER_VIEW_ID, vi
   /** Whether this mount already offered to adopt the live host connections. */
   const adoptedRef = useRef(false);
   const snippetSearchRef = useRef(null);
-  const t = zhDict;
 
   // The workspace runs its data loops for exactly as long as it is mounted:
   // the host (drawer open, or the SSH tab being the Sidebar's active tab in an
@@ -1098,7 +1091,7 @@ export function SshPanel({ api, credentials, locale, viewId = DRAWER_VIEW_ID, vi
         setPendingModalOpen(true);
       }
     } catch (error) {
-      sshUiSetError(`无法刷新待确认队列：${error?.message ?? String(error)}`);
+      sshUiSetError(t(`Could not refresh the pending-confirmation queue: ${error?.message ?? String(error)}`));
     }
   };
 
@@ -1220,8 +1213,8 @@ export function SshPanel({ api, credentials, locale, viewId = DRAWER_VIEW_ID, vi
         // client code reloads with the page, host code only with a restart.
         // Say so instead of leaving a bare transport error to decode.
         sshUiSetError(/404|not mounted|not-mounted/i.test(message)
-          ? "切换 Agent 目标失败：宿主端仍是旧版本（没有 selectConnection 接口），重启 dsh web / DSH.app 后即可生效"
-          : `切换 Agent 目标失败：${message}`);
+          ? t("Could not switch the agent's target: the host half is still an older version (no selectConnection interface). Restart dsh web / DSH.app to pick it up.")
+          : t(`Could not switch the agent's target: ${message}`));
       });
   };
   const visibleCommandSnippets = searchCommandSnippets(
@@ -1251,13 +1244,13 @@ export function SshPanel({ api, credentials, locale, viewId = DRAWER_VIEW_ID, vi
 
   const fillSnippet = async (command) => {
     const sessionId = active?.sessions?.[0];
-    if (!command || !sessionId) return sshUiSetError("请先打开当前服务器的终端，再填入快捷命令");
+    if (!command || !sessionId) return sshUiSetError(t("Open a terminal for the current server first, then fill in the snippet"));
     try {
       await api.write(sessionId, command);
       setSnippetQuery("");
       setTab("terminal");
     } catch (error) {
-      sshUiSetError(`填入快捷命令失败：${error?.message ?? String(error)}`);
+      sshUiSetError(t(`Filling in the snippet failed: ${error?.message ?? String(error)}`));
     }
   };
 
@@ -1265,20 +1258,20 @@ export function SshPanel({ api, credentials, locale, viewId = DRAWER_VIEW_ID, vi
   // Never append a command to an operator draft or a foreground program.
   const cdFromFiles = async (dir) => {
     const sessionId = active?.sessions?.[0];
-    if (!sessionId || !dir) return sshUiSetError("请先打开当前服务器的终端，再使用 cd");
+    if (!sessionId || !dir) return sshUiSetError(t("Open a terminal for the current server first, then use cd"));
     try {
       await api.changeDirectory(sessionId, dir);
       setTab("terminal");
     } catch (error) {
-      sshUiSetError(`cd 失败：${error?.message ?? String(error)}`);
+      sshUiSetError(t(`cd failed: ${error?.message ?? String(error)}`));
     }
   };
 
   const saveSnippet = () => {
     const name = snippetForm.name.trim();
     const command = snippetForm.command.trim();
-    if (!name || !command) return sshUiSetError("请填写快捷命令的名称和命令内容");
-    if (snippetForm.scope !== "global" && !snippetForm.scopeId) return sshUiSetError("请选择命令适用的分组或服务器");
+    if (!name || !command) return sshUiSetError(t("Enter a name and a command for the snippet"));
+    if (snippetForm.scope !== "global" && !snippetForm.scopeId) return sshUiSetError(t("Choose the group or server the command applies to"));
     const next = [...commandSnippets, {
       id: crypto.randomUUID(), name, command, scope: snippetForm.scope,
       scopeId: snippetForm.scope === "global" ? null : snippetForm.scopeId
@@ -1291,7 +1284,7 @@ export function SshPanel({ api, credentials, locale, viewId = DRAWER_VIEW_ID, vi
   };
 
   const removeSnippet = (item) => {
-    if (!window.confirm(`删除自定义快捷命令“${item.name}”？`)) return;
+    if (!window.confirm(t(`Delete the custom snippet “${item.name}”?`))) return;
     const next = commandSnippets.filter((entry) => entry.id !== item.id);
     saveCommandSnippets(next);
     setCommandSnippets(next);
@@ -1311,7 +1304,7 @@ export function SshPanel({ api, credentials, locale, viewId = DRAWER_VIEW_ID, vi
       // The server-side session remains alive when disconnect fails, so put the
       // local tab back rather than pretending it was released.
       openInView(viewId, connectionId);
-      sshUiSetError(`断开服务器失败：${error?.message ?? String(error)}`);
+      sshUiSetError(t(`Disconnecting the server failed: ${error?.message ?? String(error)}`));
     }
   };
 
@@ -1333,7 +1326,7 @@ export function SshPanel({ api, credentials, locale, viewId = DRAWER_VIEW_ID, vi
     try {
       await navigator.clipboard.writeText(command);
     } catch (error) {
-      sshUiSetError(`复制命令失败：${error?.message ?? String(error)}`);
+      sshUiSetError(t(`Copying the command failed: ${error?.message ?? String(error)}`));
     }
   };
 
@@ -1352,7 +1345,7 @@ export function SshPanel({ api, credentials, locale, viewId = DRAWER_VIEW_ID, vi
                   selectInView(viewId, conn.connectionId);
                   bindAgent(conn.connectionId);
                 }}
-                title={`${conn.username}@${conn.host}:${conn.port}${isAgentTarget ? "（Agent 正在使用此连接）" : ""}`}
+                title={t(`${conn.username}@${conn.host}:${conn.port}${isAgentTarget ? t(" (the agent is using this connection)") : ""}`)}
               >
                 {conn.name || `${conn.username}@${conn.host}`}
               </button>
@@ -1361,8 +1354,8 @@ export function SshPanel({ api, credentials, locale, viewId = DRAWER_VIEW_ID, vi
                   style={panelStyles.agentBadge}
                   data-dsh-ssh-ops-agent-target="true"
                   role="img"
-                  title="Agent 的 ssh_exec / sftp_* / tunnel_* 默认作用于此连接；点击其他栏可切换"
-                  aria-label="Agent 正在使用此连接"
+                  title={t("The agent's ssh_exec / sftp_* / tunnel_* act on this connection by default; click another pane to switch")}
+                  aria-label={t("The agent is using this connection")}
                 >
                   <IconRobot16 size={15} />
                 </span>
@@ -1371,8 +1364,8 @@ export function SshPanel({ api, credentials, locale, viewId = DRAWER_VIEW_ID, vi
                 type="button"
                 style={panelStyles.serverTabClose}
                 onClick={() => closePaneTab(conn.connectionId)}
-                title="关闭此栏标签（两栏都关闭后断开服务器）"
-                aria-label={`关闭此栏的 ${conn.name || conn.host} 标签`}
+                title={t("Close this pane's tab (the server disconnects once both panes are closed)")}
+                aria-label={t(`Close the ${conn.name || conn.host} tab in this pane`)}
               >
                 ×
               </button>
@@ -1386,9 +1379,9 @@ export function SshPanel({ api, credentials, locale, viewId = DRAWER_VIEW_ID, vi
           style={paneConnections.length === 0 ? panelStyles.serverTabAddLabeled : panelStyles.serverTabAdd}
           onClick={() => setDialogOpen(true)}
           title={t.connect}
-          aria-label="连接新服务器"
+          aria-label={t("Connect to a new server")}
         >
-          {paneConnections.length === 0 ? `＋ ${t.connect}` : "＋"}
+          {paneConnections.length === 0 ? t(`+ ${t.connect}`) : t("+")}
         </button>
       </div>
 
@@ -1399,7 +1392,7 @@ export function SshPanel({ api, credentials, locale, viewId = DRAWER_VIEW_ID, vi
           ["terminal", t.tabTerminal],
           ["files", t.tabFiles],
           ["tunnels", t.tabTunnels],
-          ["snippets", "快捷命令"]
+          ["snippets", t("Snippets")]
         ].map(([key, label]) => (
           <button
             key={key}
@@ -1424,7 +1417,7 @@ export function SshPanel({ api, credentials, locale, viewId = DRAWER_VIEW_ID, vi
             ...panelStyles.tab,
             ...(tab === "database" ? panelStyles.tabActive : {})
           }}
-          title="数据库连接与查询"
+          title={t("Database connections and queries")}
         >
           {t.tabDatabase}
         </button>
@@ -1434,16 +1427,13 @@ export function SshPanel({ api, credentials, locale, viewId = DRAWER_VIEW_ID, vi
             ...panelStyles.tab,
             ...(tab === "logs" ? panelStyles.tabActive : {})
           }}
-          title="已录制的会话日志（可搜索、下载）"
-        >
-          日志
-        </button>
+          title={t("Recorded session logs (searchable, downloadable)")}
+        >{t("Logs")}</button>
       </div>
 
       {!batchTask && pendingBatchCount > 0 && (
         <div style={panelStyles.batchNotice} onClick={openBatchTask}>
-          ⚡ {pendingBatchCount} 个批量任务待处理，点击打开
-        </div>
+          ⚡ {pendingBatchCount}{t("  batch task(s) pending; click to open")}</div>
       )}
 
       <div style={panelStyles.body}>
@@ -1451,7 +1441,7 @@ export function SshPanel({ api, credentials, locale, viewId = DRAWER_VIEW_ID, vi
           <div style={{ ...panelStyles.tabPane, display: tab === "terminal" ? "flex" : "none" }}>
             {pendingConfirmations.length > 0 && !pendingModalOpen && (
               <div style={panelStyles.pendingInline}>
-                <div style={panelStyles.pendingInlineTitle}>待确认操作（在此执行或撤销）</div>
+                <div style={panelStyles.pendingInlineTitle}>{t("Pending operations (run or undo here)")}</div>
                 <PendingConfirmations
                   confirmations={pendingConfirmations}
                   busyId={pendingBusy}
@@ -1526,40 +1516,40 @@ export function SshPanel({ api, credentials, locale, viewId = DRAWER_VIEW_ID, vi
         <TabErrorBoundary key="snippets">
           <div style={{ ...panelStyles.tabPane, display: tab === "snippets" ? "flex" : "none" }}>
             <div style={panelStyles.snippetPage}>
-              <div style={panelStyles.snippetPageHeading}>快捷命令</div>
+              <div style={panelStyles.snippetPageHeading}>{t("Snippets")}</div>
               <div style={panelStyles.snippetToolbar}>
-                <div style={panelStyles.snippetHint}>点击仅填入终端输入行，按 Enter 后才执行。</div>
-                <button type="button" onClick={() => setSnippetEditorOpen((open) => !open)} style={panelStyles.snippetAdd}>{snippetEditorOpen ? "收起" : "＋ 自定义"}</button>
+                <div style={panelStyles.snippetHint}>{t("Clicking only fills the terminal input line; it runs after you press Enter.")}</div>
+                <button type="button" onClick={() => setSnippetEditorOpen((open) => !open)} style={panelStyles.snippetAdd}>{snippetEditorOpen ? t("Collapse") : t("+ Custom")}</button>
               </div>
               {snippetEditorOpen && <div style={panelStyles.snippetEditor}>
-                <input value={snippetForm.name} onChange={(event) => setSnippetForm({ ...snippetForm, name: event.target.value })} placeholder="名称" style={panelStyles.snippetEditorName} />
-                <input value={snippetForm.command} onChange={(event) => setSnippetForm({ ...snippetForm, command: event.target.value })} placeholder="命令，例如：systemctl status nginx" style={panelStyles.snippetEditorCommand} />
+                <input value={snippetForm.name} onChange={(event) => setSnippetForm({ ...snippetForm, name: event.target.value })} placeholder={t("Name")} style={panelStyles.snippetEditorName} />
+                <input value={snippetForm.command} onChange={(event) => setSnippetForm({ ...snippetForm, command: event.target.value })} placeholder={t("command, e.g. systemctl status nginx")} style={panelStyles.snippetEditorCommand} />
                 <select value={snippetForm.scope} onChange={(event) => setSnippetForm({ ...snippetForm, scope: event.target.value, scopeId: "" })} style={panelStyles.snippetEditorScope}>
-                  <option value="global">所有服务器</option><option value="group">指定分组</option><option value="profile">指定服务器</option>
+                  <option value="global">{t("All servers")}</option><option value="group">{t("Specific group")}</option><option value="profile">{t("Specific server")}</option>
                 </select>
-                {snippetForm.scope === "group" && <select value={snippetForm.scopeId} onChange={(event) => setSnippetForm({ ...snippetForm, scopeId: event.target.value })} style={panelStyles.snippetEditorScope}><option value="">选择分组</option>{groups.map((group) => <option key={group.groupId} value={group.groupId}>{group.name}</option>)}</select>}
-                {snippetForm.scope === "profile" && <select value={snippetForm.scopeId} onChange={(event) => setSnippetForm({ ...snippetForm, scopeId: event.target.value })} style={panelStyles.snippetEditorScope}><option value="">选择服务器</option>{profiles.map((profile) => <option key={profile.profileId} value={profile.profileId}>{profile.name || profile.host}</option>)}</select>}
-                <button type="button" onClick={saveSnippet} style={panelStyles.snippetSave}>保存</button>
+                {snippetForm.scope === "group" && <select value={snippetForm.scopeId} onChange={(event) => setSnippetForm({ ...snippetForm, scopeId: event.target.value })} style={panelStyles.snippetEditorScope}><option value="">{t("Select a group")}</option>{groups.map((group) => <option key={group.groupId} value={group.groupId}>{group.name}</option>)}</select>}
+                {snippetForm.scope === "profile" && <select value={snippetForm.scopeId} onChange={(event) => setSnippetForm({ ...snippetForm, scopeId: event.target.value })} style={panelStyles.snippetEditorScope}><option value="">{t("Select a server")}</option>{profiles.map((profile) => <option key={profile.profileId} value={profile.profileId}>{profile.name || profile.host}</option>)}</select>}
+                <button type="button" onClick={saveSnippet} style={panelStyles.snippetSave}>{t("Save")}</button>
               </div>}
               <input
                 ref={snippetSearchRef}
                 value={snippetQuery}
                 onChange={(event) => setSnippetQuery(event.target.value)}
-                placeholder="搜索名称或命令，例如：nginx、日志、docker…"
+                placeholder={t("Search names or commands, e.g. nginx, logs, docker…")}
                 style={panelStyles.snippetSearch}
               />
-              {!active && <div style={panelStyles.snippetEmpty}>请先连接服务器；你仍可浏览和搜索内置命令。</div>}
+              {!active && <div style={panelStyles.snippetEmpty}>{t("Connect to a server first; you can still browse and search the built-in commands.")}</div>}
               <div style={panelStyles.snippetList}>
                 {visibleCommandSnippets.map((item) => (
                   <div key={item.id} style={panelStyles.snippetCard}>
                     <button type="button" onClick={() => fillSnippet(item.command)} disabled={!active} style={panelStyles.snippetCardMain}>
-                      <strong>{item.name}{!item.builtIn && <small style={panelStyles.snippetCustomBadge}>自定义</small>}</strong><code>{item.command}</code>
+                      <strong>{item.name}{!item.builtIn && <small style={panelStyles.snippetCustomBadge}>{t("Custom")}</small>}</strong><code>{item.command}</code>
                     </button>
-                    {!item.builtIn && <button type="button" onClick={() => removeSnippet(item)} title={`删除 ${item.name}`} aria-label={`删除 ${item.name}`} style={panelStyles.snippetDelete}>×</button>}
+                    {!item.builtIn && <button type="button" onClick={() => removeSnippet(item)} title={t(`Delete ${item.name}`)} aria-label={t(`Delete ${item.name}`)} style={panelStyles.snippetDelete}>×</button>}
                   </div>
                 ))}
                 {visibleCommandSnippets.length === 0 && (
-                  <div style={panelStyles.snippetEmpty}>没有匹配的快捷命令。点击右上角“＋ 自定义”即可添加。</div>
+                  <div style={panelStyles.snippetEmpty}>{t("No matching snippets. Click “+ Custom” in the top right to add one.")}</div>
                 )}
               </div>
             </div>
@@ -1572,14 +1562,12 @@ export function SshPanel({ api, credentials, locale, viewId = DRAWER_VIEW_ID, vi
           style={panelStyles.pendingModalBackdrop}
           role="dialog"
           aria-modal="true"
-          aria-label="危险操作确认"
+          aria-label={t("Dangerous operation confirmation")}
           onClick={() => setPendingModalOpen(false)}
         >
           <div style={panelStyles.pendingModal} onClick={(e) => e.stopPropagation()}>
-            <div style={panelStyles.pendingModalTitle}>⚠️ 检测到危险命令等待确认</div>
-            <div style={panelStyles.pendingModalHint}>
-              以下命令由 Agent 发起且尚未执行，只有点击「执行」才会发送到服务器。
-            </div>
+            <div style={panelStyles.pendingModalTitle}>{t("⚠️ A dangerous command is waiting for confirmation")}</div>
+            <div style={panelStyles.pendingModalHint}>{t("The command below was started by the agent and has not run yet; it is sent to the server only when you click “Run”.")}</div>
             <PendingConfirmations
               confirmations={pendingConfirmations}
               busyId={pendingBusy}
@@ -1589,9 +1577,7 @@ export function SshPanel({ api, credentials, locale, viewId = DRAWER_VIEW_ID, vi
               alwaysExpand
             />
             <div style={panelStyles.dialogActions}>
-              <button type="button" style={panelStyles.btnSecondary} onClick={() => setPendingModalOpen(false)}>
-                稍后在面板中处理
-              </button>
+              <button type="button" style={panelStyles.btnSecondary} onClick={() => setPendingModalOpen(false)}>{t("Handle later in the panel")}</button>
             </div>
           </div>
         </div>
@@ -1603,34 +1589,6 @@ export function SshPanel({ api, credentials, locale, viewId = DRAWER_VIEW_ID, vi
     </div>
   );
 }
-
-const zhDict = {
-  panelTitle: "SSH 终端",
-  connect: "连接服务器",
-  openSession: "打开终端",
-  empty: "还没有连接。",
-  sessionClosed: "会话已关闭",
-  noConnection: "未连接",
-  busy: "忙…",
-  tabTerminal: "终端",
-  tabFiles: "文件",
-  tabTunnels: "转发",
-  tabDatabase: "数据库"
-};
-
-const enDict = {
-  panelTitle: "SSH Terminal",
-  connect: "Connect",
-  openSession: "Open",
-  empty: "No connections yet.",
-  sessionClosed: "Session closed",
-  noConnection: "Not connected",
-  busy: "Busy…",
-  tabTerminal: "Terminal",
-  tabFiles: "Files",
-  tabTunnels: "Tunnels",
-  tabDatabase: "Database"
-};
 
 const panelStyles = {
   /** The workspace fill: works inside the fixed drawer (flex child) and inside

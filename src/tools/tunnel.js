@@ -2,14 +2,15 @@
  * Agent tools for SSH port forwarding.
  */
 import { defineTool } from "@deepseek-ai/dsh-tools";
+import { t } from "../i18n/core.js";
 
 export function registerTunnelTools(ctx, service) {
   ctx.tools.register(defineTool({
     name: "tunnel_start",
-    description: "Start a port forward through a connected server. kind='local' (default): the DSH host listens on bind_addr:bind_port and forwards to remote_host:remote_port on the server — use to reach services only the server can see. kind='remote': the server listens on remote_host:remote_port and forwards back to target_host:target_port on this machine. kind='dynamic': a SOCKS5 proxy on bind_addr:bind_port (the ssh -D equivalent) — clients pick the destination per connection and every one of them is reached from the server. Returns a tunnel_id for tunnel_stop.",
+    description: t("Start a port forward through a connected server. kind='local' (default): the DSH host listens on bind_addr:bind_port and forwards to remote_host:remote_port on the server — use to reach services only the server can see. kind='remote': the server listens on remote_host:remote_port and forwards back to target_host:target_port on this machine. kind='dynamic': a SOCKS5 proxy on bind_addr:bind_port (the ssh -D equivalent) — clients pick the destination per connection and every one of them is reached from the server. Returns a tunnel_id for tunnel_stop."),
     parameters: {
       connection_id: { type: "string", description: "Connection id from ssh_connect; omit to use the current server." },
-      kind: { type: "string", enum: ["local", "remote", "dynamic"], description: "Forward direction: 'local' (default), 'remote', or 'dynamic' (SOCKS5 proxy)." },
+      kind: { type: "string", enum: ["local", "remote", "dynamic"], description: t("Forward direction: 'local' (default), 'remote', or 'dynamic' (SOCKS5 proxy).") },
       bind_addr: { type: "string", description: "Local bind address (local kind), defaults to 127.0.0.1." },
       bind_port: { type: "integer", description: "Local bind port (local kind); 0 picks a free port." },
       remote_host: { type: "string", description: "The remote host to reach (local kind) or to listen on (remote kind); not used by dynamic." },
@@ -49,7 +50,7 @@ export function registerTunnelTools(ctx, service) {
         result = await service.tunnelStartRemote({ connectionId: args.connection_id, bindAddr: args.bind_addr, bindPort: args.bind_port, remoteHost: args.remote_host, remotePort: args.remote_port, targetHost: args.target_host ?? "127.0.0.1", targetPort: args.target_port });
       } else {
         if (args.remote_host === undefined || args.remote_port === undefined) {
-          throw new Error("tunnel_start failed: remote_host and remote_port are required for the local kind");
+          throw new Error(t("tunnel_start failed: remote_host and remote_port are required for the local kind"));
         }
         result = await service.tunnelStartLocal({ connectionId: args.connection_id, bindAddr: args.bind_addr, bindPort: args.bind_port, remoteHost: args.remote_host, remotePort: args.remote_port });
       }

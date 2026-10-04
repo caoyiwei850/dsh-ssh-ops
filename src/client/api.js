@@ -98,6 +98,15 @@ export class SshApi {
     return this.call("agentSettingsSave", { agentAutoConnect });
   }
 
+  languageGet() {
+    return this.call("languageGet", {});
+  }
+
+  /** `language` is "zh", "en", or null to follow DSH's own language again. */
+  languageSave(language) {
+    return this.call("languageSave", { language });
+  }
+
   profileList() {
     return this.call("profileList", {});
   }

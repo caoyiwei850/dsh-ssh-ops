@@ -64,7 +64,7 @@ function joined(writes) {
   // Ctrl-U line kill, not a carriage return.
   assert.ok(!joined(writes).endsWith("\r"), "blocked Enter is replaced with Ctrl-U");
   assert.equal(session.inputLine, "");
-  assert.ok(session.captureBuffer.includes("安全策略"), "policy notice lands in the terminal buffer");
+  assert.ok(session.captureBuffer.includes("safety policy"), "policy notice lands in the terminal buffer");
 
   // Ctrl-C clears the mirror so a previously blocked line cannot be submitted
   // by a later Enter.

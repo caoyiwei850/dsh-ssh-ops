@@ -1,3 +1,4 @@
+import { t } from "./i18n/core.js";
 /**
  * SQL safety assessment for db_execute. Database CRUD is far more frequent than
  * host-shell ops, so detection is statement-verb based rather than a substring
@@ -36,7 +37,7 @@ export function assessSqlStatement(sql) {
   if (typeof sql !== "string" || sql.trim() === "") return { blocked: false };
   for (const verb of statementVerbs(sql)) {
     if (DESTRUCTIVE_VERBS.has(verb)) {
-      return { blocked: true, reason: `${verb} 不可恢复或会停库`, verb };
+      return { blocked: true, reason: t(`${verb} is irreversible or takes the database down`), verb };
     }
   }
   return { blocked: false };
@@ -120,8 +121,8 @@ function scanTokens(sql) {
       continue;
     }
     if (ch === ";") { closeStatement(); i++; continue; }
-    if (ch === "(") { depth++; i++; continue; }
-    if (ch === ")") { depth = Math.max(0, depth - 1); i++; continue; }
+    if (ch === t("(")) { depth++; i++; continue; }
+    if (ch === t(")")) { depth = Math.max(0, depth - 1); i++; continue; }
     // Punctuation the target parser needs to see: dots separate qualified
     // identifiers, commas separate multi-table drops. They are bare-word
     // no-ops for the keyword gates (never in READONLY/WRITE keyword sets).
@@ -137,7 +138,7 @@ function scanTokens(sql) {
       while (j < n && IDENT_PART.test(sql[j])) j++;
       let k = j;
       while (k < n && WHITESPACE.has(sql[k])) k++;
-      const isCall = sql[k] === "(";
+      const isCall = sql[k] === t("(");
       // `raw` keeps the original case: keyword matching uses `word`, but
       // identifier reconstruction (destructive-target parsing) must not
       // uppercase a table name on case-sensitive servers.
@@ -167,13 +168,13 @@ export function assessReadOnlySql(sql) {
   for (const stmt of statements) {
     const verb = stmt.tokens[0].word;
     if (!READONLY_VERBS.has(verb)) {
-      return { ok: false, reason: `只读查询不允许以 “${verb}” 开头的语句（仅允许 SELECT/SHOW/DESCRIBE/EXPLAIN/WITH）`, verbs };
+      return { ok: false, reason: t(`A read-only query may not start with “${verb}” (only SELECT/SHOW/DESCRIBE/EXPLAIN/WITH are allowed)`), verbs };
     }
     for (const token of stmt.tokens) {
       if (token.word === "CREATE" && verb === "SHOW") continue; // SHOW CREATE TABLE
       if (token.word === "REPLACE" && token.isCall) continue;   // REPLACE(str, a, b)
       if (WRITE_KEYWORDS.has(token.word)) {
-        return { ok: false, reason: `只读查询中不允许出现 ${token.word}；如需变更请走 db_execute（高危会转人工确认）或数据库面板`, verbs };
+        return { ok: false, reason: t(`A read-only query may not contain ${token.word}; to make changes use db_execute (high-risk ones go to human confirmation) or the database panel`), verbs };
       }
     }
   }
