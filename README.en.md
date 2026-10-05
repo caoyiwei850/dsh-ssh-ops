@@ -13,6 +13,8 @@
 [![dsh.so install · dsh 0.1.7-rc.2](https://www.dsh.so/badge/install/dsh-ssh-ops@0.1.7-rc.2.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/caoyiwei850/dsh-ssh-ops)
 
+> **v0.3.15**: adds **dual-factor authentication** — when a firewall/switch requires `AuthenticationMethods password,publickey` (or the reverse), you can now configure a second factor of the opposite kind beside the password or private key in the resource or shared-credential form; such devices previously always failed to log in. **SQL lexer hardening** fixes two destructive-statement bypasses (backslash-quote dialects and PG dollar references; the Oracle `q''` alternating-quote idea was tested and rejected, kept as a regression probe). Session logs gain **multi-select + select-all batch delete**. The legacy floating-panel fallback is removed — the official right Sidebar is now the only host surface for the terminal.
+
 > **v0.3.14**: adds an operator-controlled, off-by-default AI auto-connect switch. When enabled, the agent can connect saved SSH resources by name and reveal the target terminal on the right. When disabled, saved resources remain hidden from the agent. Also fixes reading empty session logs.
 
 > **v0.3.12**: fixes `db_list_connections` being rejected whenever a database connection exists because its strict output schema omitted `username` (#23). Connection listings now identify the database, non-secret username, TLS mode and SSH route; SQLite shows its file path instead of `:0`. A regression test exercises the real DSH output validator.

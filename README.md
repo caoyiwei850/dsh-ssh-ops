@@ -13,6 +13,8 @@
 [![dsh.so install · dsh 0.1.7-rc.2](https://www.dsh.so/badge/install/dsh-ssh-ops@0.1.7-rc.2.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/caoyiwei850/dsh-ssh-ops)
 
+> **v0.3.15**：新增**双因素认证**——防火墙/交换机把 `AuthenticationMethods` 配成 `password,publickey`（或反序）时，可在资源或共享凭据里为密码/私钥再配一条相反类型的第二因素，这类设备此前必然登录失败；**SQL 词法扫描加固**，修复反斜杠引号方言与 PG dollar 引用两个破坏性语句漏检（Oracle `q''` 交替引号经实测否决并固化为回归探针）；会话日志支持**多选 + 全选批量删除**；移除旧版 DSH 的浮动面板回退，官方右侧边栏成为 SSH 终端的唯一宿主形态。
+
 > **v0.3.14**：新增默认关闭的「AI 自动连接」开关。开启后，Agent 可按名称连接已保存的 SSH 资源，目标终端自动出现在右侧；关闭时，Agent 无法枚举保存资源。修复会话日志空文件读取问题。
 
 > **v0.3.13**：整轮更新——**SFTP 目录批量上传/下载**（新工具 `sftp_upload_dir` / `sftp_download_dir`：小文件并发、大文件独占、单文件失败不中断整批）；**SSH 认证失败结构化诊断**（试过哪些方法、服务器还接受什么、下一步怎么走），并新增 **keyboard-interactive 认证**（保存的密码应答交互提示/MFA 门禁，设备掐断时自动降级纯密码重试）；**数据库连接健壮性三件套**（TCP keepalive、空闲复用前活性 ping + 透明重连、断连时手工事务有界收尾）；**修复** MySQL 未知字符集文本列显示为字节对象的问题；上一版的破坏性操作可逆化（rm 回收站、危险 SQL 自动备份、DROP 隔离改名、绕过向量封堵）一并随本版发布。
