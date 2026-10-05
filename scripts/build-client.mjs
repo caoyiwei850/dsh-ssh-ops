@@ -13,6 +13,10 @@ const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const cjsOut = resolve(rootDir, "lib/client.cjs");
 const clientOut = resolve(rootDir, "lib/client.js");
 
+// The settings page shows the package version; inject it as a constant so
+// the bundle never carries the whole manifest.
+const manifest = JSON.parse(readFileSync(resolve(rootDir, "package.json"), "utf8"));
+
 await build({
   entryPoints: [resolve(rootDir, "src/client/index.jsx")],
   outfile: cjsOut,
@@ -21,6 +25,7 @@ await build({
   target: "es2022",
   bundle: true,
   sourcemap: false,
+  define: { __DSH_SSH_OPS_VERSION__: JSON.stringify(manifest.version) },
   // xterm/zod are inlined; react stays external (resolved by the host page
   // through the ModuleLoader seed table).
   external: ["react", "react/*", "@deepseek-ai/*"],

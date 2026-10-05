@@ -4,6 +4,7 @@
  * right-side panel shows; `service` is the SshOpsService instance.
  */
 import { defineTool } from "@deepseek-ai/dsh-tools";
+import { t } from "../i18n/core.js";
 
 export function registerSshSessionTools(ctx, service) {
   ctx.tools.register(defineTool({
@@ -13,7 +14,7 @@ export function registerSshSessionTools(ctx, service) {
     output: {
       schema: { type: "object", additionalProperties: false, properties: { sessionId: { type: "string", required: true }, enabled: { type: "boolean", required: true } } },
       render(_args, value) {
-        return [{ type: "text", text: value.enabled ? `已在会话 ${value.sessionId} 启用 shell integration；此后 ssh_terminal_context 会带上 cwd/退出码/提示符状态。` : "启用失败。" }];
+        return [{ type: "text", text: value.enabled ? t(`已在会话 ${value.sessionId} 启用 shell integration；此后 ssh_terminal_context 会带上 cwd/退出码/提示符状态。`) : t("启用失败。") }];
       }
     },
     async execute(args) {
@@ -46,7 +47,7 @@ export function registerSshSessionTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "ssh_list",
-    description: "List currently open SSH connections and identify the active server. This reports only live connection metadata (name, host, port, username and active state); it never returns credentials. When the operator enabled 「允许 AI 自动连接已保存服务器」 in the SSH settings, the result also lists the operator's saved SSH resources (name, host, username, whether already connected) — connect one with ssh_connect_profile. Use this tool when the user asks which server is connected or which saved servers exist; for normal server work, ssh_exec/ssh_read/ssh_write already target the active connection automatically.",
+    description: t("List currently open SSH connections and identify the active server. This reports only live connection metadata (name, host, port, username and active state); it never returns credentials. When the operator enabled 「允许 AI 自动连接已保存服务器」 in the SSH settings, the result also lists the operator's saved SSH resources (name, host, username, whether already connected) — connect one with ssh_connect_profile. Use this tool when the user asks which server is connected or which saved servers exist; for normal server work, ssh_exec/ssh_read/ssh_write already target the active connection automatically."),
     parameters: {},
     output: {
       schema: {
@@ -97,7 +98,7 @@ export function registerSshSessionTools(ctx, service) {
         if (value.resources !== undefined) {
           lines.push("");
           lines.push(value.resources.length === 0
-            ? "Saved SSH resources: none saved yet — the operator can add servers in 设置 → SSH 资源."
+            ? t("Saved SSH resources: none saved yet — the operator can add servers in 设置 → SSH 资源.")
             : `Saved SSH resources (connectable via ssh_connect_profile): ${value.resources.map((resource) => `${resource.name} → ${resource.username}@${resource.host}:${resource.port}${resource.connected ? " [connected]" : ""}`).join("; ")}`);
         }
         return [{ type: "text", text: lines.join("\n") }];
@@ -172,7 +173,7 @@ export function registerSshSessionTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "ssh_connect_profile",
-    description: "Connect to one of the operator's saved SSH resources (设置 → SSH 资源) by name and make it the active connection: later ssh_exec/ssh_read/ssh_write without connection_id target it, and its terminal opens in the right-side panel so the operator can see which machine you are on. Only works when the operator enabled 「允许 AI 自动连接已保存服务器」; with the switch off the call fails — then ask the operator to connect the server, and NEVER fall back to ssh_connect with credentials you gathered from conversation. Reuses an already-open connection for the same resource instead of connecting twice.",
+    description: t("Connect to one of the operator's saved SSH resources (设置 → SSH 资源) by name and make it the active connection: later ssh_exec/ssh_read/ssh_write without connection_id target it, and its terminal opens in the right-side panel so the operator can see which machine you are on. Only works when the operator enabled 「允许 AI 自动连接已保存服务器」; with the switch off the call fails — then ask the operator to connect the server, and NEVER fall back to ssh_connect with credentials you gathered from conversation. Reuses an already-open connection for the same resource instead of connecting twice."),
     parameters: {
       resource: { type: "string", required: true, description: "The saved resource's name as shown by ssh_list (e.g. 'dev', 'prod'), or its profile id. A unique partial name is accepted; unknown or ambiguous names fail with the list of available resources." }
     },
@@ -193,7 +194,7 @@ export function registerSshSessionTools(ctx, service) {
         }
       },
       render(_args, value) {
-        const base = `已连接保存的服务器「${value.name}」（${value.username}@${value.host}:${value.port}，id: ${value.connectionId}），并已设为当前 SSH 连接，后续 ssh_exec 等工具默认作用于这台机器。${value.reused ? "复用了该服务器已有的连接。" : ""}${value.terminalOpened ? "已为它打开终端会话（可在右侧 SSH 面板查看该机器）。" : ""}`;
+        const base = t(`已连接保存的服务器「${value.name}」（${value.username}@${value.host}:${value.port}，id: ${value.connectionId}），并已设为当前 SSH 连接，后续 ssh_exec 等工具默认作用于这台机器。${value.reused ? t("复用了该服务器已有的连接。") : ""}${value.terminalOpened ? t("已为它打开终端会话（可在右侧 SSH 面板查看该机器）。") : ""}`);
         return [{ type: "text", text: value.warning ? `${base}\n⚠️ ${value.warning}` : base }];
       }
     },
@@ -240,10 +241,10 @@ export function registerSshSessionTools(ctx, service) {
       render(args, value) {
         if (value.blocked) {
           const where = value.queued
-            ? "命令未执行；右侧 SSH 终端面板已弹出确认卡片，等待操作员点击“执行”或“撤销”："
-            : "命令未执行，无法预填，请粘贴到右侧终端执行：";
-          const whereRuns = "确认执行（或粘贴执行）发生在右侧交互 shell 内，跟随终端当前目录；与 ssh_exec 的 exec 通道目录无关。命令里的相对路径请按此理解。";
-          return [{ type: "text", text: `⚠️ 已拦截：${value.reason ?? ""}\n${where}\n\`\`\`bash\n${value.command ?? ""}\n\`\`\`\n${whereRuns}\n请勿重试/绕行，由人工确认执行。` }];
+            ? t("命令未执行；右侧 SSH 终端面板已弹出确认卡片，等待操作员点击“执行”或“撤销”：")
+            : t("命令未执行，无法预填，请粘贴到右侧终端执行：");
+          const whereRuns = t("确认执行（或粘贴执行）发生在右侧交互 shell 内，跟随终端当前目录；与 ssh_exec 的 exec 通道目录无关。命令里的相对路径请按此理解。");
+          return [{ type: "text", text: t(`⚠️ 已拦截：${value.reason ?? ""}\n${where}\n\`\`\`bash\n${value.command ?? ""}\n\`\`\`\n${whereRuns}\n请勿重试/绕行，由人工确认执行。`) }];
         }
         const out = value.stdout ?? "";
         const err = value.stderr ?? "";

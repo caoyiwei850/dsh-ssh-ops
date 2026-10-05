@@ -8,7 +8,7 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.3.15-blue)
+![version](https://img.shields.io/badge/version-0.3.16-blue)
 [![dsh.so risk](https://www.dsh.so/badge/dsh-ssh-ops.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![dsh.so install · dsh 0.1.7-rc.2](https://www.dsh.so/badge/install/dsh-ssh-ops@0.1.7-rc.2.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/caoyiwei850/dsh-ssh-ops)
@@ -99,7 +99,7 @@ Agent 命中上述黑名单时不会被静默拒绝：插件会创建一条一�
 ### 从 GitHub 安装（推荐）
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.15
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.16
 ```
 
 安装后重启 DSH Web：
@@ -112,14 +112,14 @@ dsh web
 
 ### 从发布压缩包安装
 
-从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.15) 下载 `dsh-ssh-ops-0.3.15.tgz` 后：
+从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.16) 下载 `dsh-ssh-ops-0.3.16.tgz` 后：
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.15.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.16.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.3.15.zip` 适用于离线审阅或二次开发；解压后可在目录中执行 `npm install && npm run build`。
+`dsh-ssh-ops-0.3.16.zip` 适用于离线审阅或二次开发；解压后可在目录中执行 `npm install && npm run build`。
 
 ## 使用方式
 
@@ -128,6 +128,7 @@ dsh web
 3. 顶部 **SSH** 仅控制右侧终端的显示和隐藏；右上角 `+` 可选择已保存资源，或创建不落盘的临时连接。
 4. 在主对话中直接说“查询服务器内存使用情况”或“配置 Nginx SSL 证书”。主 Agent 只能操作当前活动连接，不能读取凭据；默认也不能枚举保存资源或自动用保存凭据连接——在 **设置 → SSH 资源 → AI 自动连接** 打开开关后，Agent 才能按名称连接已保存服务器并切换当前连接（每次连接都会在右侧面板打开终端，操作者始终可见）。
 5. 需要数据库时，让 Agent 调 `db_connect`（或自己在「数据库」页签新建连接），随后即可在对话中查询/执行。
+6. 插件界面语言**自动跟随 DSH 自身的语言设置**（中文 / English）：切换即时重绘整个插件界面，Agent 可见的工具消息经回写即时并持久跟随；左侧设置菜单的「SSH 资源」标签与图标也随语言动态变化。
 ### Agent 工具
 
 共 34 个 Agent 工具，省略 `connection_id` / `db_connection_id` 时默认作用于当前活动连接，**无需先调 `ssh_list` / `db_list_connections`**。
@@ -200,17 +201,19 @@ dsh web
 
 ```bash
 npm install
-npm test
-npm run build
+npm test        # db-lazy-load 会在缺少 lib/ 时自动先构建宿主包
+npm run build   # 生成 lib/（宿主三件 + 客户端 bundle）；lib 是构建产物，不入库
 npm run pack:release
 ```
+
+`lib/` 目录由 `npm run build` 生成并列入 `.gitignore`（PR diff 因此不再被构建产物淹没）。从 git 直接安装（非 npm/tgz 渠道）需先执行 `npm install && npm run build`。
 
 推送与 `package.json.version` 一致的 `vX.Y.Z` tag 时，GitHub Actions 会测试、构建并从同一个 `.tgz` 同时发布 npm 包和 GitHub Release。首次启用前，在仓库 Secrets 配置 `NPM_TOKEN`。发版改完版本号后先执行 `npm run bump:readme`，把 README/README.en 中的徽章、安装命令与发布链接一并同步到新版本。
 
 生成物位于 `release/`：
 
-- `dsh-ssh-ops-0.3.15.tgz`：可直接被 DSH 安装。
-- `dsh-ssh-ops-0.3.15.zip`：完整离线源码包。
+- `dsh-ssh-ops-0.3.16.tgz`：可直接被 DSH 安装。
+- `dsh-ssh-ops-0.3.16.zip`：完整离线源码包。
 
 ## 许可
 

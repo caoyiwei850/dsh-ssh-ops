@@ -6,6 +6,7 @@
  * Shortcuts: Ctrl/Cmd+Enter executes; Esc closes the connect form.
  */
 import * as React from "react";
+import { t } from "../i18n/core.js";
 const { useEffect, useState, useRef, useCallback } = React;
 
 const DB_TYPES = [
@@ -192,7 +193,7 @@ export function SshDatabase({ api }) {
       // ensure that SSH profile is connected first to get a runtime connectionId.
       let sshConnectionId = undefined;
       if (form.sshProfileId) {
-        const sshResult = await api.profileConnect(form.sshProfileId).catch((e) => { throw new Error(`SSH 连接失败: ${e.message}`); });
+        const sshResult = await api.profileConnect(form.sshProfileId).catch((e) => { throw new Error(t(`SSH 连接失败: ${e.message}`)); });
         sshConnectionId = sshResult.connectionId;
       }
       const result = await api.dbConnect({
@@ -237,7 +238,7 @@ export function SshDatabase({ api }) {
   };
 
   const handleProfileDelete = async (profile) => {
-    if (!window.confirm(`删除数据库资源「${profile.name}」？`)) return;
+    if (!window.confirm(t(`删除数据库资源「${profile.name}」？`))) return;
     setError(null);
     try {
       await api.dbProfileDelete(profile.dbProfileId);
@@ -248,7 +249,7 @@ export function SshDatabase({ api }) {
   };
 
   const handleProfileRename = async (profile) => {
-    const name = window.prompt("重命名数据库资源", profile.name);
+    const name = window.prompt(t("重命名数据库资源"), profile.name);
     if (name === null || name.trim() === "" || name.trim() === profile.name) return;
     setError(null);
     try {
@@ -277,17 +278,17 @@ export function SshDatabase({ api }) {
       {/* Connection list (always visible, left pane) */}
       <div style={{ ...dbStyles.sidebar, width: sidebarWidth }}>
         <div style={dbStyles.sidebarHeader}>
-          <span style={dbStyles.sidebarTitle}>数据库连接</span>
-          <button onClick={() => setShowForm(true)} style={dbStyles.iconBtn} title="新建连接">＋</button>
-          <button onClick={refresh} disabled={loading} style={dbStyles.iconBtn} title="刷新">↻</button>
+          <span style={dbStyles.sidebarTitle}>{t("数据库连接")}</span>
+          <button onClick={() => setShowForm(true)} style={dbStyles.iconBtn} title={t("新建连接")}>{t("＋")}</button>
+          <button onClick={refresh} disabled={loading} style={dbStyles.iconBtn} title={t("刷新")}>↻</button>
         </div>
         <div style={dbStyles.connList}>
           {/* Saved profiles — click to connect */}
           {profiles.length > 0 && (
             <>
-              <div style={dbStyles.sectionLabel} onClick={() => setSavedCollapsed(!savedCollapsed)} title={savedCollapsed ? "展开" : "折叠"}>
+              <div style={dbStyles.sectionLabel} onClick={() => setSavedCollapsed(!savedCollapsed)} title={savedCollapsed ? t("展开") : t("折叠")}>
                 <span style={dbStyles.collapseIcon}>{savedCollapsed ? "▸" : "▾"}</span>
-                <span>已保存</span>
+                <span>{t("已保存")}</span>
                 <span style={dbStyles.countBadge}>{profiles.length}</span>
               </div>
               {!savedCollapsed && profiles.map((p) => (
@@ -298,11 +299,11 @@ export function SshDatabase({ api }) {
                     <div style={dbStyles.connMeta}>{typeLabel(p.type)} · {p.type === "sqlite" ? (p.database ?? "") : `${p.host}:${p.port}`}{p.sshProfileId ? " · SSH" : ""}</div>
                   </div>
                   {p.connected
-                    ? <span style={dbStyles.badgeConnected}>已连接</span>
-                    : <button onClick={(e) => { e.stopPropagation(); handleProfileConnect(p.dbProfileId); }} style={dbStyles.connAction} title="连接">↵</button>
+                    ? <span style={dbStyles.badgeConnected}>{t("已连接")}</span>
+                    : <button onClick={(e) => { e.stopPropagation(); handleProfileConnect(p.dbProfileId); }} style={dbStyles.connAction} title={t("连接")}>↵</button>
                   }
-                  <button onClick={(e) => { e.stopPropagation(); handleProfileRename(p); }} style={dbStyles.connAction} title="重命名">✎</button>
-                  <button onClick={(e) => { e.stopPropagation(); handleProfileDelete(p); }} style={dbStyles.connClose} title="删除">×</button>
+                  <button onClick={(e) => { e.stopPropagation(); handleProfileRename(p); }} style={dbStyles.connAction} title={t("重命名")}>✎</button>
+                  <button onClick={(e) => { e.stopPropagation(); handleProfileDelete(p); }} style={dbStyles.connClose} title={t("删除")}>×</button>
                 </div>
               ))}
             </>
@@ -310,7 +311,7 @@ export function SshDatabase({ api }) {
           {/* Live connections — click to select for querying */}
           {connections.length > 0 && (
             <>
-              <div style={dbStyles.sectionLabel}>当前连接</div>
+              <div style={dbStyles.sectionLabel}>{t("当前连接")}</div>
               {connections.map((c) => {
                 const tree = tableTree[c.dbConnectionId];
                 const isSqlType = isSqlDriver(c.type);
@@ -331,23 +332,23 @@ export function SshDatabase({ api }) {
                       <button
                         onClick={(e) => { e.stopPropagation(); handleDisconnect(c.dbConnectionId); }}
                         style={dbStyles.connClose}
-                        title="断开"
+                        title={t("断开")}
                       >×</button>
                     </div>
                     {isSqlType && selectedId === c.dbConnectionId && (
                       <div style={dbStyles.treeWrap}>
                         <div style={dbStyles.treeHead} onClick={() => { setTreeOpen((o) => ({ ...o, [c.dbConnectionId]: !o[c.dbConnectionId] })); if (!tree) loadTables(c.dbConnectionId); }}>
                           <span style={dbStyles.collapseIcon}>{treeOpen[c.dbConnectionId] ? "▾" : "▸"}</span>
-                          <span>表{tree?.tables?.length ? ` (${tree.tables.length})` : ""}</span>
+                          <span>{t(`表${tree?.tables?.length ? ` (${tree.tables.length})` : ""}`)}</span>
                           <span
                             style={dbStyles.treeRefresh}
                             onClick={(e) => { e.stopPropagation(); loadTables(c.dbConnectionId); }}
-                            title="刷新表列表"
+                            title={t("刷新表列表")}
                           >↻</span>
                         </div>
                         {treeOpen[c.dbConnectionId] && (
                           <>
-                            {tree?.loading && !(tree?.tables?.length > 0) && <div style={dbStyles.treeEmpty}>加载中…</div>}
+                            {tree?.loading && !(tree?.tables?.length > 0) && <div style={dbStyles.treeEmpty}>{t("加载中…")}</div>}
                             {tree?.error && <div style={dbStyles.treeEmpty}>{tree.error}</div>}
                             {treeOpen[c.dbConnectionId] && (tree?.tables ?? []).map((name) => (
                               <div
@@ -357,7 +358,7 @@ export function SshDatabase({ api }) {
                                   ...(previewTarget?.dbConnectionId === c.dbConnectionId && previewTarget?.table === name ? dbStyles.treeItemActive : {})
                                 }}
                                 onClick={() => openPreview(c, name)}
-                                title={`预览 ${name}`}
+                                title={t(`预览 ${name}`)}
                               >
                                 <span style={dbStyles.treeIcon}>▦</span>
                                 <span style={dbStyles.treeName}>{name}</span>
@@ -373,16 +374,14 @@ export function SshDatabase({ api }) {
             </>
           )}
           {profiles.length === 0 && connections.length === 0 && (
-            <div style={dbStyles.sidebarEmpty}>
-              没有连接
-              <button onClick={() => setShowForm(true)} style={dbStyles.emptyLink}>新建连接</button>
+            <div style={dbStyles.sidebarEmpty}>{t("没有连接")}<button onClick={() => setShowForm(true)} style={dbStyles.emptyLink}>{t("新建连接")}</button>
             </div>
           )}
         </div>
       </div>
 
       {/* Drag handle between sidebar and main */}
-      <div onMouseDown={startDrag} style={dbStyles.splitter} title="拖动调整宽度" />
+      <div onMouseDown={startDrag} style={dbStyles.splitter} title={t("拖动调整宽度")} />
 
       {/* Editor + result (right pane) */}
       <div style={dbStyles.main}>
@@ -404,9 +403,7 @@ export function SshDatabase({ api }) {
             onClearPreview={() => setPreviewTarget(null)}
           />
         ) : (
-          <div style={dbStyles.mainEmpty}>
-            选择左侧连接，或点「＋」新建
-          </div>
+          <div style={dbStyles.mainEmpty}>{t("选择左侧连接，或点「＋」新建")}</div>
         )}
       </div>
     </div>
@@ -468,10 +465,10 @@ function ConnectForm({ sshProfiles, api, onSubmit, onCancel }) {
 
   return (
     <form ref={formRef} onSubmit={submit} style={dbStyles.form}>
-      <div style={dbStyles.formTitle}>新建数据库连接</div>
+      <div style={dbStyles.formTitle}>{t("新建数据库连接")}</div>
 
       <div style={dbStyles.formRow}>
-        <label style={dbStyles.formLabel}>类型</label>
+        <label style={dbStyles.formLabel}>{t("类型")}</label>
         <select value={type} onChange={(e) => onTypeChange(e.target.value)} style={inputStyle}>
           {DB_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
         </select>
@@ -479,43 +476,35 @@ function ConnectForm({ sshProfiles, api, onSubmit, onCancel }) {
 
       {isFile ? (
         <div style={dbStyles.formRow}>
-          <label style={dbStyles.formLabel}>
-            数据库文件
-            <input value={database} onChange={(e) => setDatabase(e.target.value)} placeholder="/path/to/database.db" style={inputStyle} autoFocus required />
+          <label style={dbStyles.formLabel}>{t("数据库文件")}<input value={database} onChange={(e) => setDatabase(e.target.value)} placeholder="/path/to/database.db" style={inputStyle} autoFocus required />
           </label>
         </div>
       ) : (
         <div style={dbStyles.formRow2}>
-          <label style={dbStyles.formLabel2}>
-            主机
-            <input value={host} onChange={(e) => setHost(e.target.value)} placeholder={sshProfileId ? "127.0.0.1（从 SSH 服务器看）" : "数据库地址"} style={inputStyle} autoFocus required />
+          <label style={dbStyles.formLabel2}>{t("主机")}<input value={host} onChange={(e) => setHost(e.target.value)} placeholder={sshProfileId ? t("127.0.0.1（从 SSH 服务器看）") : t("数据库地址")} style={inputStyle} autoFocus required />
           </label>
-          <label style={dbStyles.formLabel2w}>
-            端口
-            <input value={port} onChange={(e) => setPort(e.target.value)} inputMode="numeric" style={inputStyle} />
+          <label style={dbStyles.formLabel2w}>{t("端口")}<input value={port} onChange={(e) => setPort(e.target.value)} inputMode="numeric" style={inputStyle} />
           </label>
         </div>
       )}
 
       <div style={dbStyles.formRow2}>
         <label style={dbStyles.formLabel2}>
-          {isFile ? "备注" : isNoSql ? "库名 / 索引" : "数据库名"}
-          <input value={isFile ? name : database} onChange={(e) => (isFile ? setName(e.target.value) : setDatabase(e.target.value))} placeholder={isFile ? "可选" : type === "redis" ? "0" : "可选"} style={inputStyle} />
+          {isFile ? t("备注") : isNoSql ? t("库名 / 索引") : t("数据库名")}
+          <input value={isFile ? name : database} onChange={(e) => (isFile ? setName(e.target.value) : setDatabase(e.target.value))} placeholder={isFile ? t("可选") : type === "redis" ? "0" : t("可选")} style={inputStyle} />
         </label>
-        <label style={dbStyles.formLabel2w}>
-          名称
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="可选" style={inputStyle} />
+        <label style={dbStyles.formLabel2w}>{t("名称")}<input value={name} onChange={(e) => setName(e.target.value)} placeholder={t("可选")} style={inputStyle} />
         </label>
       </div>
 
       <div style={dbStyles.formRow2}>
         <label style={dbStyles.formLabel2}>
-          {type === "redis" ? "（无需）" : "用户名"}
-          <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder={type === "redis" ? "" : "可选"} style={inputStyle} disabled={type === "redis"} />
+          {type === "redis" ? t("（无需）") : t("用户名")}
+          <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder={type === "redis" ? "" : t("可选")} style={inputStyle} disabled={type === "redis"} />
         </label>
         <label style={dbStyles.formLabel2w}>
-          {type === "redis" ? "密码" : "密码"}
-          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="可选" style={inputStyle} />
+          {type === "redis" ? t("密码") : t("密码")}
+          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder={t("可选")} style={inputStyle} />
         </label>
       </div>
 
@@ -523,28 +512,24 @@ function ConnectForm({ sshProfiles, api, onSubmit, onCancel }) {
         <label style={dbStyles.formLabel2w}>
           SSL
           <select value={ssl} onChange={(e) => setSsl(e.target.value)} style={inputStyle}>
-            <option value="disabled">不加密</option>
-            <option value="preferred">加密（不验证）</option>
-            <option value="verify">加密 + 验证 CA</option>
+            <option value="disabled">{t("不加密")}</option>
+            <option value="preferred">{t("加密（不验证）")}</option>
+            <option value="verify">{t("加密 + 验证 CA")}</option>
           </select>
         </label>
-        <label style={dbStyles.formLabel2}>
-          SSH 隧道
-          <select value={sshProfileId} onChange={(e) => onSshTunnelChange(e.target.value)} style={inputStyle}>
-            <option value="">不使用</option>
+        <label style={dbStyles.formLabel2}>{t("SSH 隧道")}<select value={sshProfileId} onChange={(e) => onSshTunnelChange(e.target.value)} style={inputStyle}>
+            <option value="">{t("不使用")}</option>
             {sshProfiles.map((p) => <option key={p.profileId} value={p.profileId}>{p.name} ({p.host})</option>)}
           </select>
         </label>
       </div>
 
       <label style={dbStyles.checkRow}>
-        <input type="checkbox" checked={saveProfile} onChange={(e) => setSaveProfile(e.target.checked)} />
-        保存为数据库资源（下次一键连接）
-      </label>
+        <input type="checkbox" checked={saveProfile} onChange={(e) => setSaveProfile(e.target.checked)} />{t("保存为数据库资源（下次一键连接）")}</label>
 
       <div style={dbStyles.formActions}>
-        <button type="button" onClick={onCancel} style={dbStyles.btnSecondary}>取消 (Esc)</button>
-        <button type="submit" disabled={busy || !canSubmit} style={dbStyles.btnPrimary}>{busy ? "连接中…" : "连接"}</button>
+        <button type="button" onClick={onCancel} style={dbStyles.btnSecondary}>{t("取消 (Esc)")}</button>
+        <button type="submit" disabled={busy || !canSubmit} style={dbStyles.btnPrimary}>{busy ? t("连接中…") : t("连接")}</button>
       </div>
     </form>
   );
@@ -588,7 +573,7 @@ function downloadCsv(fileName, columns, rows) {
 }
 
 function formatStructure(s) {
-  const lines = [`${s.table} — ${s.columns?.length ?? 0} 列`];
+  const lines = [t(`${s.table} — ${s.columns?.length ?? 0} 列`)];
   for (const c of s.columns ?? []) {
     lines.push(`  ${c.name}  ${c.type}${c.nullable ? "" : " NOT NULL"}${c.default != null ? ` DEFAULT ${c.default}` : ""}`);
   }
@@ -708,12 +693,12 @@ function QueryPane({ api, connection, onError, previewTable, onClearPreview }) {
           value = await api.dbQuery(connection.dbConnectionId, trimmed);
           setResult({ columns: value.columns, rows: value.rows });
           setResultType("table");
-          setInfo(`${value.rowCount} 行${value.truncated ? "（已截断 200 行）" : ""} · ${Date.now() - startedAt}ms`);
+          setInfo(t(`${value.rowCount} 行${value.truncated ? t("（已截断 200 行）") : ""} · ${Date.now() - startedAt}ms`));
         } else {
           value = await api.dbExecute(connection.dbConnectionId, trimmed);
           setResult({ affectedRows: value.affectedRows, insertId: value.insertId });
           setResultType("text");
-          setInfo(`影响 ${value.affectedRows} 行${value.insertId !== undefined ? ` · insertId=${value.insertId}` : ""} · ${Date.now() - startedAt}ms`);
+          setInfo(t(`影响 ${value.affectedRows} 行${value.insertId !== undefined ? ` · insertId=${value.insertId}` : ""} · ${Date.now() - startedAt}ms`));
         }
       } else if (isRedis) {
         const trimmed = redisCmd.trim();
@@ -724,10 +709,10 @@ function QueryPane({ api, connection, onError, previewTable, onClearPreview }) {
         setResultType(typeof value.result === "string" ? "text" : "json");
         setInfo(`${Date.now() - startedAt}ms`);
       } else if (isMongo) {
-        if (!mongoCollection.trim()) { onError("请填写 collection"); return; }
+        if (!mongoCollection.trim()) { onError(t("请填写 collection")); return; }
         let filter;
         try { filter = JSON.parse(mongoFilter || "{}"); }
-        catch { onError("filter 不是合法 JSON"); return; }
+        catch { onError(t("filter 不是合法 JSON")); return; }
         value = await api.dbRun(connection.dbConnectionId, {
           collection: mongoCollection.trim(),
           operation: mongoOp,
@@ -773,7 +758,7 @@ function QueryPane({ api, connection, onError, previewTable, onClearPreview }) {
 
   /** Host-side export: the file lands on the SSH server that tunnels this DB. */
   const exportToServer = async () => {
-    const target = globalThis.prompt?.("导出到服务器上的哪个路径？（留空使用默认的 /tmp/dsh-export-*.csv）", "");
+    const target = globalThis.prompt?.(t("导出到服务器上的哪个路径？（留空使用默认的 /tmp/dsh-export-*.csv）"), "");
     if (target === null || target === undefined) return;
     setExportBusy(true);
     try {
@@ -782,7 +767,7 @@ function QueryPane({ api, connection, onError, previewTable, onClearPreview }) {
         ...(target.trim() === "" ? {} : { path: target.trim() })
       });
       onError?.(null);
-      window.alert(`已导出 ${value.rows} 行到服务器文件：\n${value.path}\n\n可在右侧 SSH 面板的 SFTP 中下载。`);
+      window.alert(t(`已导出 ${value.rows} 行到服务器文件：\n${value.path}\n\n可在右侧 SSH 面板的 SFTP 中下载。`));
     } catch (err) {
       onError?.(err?.message ?? String(err));
     } finally {
@@ -801,21 +786,21 @@ function QueryPane({ api, connection, onError, previewTable, onClearPreview }) {
       {/* Table preview mode: pagination bar instead of the SQL editor. */}
       {previewTable ? (
         <div style={dbStyles.previewBar}>
-          <button onClick={onClearPreview} style={dbStyles.btnSecondary} title="返回 SQL 编辑">← SQL</button>
+          <button onClick={onClearPreview} style={dbStyles.btnSecondary} title={t("返回 SQL 编辑")}>← SQL</button>
           <span style={dbStyles.previewTable}>{previewTable}</span>
-          {previewData?.estimatedTotal != null && <span style={dbStyles.previewEst}>约 {previewData.estimatedTotal} 行</span>}
+          {previewData?.estimatedTotal != null && <span style={dbStyles.previewEst}>{t(`约 ${previewData.estimatedTotal} 行`)}</span>}
           <button onClick={toggleStructure} style={dbStyles.btnSecondary} disabled={previewBusy}>
-            {showStructure ? "隐藏结构" : "结构"}
+            {showStructure ? t("隐藏结构") : t("结构")}
           </button>
           <div style={{ flex: 1 }} />
-          <button disabled={!previewCanPrev} onClick={() => loadPreview(previewTable, Math.max(0, previewOffset - PREVIEW_PAGE_SIZE))} style={dbStyles.btnSecondary}>上一页</button>
-          <span style={dbStyles.previewPage}>{previewBusy ? "加载中…" : previewData ? `第 ${Math.floor(previewOffset / PREVIEW_PAGE_SIZE) + 1} 页 · ${previewData.rowCount} 行` : "…"}</span>
-          <button disabled={!previewCanNext} onClick={() => loadPreview(previewTable, previewOffset + PREVIEW_PAGE_SIZE)} style={dbStyles.btnSecondary}>下一页</button>
+          <button disabled={!previewCanPrev} onClick={() => loadPreview(previewTable, Math.max(0, previewOffset - PREVIEW_PAGE_SIZE))} style={dbStyles.btnSecondary}>{t("上一页")}</button>
+          <span style={dbStyles.previewPage}>{previewBusy ? t("加载中…") : previewData ? t(`第 ${Math.floor(previewOffset / PREVIEW_PAGE_SIZE) + 1} 页 · ${previewData.rowCount} 行`) : "…"}</span>
+          <button disabled={!previewCanNext} onClick={() => loadPreview(previewTable, previewOffset + PREVIEW_PAGE_SIZE)} style={dbStyles.btnSecondary}>{t("下一页")}</button>
           <button
             disabled={previewBusy || !(previewData?.rows?.length > 0)}
             onClick={() => downloadCsv(`${previewTable}-${new Date().toISOString().slice(0, 10)}.csv`, previewData.columns, previewData.rows)}
             style={dbStyles.btnSecondary}
-            title="导出当前页为 CSV"
+            title={t("导出当前页为 CSV")}
           >CSV</button>
         </div>
       ) : (
@@ -845,7 +830,7 @@ function QueryPane({ api, connection, onError, previewTable, onClearPreview }) {
           {isMongo && (
             <div style={dbStyles.mongoForm}>
               <div style={dbStyles.mongoRow}>
-                <input value={mongoCollection} onChange={(e) => setMongoCollection(e.target.value)} placeholder="collection 名" style={{ ...dbStyles.input, flex: 1 }} spellCheck={false} />
+                <input value={mongoCollection} onChange={(e) => setMongoCollection(e.target.value)} placeholder={t("collection 名")} style={{ ...dbStyles.input, flex: 1 }} spellCheck={false} />
                 <select value={mongoOp} onChange={(e) => setMongoOp(e.target.value)} style={{ ...dbStyles.input, flex: "none", width: 130 }}>
                   {MONGO_OPS.map((op) => <option key={op} value={op}>{op}</option>)}
                 </select>
@@ -862,14 +847,14 @@ function QueryPane({ api, connection, onError, previewTable, onClearPreview }) {
 
           <div style={dbStyles.queryActions}>
             <button onClick={run} disabled={busy} style={dbStyles.btnPrimary}>
-              {busy ? "执行中…" : "执行"}
+              {busy ? t("执行中…") : t("执行")}
               <span style={dbStyles.shortcutHint}>⌘↵</span>
             </button>
-            <button onClick={clear} style={dbStyles.btnSecondary}>清除</button>
+            <button onClick={clear} style={dbStyles.btnSecondary}>{t("清除")}</button>
             {resultType === "table" && result?.rows?.length > 0 && (
               <>
-                <button onClick={() => downloadCsv(`query-${new Date().toISOString().slice(0, 10)}.csv`, result.columns, result.rows)} style={dbStyles.btnSecondary} title="导出结果为 CSV">导出 CSV</button>
-                <button onClick={() => downloadJson(`query-${new Date().toISOString().slice(0, 10)}.json`, result.columns, result.rows)} style={dbStyles.btnSecondary} title="导出结果为 JSON">导出 JSON</button>
+                <button onClick={() => downloadCsv(`query-${new Date().toISOString().slice(0, 10)}.csv`, result.columns, result.rows)} style={dbStyles.btnSecondary} title={t("导出结果为 CSV")}>{t("导出 CSV")}</button>
+                <button onClick={() => downloadJson(`query-${new Date().toISOString().slice(0, 10)}.json`, result.columns, result.rows)} style={dbStyles.btnSecondary} title={t("导出结果为 JSON")}>{t("导出 JSON")}</button>
               </>
             )}
             {isSql && connection.sshConnectionId && (
@@ -877,14 +862,14 @@ function QueryPane({ api, connection, onError, previewTable, onClearPreview }) {
                 onClick={exportToServer}
                 disabled={exportBusy || !sql.trim()}
                 style={dbStyles.btnSecondary}
-                title="把当前 SQL 的结果写成服务器上的文件（可用右侧 SSH 面板的 SFTP 下载）"
-              >{exportBusy ? "导出中…" : "导出到服务器"}</button>
+                title={t("把当前 SQL 的结果写成服务器上的文件（可用右侧 SSH 面板的 SFTP 下载）")}
+              >{exportBusy ? t("导出中…") : t("导出到服务器")}</button>
             )}
             {history.length > 0 && (
               <select
                 style={dbStyles.historySelect}
                 value=""
-                title="查询历史（本连接最近 50 条）"
+                title={t("查询历史（本连接最近 50 条）")}
                 onChange={(e) => {
                   const entry = history[Number(e.target.value)];
                   if (!entry) return;
@@ -892,7 +877,7 @@ function QueryPane({ api, connection, onError, previewTable, onClearPreview }) {
                   else if (isRedis) setRedisCmd(entry.sql);
                 }}
               >
-                <option value="">历史 ({history.length})</option>
+                <option value="">{t(`历史 (${history.length})`)}</option>
                 {history.map((h, i) => (
                   <option key={i} value={i}>{h.ok ? "✓" : "✗"} {h.sql.length > 60 ? `${h.sql.slice(0, 60)}…` : h.sql}</option>
                 ))}
@@ -916,7 +901,7 @@ function QueryPane({ api, connection, onError, previewTable, onClearPreview }) {
         ) : !previewTable && resultType === "text" ? (
           <pre style={dbStyles.textResult}>{typeof result === "string" ? result : JSON.stringify(result, null, 2)}</pre>
         ) : !previewTable && !resultType && !busy ? (
-          <div style={dbStyles.resultEmpty}>按「执行」或 ⌘↵ 运行；点左侧表名可预览数据</div>
+          <div style={dbStyles.resultEmpty}>{t("按「执行」或 ⌘↵ 运行；点左侧表名可预览数据")}</div>
         ) : null}
       </div>
     </div>
@@ -926,7 +911,7 @@ function QueryPane({ api, connection, onError, previewTable, onClearPreview }) {
 // ── Result table ─────────────────────────────────────────────────────────────
 
 function ResultTable({ columns, rows }) {
-  if (!columns.length) return <div style={dbStyles.resultEmpty}>(无列信息)</div>;
+  if (!columns.length) return <div style={dbStyles.resultEmpty}>{t("(无列信息)")}</div>;
   return (
     <div style={dbStyles.tableWrap}>
       <table style={dbStyles.table}>
@@ -935,7 +920,7 @@ function ResultTable({ columns, rows }) {
         </thead>
         <tbody>
           {rows.length === 0 ? (
-            <tr><td colSpan={columns.length} style={dbStyles.emptyCell}>(空结果集)</td></tr>
+            <tr><td colSpan={columns.length} style={dbStyles.emptyCell}>{t("(空结果集)")}</td></tr>
           ) : rows.map((row, i) => (
             <tr key={i}>
               {columns.map((c) => {

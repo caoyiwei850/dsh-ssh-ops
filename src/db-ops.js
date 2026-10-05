@@ -36,6 +36,7 @@ import {
 } from "./db-drivers.js";
 // The db layer wraps every failure straight into the full result envelope.
 import { failResult as fail } from "./envelope.js";
+import { t } from "./i18n/core.js";
 
 const DB_QUERY_TIMEOUT_MS = 30000;
 /** Export defaults: rows pulled when the caller names no limit, and the ceiling. */
@@ -246,11 +247,11 @@ function backupFileNameStem(record, target) {
 }
 
 function describeBackupEntry(entry) {
-  if (entry.error) return `- ${entry.target}：备份失败（${entry.error}）`;
+  if (entry.error) return t(`- ${entry.target}：备份失败（${entry.error}）`);
   const bits = [`- ${entry.target} → ${entry.path}`];
-  if (entry.schemaPath) bits.push(`（含 schema：${entry.schemaPath}）`);
-  if (entry.truncated) bits.push("（超过行数上限，已截断）");
-  bits.push(`，${entry.bytes} 字节`);
+  if (entry.schemaPath) bits.push(t(`（含 schema：${entry.schemaPath}）`));
+  if (entry.truncated) bits.push(t("（超过行数上限，已截断）"));
+  bits.push(t(`，${entry.bytes} 字节`));
   return bits.join("");
 }
 
@@ -260,8 +261,8 @@ function describeBackupEntry(entry) {
  * between the two surfaces.
  */
 export function backupSummary(backup) {
-  if (!Array.isArray(backup) || backup.length === 0) return "本次未生成自动备份。";
-  return `已自动备份（误删可从下列文件恢复）：\n${backup.map(describeBackupEntry).join("\n")}`;
+  if (!Array.isArray(backup) || backup.length === 0) return t("本次未生成自动备份。");
+  return t(`已自动备份（误删可从下列文件恢复）：\n${backup.map(describeBackupEntry).join("\n")}`);
 }
 
 // ── value serialization (MongoDB ObjectId/Decimal/Date, Buffer, bigint) ─────
@@ -347,7 +348,7 @@ export class DbOpsManager {
     // value from a stored record counts as absent).
     const port = request.port || defaultDbPort(type);
     if (needsNetwork(type) && !host) {
-      return fail("db-connect-failed", `${type} connect 需要填写主机地址`);
+      return fail("db-connect-failed", t(`${type} connect 需要填写主机地址`));
     }
     let tunnel = null;
     let connectHost = host;
@@ -1024,7 +1025,7 @@ export class DbOpsManager {
     if (!isSqlType(record.type)) return fail("unsafe-sql", assessment.reason);
 
     const blocked = (backup, message) => {
-      const text = `${message ?? assessment.reason}。${backupSummary(backup)}\nSQL 未执行；请勿重试/绕行，由人工在数据库面板执行。`;
+      const text = t(`${message ?? assessment.reason}。${backupSummary(backup)}\nSQL 未执行；请勿重试/绕行，由人工在数据库面板执行。`);
       // An empty backup list stays absent — no point attaching noise.
       return agentOrigin
         ? { ok: false, error: { code: "unsafe-sql", message: text, ...(backup.length > 0 ? { backup } : {}) } }
@@ -1043,7 +1044,7 @@ export class DbOpsManager {
       // connection points at can be dumped through it.
       const currentDb = record.config.database;
       if (record.type !== "sqlite" && target.identifier !== currentDb) {
-        return blocked([], `${assessment.reason}。目标库（${target.identifier}）与连接所指向的库（${currentDb ?? "未知"}）不同，未能自动备份`);
+        return blocked([], t(`${assessment.reason}。目标库（${target.identifier}）与连接所指向的库（${currentDb ?? t("未知")}）不同，未能自动备份`));
       }
       const backup = [];
       let partial = false;
@@ -1055,8 +1056,8 @@ export class DbOpsManager {
           backup.push(await this.backupTableSnapshot(record, table, request.signal));
         }
       }
-      const note = partial ? `（表数量超过 ${BACKUP_TABLE_CAP}，仅备份了前 ${BACKUP_TABLE_CAP} 张）` : (listed.ok ? "" : "（枚举表失败，未能备份）");
-      return blocked(backup, `${assessment.reason}。整库删除无法自动隔离${note}`);
+      const note = partial ? t(`（表数量超过 ${BACKUP_TABLE_CAP}，仅备份了前 ${BACKUP_TABLE_CAP} 张）`) : (listed.ok ? "" : t("（枚举表失败，未能备份）"));
+      return blocked(backup, t(`${assessment.reason}。整库删除无法自动隔离${note}`));
     }
 
     // target.kind === "table"
@@ -1066,7 +1067,7 @@ export class DbOpsManager {
       // identifier is lexer-built, but the whitelist stays the gate.
       if (!validateDbIdentifier(target.identifier).ok) return blocked([]);
       if (agentOrigin) {
-        return blocked([], `隔离表的最终删除必须由操作者在数据库面板执行（当前请求来自 Agent，已拦截）`);
+        return blocked([], t(`隔离表的最终删除必须由操作者在数据库面板执行（当前请求来自 Agent，已拦截）`));
       }
       try {
         await this.runQuarantineSql(record, `DROP TABLE ${target.identifier}`, request.signal);
@@ -1082,18 +1083,18 @@ export class DbOpsManager {
     if (target.verb === "TRUNCATE" || !QUARANTINE_CAPABLE_TYPES.has(record.type)) {
       // Truncate empties a table in place and this engine cannot rename to
       // safety — blocked with the backup attached.
-      const why = target.verb === "TRUNCATE" ? "TRUNCATE 无法隔离改名" : `引擎 ${record.type} 不支持隔离改名`;
-      return blocked(backup, `${assessment.reason}。${why}，已自动备份后拦截`);
+      const why = target.verb === "TRUNCATE" ? t("TRUNCATE 无法隔离改名") : t(`引擎 ${record.type} 不支持隔离改名`);
+      return blocked(backup, t(`${assessment.reason}。${why}，已自动备份后拦截`));
     }
 
     const renamed = await this.quarantineRename(record, target.identifier, request.signal);
     if (!renamed.ok) {
-      return blocked(backup, `${assessment.reason}。隔离改名失败（${renamed.error}），已自动备份后拦截`);
+      return blocked(backup, t(`${assessment.reason}。隔离改名失败（${renamed.error}），已自动备份后拦截`));
     }
     if (renamed.renamedTo === null) {
-      return { ok: true, value: { affectedRows: 0, truncated: false, quarantined: false, notice: "表不存在，未做任何变更（IF EXISTS 语义）", backup } };
+      return { ok: true, value: { affectedRows: 0, truncated: false, quarantined: false, notice: t("表不存在，未做任何变更（IF EXISTS 语义）"), backup } };
     }
-    const notice = `已隔离改名（数据未删除，可随时改回）。彻底删除请由操作者在数据库面板执行：DROP TABLE ${renamed.renamedTo}`;
+    const notice = t(`已隔离改名（数据未删除，可随时改回）。彻底删除请由操作者在数据库面板执行：DROP TABLE ${renamed.renamedTo}`);
     if (agentOrigin) {
       return { ok: true, value: { affectedRows: 0, truncated: false, quarantined: true, renamedTo: renamed.renamedTo, backup, notice } };
     }
@@ -1181,7 +1182,7 @@ export class DbOpsManager {
     const qualified = identifier.includes(".");
     const newIdentifier = qualified ? `${identifier.slice(0, identifier.length - bare.length)}${candidate}` : candidate;
     if (!validateDbIdentifier(newIdentifier).ok) {
-      return { ok: false, error: `隔离名 ${newIdentifier} 不是合法标识符（过长或含特殊字符）` };
+      return { ok: false, error: t(`隔离名 ${newIdentifier} 不是合法标识符（过长或含特殊字符）`) };
     }
     try {
       if (record.type === "mysql") {
@@ -1473,14 +1474,14 @@ export class DbOpsManager {
           data: Buffer.from(content, "utf8").toString("base64")
         });
         if (!written || written.ok !== true) {
-          return fail("export-write-failed", `写入 ${target} 失败：${written?.error?.message ?? "未知错误"}`);
+          return fail("export-write-failed", t(`写入 ${target} 失败：${written?.error?.message ?? t("未知错误")}`));
         }
         value.path = target;
         return { ok: true, value };
       }
       if (bytes > EXPORT_INLINE_LIMIT) {
         return fail("export-too-large",
-          `导出内容 ${bytes} 字节，超过内嵌返回上限 ${EXPORT_INLINE_LIMIT}；请把导出写到远端（为连接配置 SSH 通道）或收窄查询`);
+          t(`导出内容 ${bytes} 字节，超过内嵌返回上限 ${EXPORT_INLINE_LIMIT}；请把导出写到远端（为连接配置 SSH 通道）或收窄查询`));
       }
       value.content = content;
       return { ok: true, value };
@@ -1744,7 +1745,7 @@ export class DbOpsManager {
     const gate = assessReadOnlySql(request.sql);
     if (!gate.ok) return fail("readonly-sql", gate.reason);
     if (!gate.verbs?.length || !["SELECT", "WITH"].includes(gate.verbs[0])) {
-      return fail("unsupported-op", "db_explain 仅支持 SELECT/WITH 查询计划");
+      return fail("unsupported-op", t("db_explain 仅支持 SELECT/WITH 查询计划"));
     }
     const opts = { signal: request.signal, label: "db_explain" };
     try {

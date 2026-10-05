@@ -14,6 +14,7 @@
  */
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { backupSummary, pickSshConnectionId } from "../db-ops.js";
+import { t } from "../i18n/core.js";
 
 /** Cooperative tool-call budget; the db layer's own ceilings are all lower. */
 export const DB_TOOL_TIMEOUT_MS = 60000;
@@ -189,16 +190,16 @@ export function registerDbTools(ctx, service) {
       },
       render(_args, value) {
         if (value.quarantined) {
-          const lines = [`♻️ DROP 已转换为隔离改名（数据未删除，可随时改回）：${value.sql} → ${value.renamedTo}`];
+          const lines = [t(`♻️ DROP 已转换为隔离改名（数据未删除，可随时改回）：${value.sql} → ${value.renamedTo}`)];
           if (Array.isArray(value.backup) && value.backup.length > 0) {
             lines.push(backupSummary(value.backup));
           }
-          lines.push(value.notice ?? "彻底删除请由操作者在数据库面板执行。");
+          lines.push(value.notice ?? t("彻底删除请由操作者在数据库面板执行。"));
           return [{ type: "text", text: lines.join("\n") }];
         }
         if (value.blocked) {
           const backupNote = Array.isArray(value.backup) && value.backup.length > 0 ? `\n${backupSummary(value.backup)}` : "";
-          return [{ type: "text", text: `⚠️ 已拦截：${value.reason ?? ""}\nSQL 未执行，请在数据库面板 SQL 编辑器粘贴执行：\n\`\`\`sql\n${value.sql ?? ""}\n\`\`\`${backupNote}\n请勿重试/绕行，由人工执行。` }];
+          return [{ type: "text", text: t(`⚠️ 已拦截：${value.reason ?? ""}\nSQL 未执行，请在数据库面板 SQL 编辑器粘贴执行：\n\`\`\`sql\n${value.sql ?? ""}\n\`\`\`${backupNote}\n请勿重试/绕行，由人工执行。`) }];
         }
         let text = `Affected ${value.affectedRows} row(s).`;
         if (value.insertId !== undefined) text += ` Insert id: ${value.insertId}.`;

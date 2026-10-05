@@ -1,52 +1,70 @@
 /**
- * zh/en dictionaries for the SSH ops panel and header action.
+ * Browser-side language binding.
+ *
+ * The shared core in `src/i18n/core.js` holds the active language and the
+ * dictionary; this module only adapts it to React and to the DSH locale
+ * service, and it is the single place the client bundle reads the language
+ * selection from. (Adapted from alexeyfadeev's PR #26.)
+ *
+ * DSH itself knows exactly two languages (`LOCALE_IDS = ["zh", "en"]` in
+ * `@deepseek-ai/dsh-client-locale`), so "follow DSH Settings → Language" is a
+ * plain read of its active locale rather than a mapping table.
  */
-export const zh = {
-  panelTitle: "SSH 终端",
-  connect: "连接",
-  connectTo: "连接服务器",
-  host: "主机",
-  port: "端口",
-  username: "用户名",
-  password: "密码",
-  privateKey: "私钥",
-  passphrase: "私钥口令",
-  name: "名称",
-  cancel: "取消",
-  connecting: "连接中…",
-  connected: "已连接",
-  disconnect: "断开",
-  openSession: "打开终端",
-  closeSession: "关闭终端",
-  empty: "还没有连接。点「连接」添加服务器，或在对话里让我帮你连。",
-  error: "错误",
-  loading: "加载中…",
-  sessionClosed: "会话已关闭",
-  noConnection: "未连接",
-  busy: "忙"
-};
+import { useSyncExternalStore } from "react";
+import {
+  DEFAULT_LANGUAGE,
+  LANGUAGES,
+  LANGUAGE_LABELS,
+  getLanguage,
+  normalizeLanguage,
+  setLanguage,
+  subscribeLanguage,
+  t
+} from "../i18n/core.js";
 
-export const en = {
-  panelTitle: "SSH Terminal",
-  connect: "Connect",
-  connectTo: "Connect to server",
-  host: "Host",
-  port: "Port",
-  username: "Username",
-  password: "Password",
-  privateKey: "Private key",
-  passphrase: "Passphrase",
-  name: "Name",
-  cancel: "Cancel",
-  connecting: "Connecting…",
-  connected: "Connected",
-  disconnect: "Disconnect",
-  openSession: "Open terminal",
-  closeSession: "Close terminal",
-  empty: "No connections yet. Click Connect to add a server, or ask me in the conversation to connect for you.",
-  error: "Error",
-  loading: "Loading…",
-  sessionClosed: "Session closed",
-  noConnection: "Not connected",
-  busy: "Busy"
-};
+export { t, setLanguage, getLanguage, normalizeLanguage, subscribeLanguage, LANGUAGES, LANGUAGE_LABELS, DEFAULT_LANGUAGE };
+
+/** Snapshot identity must be stable across renders, so cache per language. */
+const SNAPSHOTS = new Map(LANGUAGES.map((id) => [id, Object.freeze({ language: id })]));
+
+function getSnapshot() {
+  return SNAPSHOTS.get(getLanguage()) ?? SNAPSHOTS.get(DEFAULT_LANGUAGE);
+}
+
+/**
+ * Subscribe a component to the active language. Every panel component calls
+ * this, so a change in Settings → SSH Resources repaints the whole plugin
+ * immediately, without a page reload.
+ */
+export function useLanguage() {
+  return useSyncExternalStore(subscribeLanguage, getSnapshot).language;
+}
+
+/**
+ * The language DSH itself is showing, through whichever face the host
+ * actually exposes (verified against dsh-client-locale on the real host):
+ *  1. the documented LocaleFace read `getSnapshot().active`;
+ *  2. `getLocale()`, which returns the same SNAPSHOT OBJECT (not a string);
+ *  3. a dictionary probe: our own "ssh-ops" namespace registers
+ *     sidebarTabTitle in both languages, so bind() resolving it tells us the
+ *     active language even on a face that hides both readers above.
+ */
+export function readHostLanguage(locale) {
+  const fromSnapshot = (snapshot) =>
+    snapshot && typeof snapshot.active === "string" ? normalizeLanguage(snapshot.active) : null;
+  try {
+    const direct = fromSnapshot(locale?.getSnapshot?.());
+    if (direct !== null) return direct;
+  } catch {}
+  try {
+    const legacy = fromSnapshot(locale?.getLocale?.());
+    if (legacy !== null) return legacy;
+  } catch {}
+  try {
+    const translate = locale?.bind?.("ssh-ops");
+    const probe = typeof translate === "function" ? translate("sidebarTabTitle") : null;
+    if (probe === "SSH Terminal") return "en";
+    if (probe === "SSH 终端") return "zh"; // i18n-ignore: probes the HOST dictionary, not our UI
+  } catch {}
+  return null;
+}

@@ -8,14 +8,16 @@
  * terminal is not intercepted by this agent-command guard.
  */
 import { policyBlockedReason } from "./policy-messages.js";
+import { t } from "./i18n/core.js";
 
 /**
  * Stable identifier for the file-deletion category. The trash rewrite keys on
  * this (not on the display string) so editing the human-facing message can
  * never silently disable the rewrite.
  */
-export const CATEGORY_DELETE_FILES = "删除文件或目录";
+export const CATEGORY_DELETE_FILES = "删除文件或目录"; // i18n-identifier
 
+// i18n-identifier-start
 const IRREVERSIBLE_BLOCKS = [
   [/(?:^|\s)(?:rm|unlink|shred|rmdir)\b/i, CATEGORY_DELETE_FILES],
   // Deny-list evasion is a real, observed failure mode: an agent whose `rm`
@@ -37,6 +39,7 @@ const IRREVERSIBLE_BLOCKS = [
   [/\bgit\s+(?:reset\s+--hard|clean\s+-[a-z]*f)\b/i, "不可恢复地清理代码工作区"],
   [/\b(?:reboot|shutdown|poweroff|halt)\b/i, "重启或关闭服务器"]
 ];
+// i18n-identifier-end
 
 function blocked(category) {
   return {
@@ -55,7 +58,7 @@ function blocked(category) {
  * allow-list; normal DSH approval remains the primary permissions layer.
  */
 export function assessShellCommand(command) {
-  if (typeof command !== "string") return blocked("命令不是文本");
+  if (typeof command !== "string") return blocked(t("命令不是文本"));
   const value = command.trim();
   if (!value) return { ok: true };
 

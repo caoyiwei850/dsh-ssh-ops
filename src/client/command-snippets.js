@@ -1,49 +1,52 @@
-// Operator-owned command snippets. Never place passwords, tokens, or other
+
+import { t } from "../i18n/core.js";// Operator-owned command snippets. Never place passwords, tokens, or other
 // secrets here: this is ordinary browser local storage, not the credential vault.
 const KEY = "dsh-ssh-ops.command-snippets.v1";
 
-export const STARTER_COMMAND_SNIPPETS = [
-  ["查看系统负载", "uptime"], ["查看磁盘空间", "df -h"], ["查看内存", "free -h"],
-  ["查看监听端口", "ss -tlnp"], ["查看 Docker 容器", "docker ps"],
-  ["查看 Nginx 状态", "systemctl status nginx --no-pager"], ["查看 Nginx 日志", "journalctl -u nginx -n 100 --no-pager"],
-  ["Ubuntu：刷新软件索引（会变更）", "sudo apt-get update"],
-  ["Ubuntu：升级已装软件（会变更）", "sudo apt-get upgrade"],
-  ["Ubuntu：安装 Nginx（会变更）", "sudo apt-get install -y nginx"],
-  ["RHEL：刷新 DNF 缓存（会变更）", "sudo dnf makecache"],
-  ["RHEL：升级已装软件（会变更）", "sudo dnf upgrade"],
-  ["RHEL：安装 Nginx（会变更）", "sudo dnf install -y nginx"],
-  ["旧版 CentOS：更新软件（会变更）", "sudo yum update"],
-  ["旧版 CentOS：安装 Nginx（会变更）", "sudo yum install -y nginx"],
-  ["服务：查看状态", "systemctl status <服务> --no-pager"],
-  ["服务：查看最近日志", "journalctl -u <服务> -n 100 --no-pager"],
-  ["服务：重启（会变更）", "sudo systemctl restart <服务>"],
-  ["Docker：查看全部容器", "docker ps -a"],
-  ["Docker Compose：服务状态", "docker compose ps"],
-  ["Docker Compose：最近日志", "docker compose logs --tail=100 <服务>"],
-  ["Docker：清理未使用镜像（会变更）", "docker image prune"],
-  ["日志：查看末尾 100 行", "tail -n 100 <日志路径>"],
-  ["日志：持续跟踪", "tail -f <日志路径>"],
-  ["日志：筛选错误", "grep -n 'error' <日志路径> | tail -n 50"],
-  ["进程：内存占用前列", "ps aux --sort=-%mem | head"],
-  ["网络：健康检查", "curl -fsS http://127.0.0.1:<端口>/health"],
-  ["网络：网卡地址", "ip addr"],
-  ["网络：路由表", "ip route"],
-  ["网络：DNS 查询", "dig <域名>"],
-  ["网络：连通性测试", "ping -c 4 <主机>"],
-  ["磁盘：目录总大小", "du -sh <目录>"],
-  ["磁盘：一级目录大小", "du -xh <目录> --max-depth=1 | sort -h"],
-  ["文件：查找 30 天前文件", "find <目录> -type f -mtime +30"],
-  ["文件：详细列出目录", "ls -lah <目录>"],
-  ["系统：内核信息", "uname -a"],
-  ["系统：发行版信息", "cat /etc/os-release"],
-  ["安全：最近登录", "last -n 20"],
-  ["计划任务：当前用户", "crontab -l"],
-  ["计划任务：systemd 定时器", "systemctl list-timers --all"]
+function starterCommandSnippets() {
+  return [
+  [t("查看系统负载"), "uptime"], [t("查看磁盘空间"), "df -h"], [t("查看内存"), "free -h"],
+  [t("查看监听端口"), "ss -tlnp"], [t("查看 Docker 容器"), "docker ps"],
+  [t("查看 Nginx 状态"), "systemctl status nginx --no-pager"], [t("查看 Nginx 日志"), "journalctl -u nginx -n 100 --no-pager"],
+  [t("Ubuntu：刷新软件索引（会变更）"), "sudo apt-get update"],
+  [t("Ubuntu：升级已装软件（会变更）"), "sudo apt-get upgrade"],
+  [t("Ubuntu：安装 Nginx（会变更）"), "sudo apt-get install -y nginx"],
+  [t("RHEL：刷新 DNF 缓存（会变更）"), "sudo dnf makecache"],
+  [t("RHEL：升级已装软件（会变更）"), "sudo dnf upgrade"],
+  [t("RHEL：安装 Nginx（会变更）"), "sudo dnf install -y nginx"],
+  [t("旧版 CentOS：更新软件（会变更）"), "sudo yum update"],
+  [t("旧版 CentOS：安装 Nginx（会变更）"), "sudo yum install -y nginx"],
+  [t("服务：查看状态"), t("systemctl status <服务> --no-pager")],
+  [t("服务：查看最近日志"), t("journalctl -u <服务> -n 100 --no-pager")],
+  [t("服务：重启（会变更）"), t("sudo systemctl restart <服务>")],
+  [t("Docker：查看全部容器"), "docker ps -a"],
+  [t("Docker Compose：服务状态"), "docker compose ps"],
+  [t("Docker Compose：最近日志"), t("docker compose logs --tail=100 <服务>")],
+  [t("Docker：清理未使用镜像（会变更）"), "docker image prune"],
+  [t("日志：查看末尾 100 行"), t("tail -n 100 <日志路径>")],
+  [t("日志：持续跟踪"), t("tail -f <日志路径>")],
+  [t("日志：筛选错误"), t("grep -n 'error' <日志路径> | tail -n 50")],
+  [t("进程：内存占用前列"), "ps aux --sort=-%mem | head"],
+  [t("网络：健康检查"), t("curl -fsS http://127.0.0.1:<端口>/health")],
+  [t("网络：网卡地址"), "ip addr"],
+  [t("网络：路由表"), "ip route"],
+  [t("网络：DNS 查询"), t("dig <域名>")],
+  [t("网络：连通性测试"), t("ping -c 4 <主机>")],
+  [t("磁盘：目录总大小"), t("du -sh <目录>")],
+  [t("磁盘：一级目录大小"), t("du -xh <目录> --max-depth=1 | sort -h")],
+  [t("文件：查找 30 天前文件"), t("find <目录> -type f -mtime +30")],
+  [t("文件：详细列出目录"), t("ls -lah <目录>")],
+  [t("系统：内核信息"), "uname -a"],
+  [t("系统：发行版信息"), "cat /etc/os-release"],
+  [t("安全：最近登录"), "last -n 20"],
+  [t("计划任务：当前用户"), "crontab -l"],
+  [t("计划任务：systemd 定时器"), "systemctl list-timers --all"]
 ];
+}
 
 /** Built-ins are available immediately and never need writing to localStorage. */
 export function defaultCommandSnippets() {
-  return STARTER_COMMAND_SNIPPETS.map(([name, command], index) => ({
+  return starterCommandSnippets().map(([name, command], index) => ({
     id: `builtin-${index}`,
     name,
     command,

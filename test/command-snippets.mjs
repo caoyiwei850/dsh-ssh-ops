@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { availableCommandSnippets, defaultCommandSnippets, matchingCommandSnippets, searchCommandSnippets, STARTER_COMMAND_SNIPPETS } from "../src/client/command-snippets.js";
+import { availableCommandSnippets, defaultCommandSnippets, matchingCommandSnippets, searchCommandSnippets } from "../src/client/command-snippets.js";
+
+const STARTER_COMMAND_SNIPPETS = defaultCommandSnippets().map((item) => [item.name, item.command]);
 
 const connection = { host: "ops.example", port: 22, username: "deploy" };
 const profiles = [{ profileId: "profile-a", groupId: "group-a", ...connection }];

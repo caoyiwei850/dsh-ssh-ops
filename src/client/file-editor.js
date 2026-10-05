@@ -1,8 +1,10 @@
+
 /**
  * Remote-file editor policy: what may open in the text editor, and how its
  * bytes become editor text and back. Kept out of the JSX so the decisions run
  * in plain Node tests — the panel only renders whatever this module allows.
  */
+import { t } from "../i18n/core.js";
 /** Largest file the text editor will open, matching mainstream ops tools. */
 export const MAX_EDITABLE_BYTES = 10 * 1024 * 1024;
 
@@ -26,10 +28,10 @@ export function looksBinary(bytes) {
  */
 export function decodeEditableText(bytes) {
   if (bytes.length > MAX_EDITABLE_BYTES) {
-    return { ok: false, reason: `文件 ${bytes.length} 字节，超过 ${Math.round(MAX_EDITABLE_BYTES / 1024 / 1024)} MB 的编辑上限；请下载后编辑或改用命令行工具` };
+    return { ok: false, reason: t(`文件 ${bytes.length} 字节，超过 ${Math.round(MAX_EDITABLE_BYTES / 1024 / 1024)} MB 的编辑上限；请下载后编辑或改用命令行工具`) };
   }
   if (looksBinary(bytes)) {
-    return { ok: false, reason: "看起来是二进制文件（前 8 KB 内含空字节），不在文本编辑器中打开" };
+    return { ok: false, reason: t("看起来是二进制文件（前 8 KB 内含空字节），不在文本编辑器中打开") };
   }
   // A UTF-8 BOM is an encoding marker, not content: strip it so the editor
   // does not show it and a save does not stack a second one.

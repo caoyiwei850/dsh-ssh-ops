@@ -98,6 +98,14 @@ export class SshApi {
     return this.call("agentSettingsSave", { agentAutoConnect });
   }
 
+  languageGet() {
+    return this.call("languageGet", {});
+  }
+
+  languageSave(language) {
+    return this.call("languageSave", { language });
+  }
+
   profileList() {
     return this.call("profileList", {});
   }
@@ -307,10 +315,6 @@ export class SshApi {
 
   tunnelList(connectionId) {
     return this.call("tunnelList", { connectionId });
-  }
-
-  sshConfigImport() {
-    return this.call("sshConfigImport", {});
   }
 
   // ── Database ops ───────────────────────────────────────────────────────────

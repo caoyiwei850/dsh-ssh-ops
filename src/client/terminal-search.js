@@ -1,8 +1,10 @@
+
 /**
  * Terminal search helpers: the copy and the option set the terminal pane uses.
  * The searching itself is xterm's search addon; this module owns what the
  * pane shows and which decorations are drawn, so both are unit-testable.
  */
+import { t } from "../i18n/core.js";
 
 /** Highlight colours that read on the light and dark terminal themes alike.
  *
@@ -37,7 +39,7 @@ export function searchResultLabel(results, query) {
   const count = Number(results?.resultCount ?? 0);
   const index = Number(results?.resultIndex ?? -1);
   if (String(query ?? "").trim() === "") return "";
-  if (count <= 0) return "无匹配";
+  if (count <= 0) return t("无匹配");
   const position = index >= 0 && index < count ? index + 1 : 1;
   return `${position}/${count}`;
 }

@@ -26,6 +26,8 @@ import { SshResources } from "./SshResources.jsx";
 import { sshUiAnnounceAgentConnections, sshUiSetSurfaceOpener } from "./store.js";
 import { startAgentConnectionPoll } from "./agent-connection-poll.js";
 import { activateSidebarWhenAvailable } from "./sidebar-lifecycle.js";
+import { readHostLanguage, setLanguage } from "./locale.js";
+import { installSettingsNavIcon } from "./nav-icon.js";
 import TYPERT_REMOTE from "../remote.js";
 
 const NS = "ssh-ops";
@@ -63,12 +65,14 @@ export async function apply(ctx) {
 
   const localeDispose = own(ctx.locale.register(NS, {
     zh: {
-      sidebarTabTitle: "SSH 终端",
-      openSidebarTab: "打开或聚焦 SSH 终端标签",
-      guideTitle: "SSH 终端",
-      guideDescription: "连接服务器，使用终端、远程文件、转发、快捷命令与数据库工具"
+      settingsSectionLabel: "SSH 资源", // i18n-ignore: host locale entry
+      sidebarTabTitle: "SSH 终端", // i18n-ignore: host locale entry
+      openSidebarTab: "打开或聚焦 SSH 终端标签", // i18n-ignore: host locale entry
+      guideTitle: "SSH 终端", // i18n-ignore: host locale entry
+      guideDescription: "连接服务器，使用终端、远程文件、转发、快捷命令与数据库工具" // i18n-ignore: host locale entry
     },
     en: {
+      settingsSectionLabel: "SSH Resources",
       sidebarTabTitle: "SSH Terminal",
       openSidebarTab: "Open or focus the SSH terminal tab",
       guideTitle: "SSH Terminal",
@@ -76,7 +80,14 @@ export async function apply(ctx) {
     }
   }));
 
-  const t = ctx.locale.bind(NS);
+  const hostT = ctx.locale.bind(NS);
+
+  // Follow the host's language before any surface paints. An explicit
+  // combobox choice sticks; otherwise (follow mode) the plugin adopts
+  // whatever DSH Settings → Language shows now and on every later change the
+  // locale face reports, writing it back so the host half (agent-visible
+  // messages) speaks the same language after the next restart.
+  own(syncLanguageWithHost(api, ctx));
 
   // The Sidebar's service faces may be provided after this bundle is
   // evaluated; register through the delayed lifecycle instead of a one-time
@@ -89,6 +100,11 @@ export async function apply(ctx) {
     }
   }));
 
+  // The settings nav glyph: the host's section slot has no icon field (its
+  // navIcon table falls back to the gear), so paint our terminal mark over
+  // the gear on our own row — same DOM-marker technique as dshmarket.
+  own(installSettingsNavIcon(ctx, () => hostT("settingsSectionLabel")));
+
   // SSH resources are a first-class settings section, beside General and
   // Models. Keeping them under Settings → Plugins made an operational
   // inventory look like implementation detail and forced an extra tab click.
@@ -99,7 +115,7 @@ export async function apply(ctx) {
         name: "settings.section",
         id: "ssh-ops-resources",
         order: 35,
-        label: "SSH 资源",
+        label: () => hostT("settingsSectionLabel"), // getter: the host menu re-renders it per language change
         icon: "terminal",
         locale: NS,
         inject: () => ({ api, credentials: ctx.remote?.credentials })
@@ -137,11 +153,11 @@ function applySidebarRegistrations(ctx, { api, t }) {
       id: SSH_TAB_ID,
       kind: SSH_TAB_KIND,
       priority: "extension",
-      title: () => t("sidebarTabTitle"),
+      title: () => hostT("sidebarTabTitle"),
       guide: [{
         order: 20,
-        title: () => t("guideTitle"),
-        description: () => t("guideDescription"),
+        title: () => hostT("guideTitle"),
+        description: () => hostT("guideDescription"),
         icon: IconTerminal16
       }]
     }));
@@ -181,8 +197,8 @@ function applySidebarRegistrations(ctx, { api, t }) {
                 return false;
               }
             },
-            title: t("openSidebarTab"),
-            ariaLabel: t("sidebarTabTitle"),
+            title: hostT("openSidebarTab"),
+            ariaLabel: hostT("sidebarTabTitle"),
             watchActive: true
           });
         }
@@ -206,7 +222,7 @@ const SSH_TAB_SELECTOR = '[data-dsh-ssh-ops-tab="true"]';
 function findConversationTablist() {
   return [...document.querySelectorAll('[role="tablist"]')].find((tablist) => {
     const text = tablist.textContent?.replace(/\s+/g, " ").trim().toLowerCase() ?? "";
-    return (text.includes("对话") && text.includes("轨迹"))
+    return (text.includes("对话") && text.includes("轨迹")) // i18n-ignore: sniffs the HOST tab labels
       || (text.includes("conversation") && text.includes("trajectory"));
   });
 }
@@ -311,4 +327,43 @@ function SshTabButtonHost({ press, isActive, title, activeTitle, ariaLabel, watc
   }, [watchActive]);
 
   return null;
+}
+
+
+/**
+ * Resolve the stored language choice and keep follow mode tracking the host.
+ * Returns a disposer for the optional live subscription.
+ */
+function syncLanguageWithHost(api, ctx) {
+  let disposed = false;
+  let unsubscribe = null;
+  const applyFollow = async () => {
+    if (disposed) return;
+    try {
+      const host = readHostLanguage(ctx.locale);
+      if (host !== null) {
+        setLanguage(host);
+        // Write back so the host half (agent-visible messages) follows the
+        // same language immediately and after the next restart.
+        api.languageSave(host).catch(() => {});
+        return;
+      }
+      const stored = await api.languageGet();
+      if (!disposed && stored.language !== null) setLanguage(stored.language);
+    } catch {
+      // A host without the RPC yet keeps the default language.
+    }
+  };
+  void applyFollow();
+  // Best-effort live follow: the documented face exposes subscribe; older
+  // hosts simply re-resolve on the next plugin load.
+  try {
+    if (typeof ctx.locale?.subscribe === "function") {
+      unsubscribe = ctx.locale.subscribe(() => { void applyFollow(); });
+    }
+  } catch {}
+  return () => {
+    disposed = true;
+    try { unsubscribe?.(); } catch {}
+  };
 }

@@ -9,7 +9,7 @@ const panelSource = source.slice(source.indexOf("export function SshPanel"));
 
 assert.match(
   panelSource,
-  /\["snippets", "快捷命令"\]/,
+  /\["snippets", t\("快捷命令"\)\]/,
   "command library must have its own panel tab"
 );
 assert.match(

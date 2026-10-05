@@ -1,4 +1,5 @@
-/**
+
+import { t } from "./i18n/core.js";/**
  * SQL safety assessment for db_execute. Database CRUD is far more frequent than
  * host-shell ops, so detection is statement-verb based rather than a substring
  * scan: keywords that merely appear inside string literals, comments, or
@@ -47,7 +48,7 @@ export function assessSqlStatement(sql) {
   if (typeof sql !== "string" || sql.trim() === "") return { blocked: false };
   for (const verb of statementVerbs(sql)) {
     if (DESTRUCTIVE_VERBS.has(verb)) {
-      return { blocked: true, reason: `${verb} 不可恢复或会停库`, verb };
+      return { blocked: true, reason: t(`${verb} 不可恢复或会停库`), verb };
     }
   }
   // A backslash before a quote moves string boundaries between dialects: text
@@ -59,7 +60,7 @@ export function assessSqlStatement(sql) {
     for (const stmt of literal) {
       const first = stmt.tokens[0];
       if (first && first.depth === 0 && DESTRUCTIVE_VERBS.has(first.word)) {
-        return { blocked: true, reason: `${first.word} 不可恢复或会停库（反斜杠引号使语句边界随方言而变，请改用 '' 引号转义重写）`, verb: first.word };
+        return { blocked: true, reason: t(`${first.word} 不可恢复或会停库（反斜杠引号使语句边界随方言而变，请改用 '' 引号转义重写）`), verb: first.word };
       }
     }
   }
@@ -237,19 +238,19 @@ export function assessReadOnlySql(sql) {
   // semantics apply, refuse and ask for doubled quotes, which every supported
   // dialect reads the same way.
   if (diverges) {
-    return { ok: false, reason: "查询中的反斜杠引号（\\' 等）使语句边界在 MySQL 与 PostgreSQL/SQLite 间存在歧义；请改用 '' 引号转义重写后再执行", verbs: statements.map((stmt) => stmt.tokens[0].word) };
+    return { ok: false, reason: t("查询中的反斜杠引号（\\' 等）使语句边界在 MySQL 与 PostgreSQL/SQLite 间存在歧义；请改用 '' 引号转义重写后再执行"), verbs: statements.map((stmt) => stmt.tokens[0].word) };
   }
   const verbs = statements.map((stmt) => stmt.tokens[0].word);
   for (const stmt of statements) {
     const verb = stmt.tokens[0].word;
     if (!READONLY_VERBS.has(verb)) {
-      return { ok: false, reason: `只读查询不允许以 “${verb}” 开头的语句（仅允许 SELECT/SHOW/DESCRIBE/EXPLAIN/WITH）`, verbs };
+      return { ok: false, reason: t(`只读查询不允许以 “${verb}” 开头的语句（仅允许 SELECT/SHOW/DESCRIBE/EXPLAIN/WITH）`), verbs };
     }
     for (const token of stmt.tokens) {
       if (token.word === "CREATE" && verb === "SHOW") continue; // SHOW CREATE TABLE
       if (token.word === "REPLACE" && token.isCall) continue;   // REPLACE(str, a, b)
       if (WRITE_KEYWORDS.has(token.word)) {
-        return { ok: false, reason: `只读查询中不允许出现 ${token.word}；如需变更请走 db_execute（高危会转人工确认）或数据库面板`, verbs };
+        return { ok: false, reason: t(`只读查询中不允许出现 ${token.word}；如需变更请走 db_execute（高危会转人工确认）或数据库面板`), verbs };
       }
     }
   }

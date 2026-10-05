@@ -1,4 +1,5 @@
-/**
+
+import { t } from "./i18n/core.js";/**
  * Extra SQL drivers beyond the mysql2/pg pair: SQLite through the host
  * runtime's built-in `node:sqlite` and ClickHouse through its HTTP interface.
  * Both are deliberately dependency-free — the plugin ships no native module
@@ -53,13 +54,13 @@ export function needsNetwork(type) {
  */
 export async function openSqlite(database) {
   if (typeof database !== "string" || database.trim() === "") {
-    throw new Error("SQLite 连接需要填写数据库文件路径（database 字段）");
+    throw new Error(t("SQLite 连接需要填写数据库文件路径（database 字段）"));
   }
   let sqlite;
   try {
     sqlite = await import("node:sqlite");
   } catch (error) {
-    throw new Error(`当前宿主的 Node.js 不提供内置 SQLite（node:sqlite）：${error.message}`);
+    throw new Error(t(`当前宿主的 Node.js 不提供内置 SQLite（node:sqlite）：${error.message}`));
   }
   const db = new sqlite.DatabaseSync(database, { enableForeignKeyConstraints: true });
   return db;
@@ -179,7 +180,7 @@ export function translateClickHouseParams(statement, params) {
       while (i < statement.length && !(statement[i] === "*" && statement[i + 1] === "/")) take(1);
       take(2);
     } else if (ch === "?") {
-      if (index >= values.length) throw new Error("ClickHouse 参数个数多于 SQL 中的 ? 占位符");
+      if (index >= values.length) throw new Error(t("ClickHouse 参数个数多于 SQL 中的 ? 占位符"));
       index += 1;
       const value = values[index - 1];
       sql += `{p${index}:${clickhouseParamType(value)}}`;
@@ -189,7 +190,7 @@ export function translateClickHouseParams(statement, params) {
       take(1);
     }
   }
-  if (index !== values.length) throw new Error(`ClickHouse 参数个数（${values.length}）与 SQL 占位符（${index}）不一致`);
+  if (index !== values.length) throw new Error(t(`ClickHouse 参数个数（${values.length}）与 SQL 占位符（${index}）不一致`));
   return { sql, searchParams };
 }
 
@@ -224,7 +225,7 @@ function clickhouseError(status, body) {
  */
 export async function clickhouseRequest(record, statement, options = {}) {
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
-  if (typeof fetchImpl !== "function") throw new Error("当前宿主不提供 fetch，无法使用 ClickHouse HTTP 接口");
+  if (typeof fetchImpl !== "function") throw new Error(t("当前宿主不提供 fetch，无法使用 ClickHouse HTTP 接口"));
   const { url, headers } = clickhouseEndpoint(record);
   const search = new URLSearchParams(options.searchParams ?? []);
   const response = await fetchImpl(`${url}?${search.toString()}`, {
@@ -246,7 +247,7 @@ export async function clickhouseRequest(record, statement, options = {}) {
 export async function clickhouseQuery(record, statement, bindings = [], options = {}) {
   const maxRows = options.maxRows ?? 200;
   if (/\bFORMAT\s+\w+\s*$/i.test(statement.trim())) {
-    throw new Error("请去掉语句末尾的 FORMAT 子句：导出格式由 db_query/db_export 自行指定");
+    throw new Error(t("请去掉语句末尾的 FORMAT 子句：导出格式由 db_query/db_export 自行指定"));
   }
   const { sql, searchParams } = translateClickHouseParams(statement, bindings);
   const text = await clickhouseRequest(record, `${sql}\nFORMAT JSONCompact`, {
@@ -262,7 +263,7 @@ export async function clickhouseQuery(record, statement, bindings = [], options 
   try {
     payload = JSON.parse(text);
   } catch {
-    throw new Error(`ClickHouse 返回了非 JSON 结果：${text.slice(0, 200)}`);
+    throw new Error(t(`ClickHouse 返回了非 JSON 结果：${text.slice(0, 200)}`));
   }
   const columns = (payload.meta ?? []).map((field) => field.name);
   const rows = (payload.data ?? []).map((tuple) => {

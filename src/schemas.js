@@ -149,6 +149,13 @@ export const agentSettingsGetRequestSchema = z.object({});
 export const agentSettingsResultSchema = resultSchema(z.object({ agentAutoConnect: z.boolean() }));
 export const agentSettingsSaveRequestSchema = z.object({ agentAutoConnect: z.boolean() });
 
+// ── interface language (operator choice; null = follow DSH's own language) ──
+
+const languageValueSchema = z.enum(["zh", "en"]);
+export const languageGetRequestSchema = z.object({});
+export const languageResultSchema = resultSchema(z.object({ language: z.enum(["zh", "en"]).nullable() }));
+export const languageSaveRequestSchema = z.object({ language: languageValueSchema });
+
 // ── saved SSH resources ────────────────────────────────────────────────────
 
 const profileIdSchema = z.string().uuid();
@@ -161,7 +168,7 @@ export const profileAuthKindSchema = z.enum(["password", "key"]);
 // different meanings for one saved value.
 const projectDirectorySchema = z.string().min(1).max(1024).refine(
   (path) => path.startsWith("/") && !/[\x00-\x1f\x7f]/.test(path),
-  "项目目录必须是绝对路径，且不能包含控制字符"
+  "项目目录必须是绝对路径，且不能包含控制字符" // i18n-ignore: schema-time message, frozen by design
 );
 const legacySavedJumpSchema = z.object({
   host: z.string().min(1).max(255), port: z.number().int().min(1).max(65535).default(22),
@@ -709,24 +716,6 @@ export const sessionLogSearchResultSchema = resultSchema(
 export const sessionLogDeleteRequestSchema = z.object({ sessionId: z.string().min(1).optional() });
 export const sessionLogDeleteResultSchema = resultSchema(
   z.object({ deleted: z.number(), remaining: z.number() })
-);
-
-// ── SSH config import ─────────────────────────────────────────────────────────
-
-export const sshConfigImportRequestSchema = z.object({});
-
-export const sshConfigImportResultSchema = resultSchema(
-  z.object({
-    hosts: z.array(z.object({
-      name: z.string(),
-      host: z.string(),
-      port: z.number(),
-      username: z.string(),
-      authKind: z.string(),
-      identityFile: z.string(),
-      proxyJump: z.string()
-    }))
-  })
 );
 
 // ── Database ops ─────────────────────────────────────────────────────────────

@@ -99,12 +99,12 @@ assert.equal(SEARCH_FIND_OPTIONS.incremental, true, "typing re-searches from the
     [/allowProposedApi: true/, "the terminal opts into the proposed API the highlight decorations need"],
     [/runFind\(search, text, \{ warn: console\.warn \}\)/, "typing searches through the degrading helper"],
     [/searchShortcutMatches\(event, isMac\)/, "the shortcut goes through the platform-aware matcher"],
-    [/aria-label="在终端里查找"[\s\S]{0,120}<svg/, "a visible magnifier button is the entry point"],
-    [/title=\{`在终端里查找（\$\{searchShortcutLabel\(/, "the button's tooltip teaches the shortcut"],
+    [/aria-label=\{t\("在终端里查找"\)\}[\s\S]{0,120}<svg/, "a visible magnifier button is the entry point"],
+    [/title=\{t\(`在终端里查找（\$\{searchShortcutLabel\(/, "the button's tooltip teaches the shortcut"],
     [/runFind\(search, query, \{ backwards, warn: console\.warn \}\)/, "Enter/Shift+Enter search through the same helper"],
     [/clearDecorations\?\.\(\)/, "closing clears the highlights"],
     [/searchResultLabel\(searchResults, query\)/, "the count comes from the label helper"],
-    [/placeholder="在终端里查找…"/, "the bar is labelled for the reader"]
+    [/placeholder=\{t\("在终端里查找…"\)\}/, "the bar is labelled for the reader"]
   ];
   for (const [pattern, label] of checks) {
     assert.match(panel, pattern, `SshPanel.jsx: ${label}`);

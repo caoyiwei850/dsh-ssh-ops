@@ -24,10 +24,12 @@ jobs:
         run: npm ci
       - name: Lint
         run: npm run lint
-      - name: Run tests
-        run: npm test
+      # lib/ is a build output (never committed) and db-lazy-load asserts the
+      # built artifact, so the bundles must exist before the tests run.
       - name: Build host + client bundles
         run: npm run build
+      - name: Run tests
+        run: npm test
 
   release:
     name: Publish npm and GitHub release
@@ -49,7 +51,7 @@ jobs:
         run: |
           test "${GITHUB_REF_NAME#v}" = "$(node -p "require('./package.json').version")"
       - name: Install, test, and package release assets
-        run: npm ci && npm test && npm run pack:release
+        run: npm ci && npm run build && npm test && npm run pack:release
       - name: Publish the exact packaged tarball to npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

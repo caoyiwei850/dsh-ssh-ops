@@ -7,6 +7,7 @@
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { shellQuote } from "../safety.js";
 import { buildTrashCommand, parseSimpleDeleteCommand } from "../trash.js";
+import { t } from "../i18n/core.js";
 
 export function registerSftpTools(ctx, service) {
   ctx.tools.register(defineTool({
@@ -133,9 +134,9 @@ export function registerSftpTools(ctx, service) {
       render(args, value) {
         if (value.blocked) {
           const where = value.queued
-            ? "命令未执行；右侧 SSH 终端面板已弹出确认卡片，等待操作员点击“执行”或“撤销”："
-            : "命令未执行，无法预填，请粘贴到右侧终端执行：";
-          return [{ type: "text", text: `⚠️ 已拦截：${value.reason ?? ""}\n${where}\n\`\`\`bash\n${value.command ?? ""}\n\`\`\`\n请勿重试/绕行，由人工确认执行。` }];
+            ? t("命令未执行；右侧 SSH 终端面板已弹出确认卡片，等待操作员点击“执行”或“撤销”：")
+            : t("命令未执行，无法预填，请粘贴到右侧终端执行：");
+          return [{ type: "text", text: t(`⚠️ 已拦截：${value.reason ?? ""}\n${where}\n\`\`\`bash\n${value.command ?? ""}\n\`\`\`\n请勿重试/绕行，由人工确认执行。`) }];
         }
         return [{ type: "text", text: `Deleted ${value.path}` }];
       }
@@ -148,8 +149,8 @@ export function registerSftpTools(ctx, service) {
       const command = `rm -rf ${shellQuote(args.path)}`;
       const parsed = parseSimpleDeleteCommand(command);
       const trashScript = parsed ? buildTrashCommand(parsed.targets) : null;
-      const pending = service.prefillBlockedCommand(args.connection_id, command, "删除文件或目录（SFTP）", trashScript);
-      return { path: args.path, blocked: true, reason: "删除文件或目录（SFTP）", command, prefilled: pending.prefilled, queued: pending.queued };
+      const pending = service.prefillBlockedCommand(args.connection_id, command, t("删除文件或目录（SFTP）"), trashScript);
+      return { path: args.path, blocked: true, reason: t("删除文件或目录（SFTP）"), command, prefilled: pending.prefilled, queued: pending.queued };
     }
   }));
 

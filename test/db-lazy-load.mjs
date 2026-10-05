@@ -3,18 +3,26 @@
 // must exist for all four drivers plus the pg query cursor.
 //
 // Two layers:
-//  1. Structural: the source and the committed built artifact carry exactly the
+//  1. Structural: the source and the built artifact carry exactly the
 //     five `await import(...)` driver sites and no static driver import. The
 //     npm artifact is what ships, so lib/index.js is asserted directly.
 //  2. Cold start / first load, in a fresh child process: importing the plugin's
 //     DB module loads no driver at all; each connect attempt loads exactly its
 //     own driver; the PostgreSQL cursor path (pgQueryPaged) loads pg-cursor.
+//
+// lib/ is a build output and never committed, so a fresh clone regenerates it
+// here on demand — `npm test` passes without a prior manual `npm run build`.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 
+const ROOT = new URL("..", import.meta.url);
 const SRC = new URL("../src/db-ops.js", import.meta.url);
 const LIB = new URL("../lib/index.js", import.meta.url);
+
+if (!existsSync(LIB)) {
+  execFileSync(process.execPath, ["scripts/build-host.mjs"], { cwd: ROOT, stdio: "inherit" });
+}
 
 const DYNAMIC_IMPORTS = [
   'await import("mysql2/promise.js")',
