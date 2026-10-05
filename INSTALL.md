@@ -10,7 +10,7 @@
 ### 兼容性
 
 - 目标为 DSH Desktop / Web Profile `0.1.6` 系列；已验证 `0.1.6-alpha.1`。
-- 提供 `sidebarRightTabs` 和 `sidebarRight` 的宿主使用官方右侧 SSH 标签；旧宿主会自动回退到浮动面板。
+- 宿主须提供 `sidebarRightTabs` 和 `sidebarRight`；SSH 以官方右侧标签运行，旧宿主（缺这两个 API）不再有浮动面板回退——宿主半工具照常可用，但没有终端 UI。
 - 上传／下载字节流需要 Web Profile 的 `webServer` 与请求来源校验服务；不具备时保留既有 SFTP 操作。目录归档下载被有意禁用并返回 `501`，防止 SFTP chroot 与 SSH shell 命名空间不一致。
 
 ## 1. 定位 `dsh` 命令行

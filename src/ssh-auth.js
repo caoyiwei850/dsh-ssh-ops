@@ -47,6 +47,13 @@ export function createAuthTracker() {
  * ssh2-compatible auth handler that walks the default method order while
  * recording progress. `tryKeyboard` must only be true when the caller has a
  * 'keyboard-interactive' listener attached that can answer prompts.
+ *
+ * Dual-factor devices (`AuthenticationMethods password,publickey` or the
+ * reverse) answer every completed factor with USERAUTH_FAILURE carrying
+ * `partial success`. On such a response the handler restarts the method
+ * order: each restart means one more factor has been accepted, so the walk
+ * terminates in at most (factors × methods) steps and the second factor
+ * actually gets offered instead of exhausting the list after the first.
  */
 export function makeAuthHandler(tracker, { hasPassword, hasPrivateKey, tryKeyboard }) {
   const available = AUTH_METHOD_ORDER.filter((method) => {
@@ -56,12 +63,22 @@ export function makeAuthHandler(tracker, { hasPassword, hasPrivateKey, tryKeyboa
     return true; // 'none' is always probed first (RFC 4252 §5.2 semantics)
   });
   let next = 0;
-  return (methodsLeft, _partialSuccess, _cb) => {
+  return (methodsLeft, partialSuccess, _cb) => {
     // USERAUTH_FAILURE carries the server's remaining allowed methods; keep
     // the last list seen, because it names what the device would have accepted.
     if (Array.isArray(methodsLeft) && methodsLeft.length > 0) {
       tracker.lastMethodsLeft = [...methodsLeft];
       tracker.sawFailure = true;
+    }
+    if (partialSuccess === true) {
+      tracker.partialSuccesses = (tracker.partialSuccesses ?? 0) + 1;
+      // One factor accepted — start over for the remaining factor(s). The
+      // 'none' probe is pointless after real credentials were accepted, so a
+      // restart resumes at the first credentialed method. The bound keeps a
+      // nonconformant server that re-reports the same factor from looping.
+      if (tracker.partialSuccesses <= available.length) {
+        next = available[0] === "none" ? 1 : 0;
+      }
     }
     if (next >= available.length) return false;
     const method = available[next];

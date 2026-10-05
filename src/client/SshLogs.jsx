@@ -35,6 +35,9 @@ export function SshLogs({ api }) {
   const [hits, setHits] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+  // Multi-select for batch delete; keyed by sessionId so a refresh that adds
+  // or removes logs cannot desync the checkboxes.
+  const [selection, setSelection] = useState(() => new Set());
   // Guard against a slow earlier response overwriting a newer selection.
   const loadSeq = useRef(0);
 
@@ -142,6 +145,12 @@ export function SshLogs({ api }) {
     setError(null);
     try {
       await api.sessionLogDelete(log.sessionId);
+      setSelection((previous) => {
+        if (!previous.has(log.sessionId)) return previous;
+        const next = new Set(previous);
+        next.delete(log.sessionId);
+        return next;
+      });
       if (selected?.sessionId === log.sessionId) {
         setSelected(null);
         setContent("");
@@ -155,10 +164,72 @@ export function SshLogs({ api }) {
     }
   };
 
+  const allSelected = (logs?.length ?? 0) > 0 && (logs ?? []).every((log) => selection.has(log.sessionId));
+
+  const toggleSelect = (sessionId) => {
+    setSelection((previous) => {
+      const next = new Set(previous);
+      if (next.has(sessionId)) next.delete(sessionId);
+      else next.add(sessionId);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    setSelection(allSelected ? new Set() : new Set((logs ?? []).map((log) => log.sessionId)));
+  };
+
+  /** Delete every checked log; one failure does not stop the rest. */
+  const deleteSelected = async () => {
+    const ids = (logs ?? []).map((log) => log.sessionId).filter((sessionId) => selection.has(sessionId));
+    if (ids.length === 0) return;
+    if (!globalThis.confirm?.(`删除所选 ${ids.length} 条会话日志？此操作不可恢复。`)) return;
+    setBusy(true);
+    setError(null);
+    let failure = null;
+    try {
+      for (const sessionId of ids) {
+        try {
+          await api.sessionLogDelete(sessionId);
+        } catch (err) {
+          failure = failure ?? err;
+        }
+      }
+      setSelection(new Set());
+      if (selected !== null && ids.includes(selected.sessionId)) {
+        setSelected(null);
+        setContent("");
+        setHits(null);
+      }
+      await refresh();
+      if (failure !== null) setError(failure?.message ?? String(failure));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div style={styles.root}>
       <div style={styles.toolbar}>
         <span style={styles.title}>会话日志</span>
+        {(logs?.length ?? 0) > 0 && (
+          <label style={styles.selectAll} title="全选 / 取消全选">
+            <input
+              type="checkbox"
+              checked={allSelected}
+              ref={(el) => { if (el) el.indeterminate = selection.size > 0 && !allSelected; }}
+              onChange={toggleSelectAll}
+            />全选
+          </label>
+        )}
+        {selection.size > 0 && (
+          <button
+            onClick={deleteSelected}
+            disabled={busy}
+            style={styles.btnDanger}
+            title={`删除所选 ${selection.size} 条会话日志`}
+          >删除所选（{selection.size}）</button>
+        )}
         <button onClick={refresh} disabled={busy} style={styles.btn} title="刷新列表">↻</button>
         {(logs ?? []).some((log) => log.bytes === 0) && (
           <button
@@ -180,29 +251,46 @@ export function SshLogs({ api }) {
           ) : logs.length === 0 ? (
             <div style={styles.empty}>还没有录制的会话。打开 SSH 终端后会自动记录。</div>
           ) : (
-            logs.map((log) => (
-              <div
-                key={log.sessionId}
-                onClick={() => openLog(log)}
-                style={{ ...styles.row, ...(selected?.sessionId === log.sessionId ? styles.rowActive : {}) }}
-                title={log.sessionId}
-              >
-                <div style={styles.rowTitle}>
-                  <span>{[log.name, log.host].filter(Boolean).join(" @ ") || "未知主机"}</span>
-                  <span style={styles.rowMeta}>{formatBytes(log.bytes)}{log.truncated ? " · 已截断" : ""}</span>
+            logs.map((log) => {
+              const checked = selection.has(log.sessionId);
+              return (
+                <div
+                  key={log.sessionId}
+                  onClick={() => openLog(log)}
+                  style={{
+                    ...styles.row,
+                    ...(checked ? styles.rowChecked : {}),
+                    ...(selected?.sessionId === log.sessionId ? styles.rowActive : {})
+                  }}
+                  title={log.sessionId}
+                >
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => toggleSelect(log.sessionId)}
+                    onClick={(event) => event.stopPropagation()}
+                    style={styles.check}
+                    title="选择此日志以便批量删除"
+                  />
+                  <div style={styles.rowBody}>
+                    <div style={styles.rowTitle}>
+                      <span>{[log.name, log.host].filter(Boolean).join(" @ ") || "未知主机"}</span>
+                      <span style={styles.rowMeta}>{formatBytes(log.bytes)}{log.truncated ? " · 已截断" : ""}</span>
+                    </div>
+                    <div style={styles.rowSub}>
+                      <span>{formatWhen(log.startedAt)}</span>
+                      <span>{log.endedAt === null ? "录制中" : (log.exitCode === null ? "已结束" : `退出码 ${log.exitCode}`)}</span>
+                      <button
+                        onClick={(event) => { event.stopPropagation(); removeLog(log); }}
+                        disabled={busy}
+                        style={styles.rowDelete}
+                        title={`删除 ${log.sessionId}`}
+                      >×</button>
+                    </div>
+                  </div>
                 </div>
-                <div style={styles.rowSub}>
-                  <span>{formatWhen(log.startedAt)}</span>
-                  <span>{log.endedAt === null ? "录制中" : (log.exitCode === null ? "已结束" : `退出码 ${log.exitCode}`)}</span>
-                  <button
-                    onClick={(event) => { event.stopPropagation(); removeLog(log); }}
-                    disabled={busy}
-                    style={styles.rowDelete}
-                    title={`删除 ${log.sessionId}`}
-                  >×</button>
-                </div>
-              </div>
-            ))
+              );
+            })
           )}
         </div>
 
@@ -264,6 +352,14 @@ const styles = {
     background: "var(--dsw-alias-bg-layer-1, transparent)", border: "1px solid var(--dsw-alias-border-l4, #3a414b)",
     color: "var(--dsw-alias-label-primary, #d7dbe2)", borderRadius: 6, padding: "3px 8px", fontSize: 12, cursor: "pointer", flex: "none"
   },
+  btnDanger: {
+    background: "rgba(248,81,73,.12)", border: "1px solid rgba(248,81,73,.4)",
+    color: "#f85149", borderRadius: 6, padding: "3px 8px", fontSize: 12, cursor: "pointer", flex: "none"
+  },
+  selectAll: {
+    display: "flex", alignItems: "center", gap: 4, fontSize: 11, flex: "none",
+    color: "var(--dsw-alias-label-secondary, #8b93a1)", cursor: "pointer"
+  },
   hint: { fontSize: 11, color: "var(--dsw-alias-label-secondary, #8b93a1)" },
   error: {
     padding: "6px 10px", fontSize: 12, color: "#f85149",
@@ -273,9 +369,13 @@ const styles = {
   list: { width: 210, flex: "none", overflowY: "auto", display: "flex", flexDirection: "column", gap: 3 },
   empty: { margin: "auto", fontSize: 12, color: "var(--dsw-alias-label-secondary, #8b93a1)", textAlign: "center", padding: 12 },
   row: {
-    display: "flex", flexDirection: "column", gap: 2, padding: "6px 8px", borderRadius: 6, cursor: "pointer",
+    display: "flex", flexDirection: "row", alignItems: "flex-start", gap: 6,
+    padding: "6px 8px", borderRadius: 6, cursor: "pointer",
     border: "1px solid transparent"
   },
+  rowChecked: { background: "rgba(45,108,223,.08)" },
+  check: { margin: 0, flex: "none", cursor: "pointer", accentColor: "var(--dsw-alias-brand, #2d6cdf)" },
+  rowBody: { display: "flex", flexDirection: "column", gap: 2, minWidth: 0, flex: 1 },
   rowActive: { background: "rgba(45,108,223,.18)", borderColor: "var(--dsw-alias-border-l3, #2a303a)" },
   rowTitle: { display: "flex", justifyContent: "space-between", gap: 6, fontSize: 12, color: "var(--dsw-alias-label-primary, #d7dbe2)" },
   rowMeta: { flex: "none", fontSize: 11, color: "var(--dsw-alias-label-secondary, #8b93a1)" },

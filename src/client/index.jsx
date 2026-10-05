@@ -1,32 +1,29 @@
 /**
  * dsh-ssh-ops browser plugin entry.
  *
- * Two integration modes, chosen per environment:
+ * - Official Sidebar mode (requires `sidebarRightTabs` + `sidebarRight`): the
+ *   SSH terminal is a TAB of the official right-Sidebar, beside the built-in
+ *   Files tab. Registration follows the same public two-stage path every tab
+ *   type uses — the type into `ctx.sidebarRightTabs`, the body into the keyed
+ *   `sidebar.right.pane.tab` seat under the type's `id`. The session-header
+ *   SSH button opens or focuses that tab (repeated clicks focus, never
+ *   duplicate). Width, split, fullscreen and collapse are the Sidebar's; no
+ *   floating panel, no chat-column margin, no own resize. The legacy floating
+ *   drawer for pre-Sidebar DSH has been removed: a host without the Sidebar
+ *   services shows no terminal UI (agent tools keep working), so the
+ *   registration simply waits and never falls back.
  *
- * - Official Sidebar mode (new DSH, `sidebarRightTabs` + `sidebarRight`
- *   present): the SSH terminal is a TAB of the official right-Sidebar, beside
- *   the built-in Files tab. Registration follows the same public two-stage
- *   path every tab type uses — the type into `ctx.sidebarRightTabs`, the body
- *   into the keyed `sidebar.right.pane.tab` seat under the type's `id`. The
- *   session-header SSH button opens or focuses that tab (repeated clicks
- *   focus, never duplicate). Width, split, fullscreen and collapse are the
- *   Sidebar's; no floating panel, no chat-column margin, no own resize.
- * - Drawer mode (older DSH): the previous fixed right-side floating panel
- *   (`SshDrawer.jsx` in `shell.overlay`) with its own width and the chat
- *   column reservation — kept as the compatibility fallback.
- *
- * Connection lifetime is independent of the view in both modes: switching
- * tabs, collapsing the Sidebar, closing the SSH tab, or switching chats never
- * disconnects; terminals are pooled client-side (`terminal-pool.js`) and the
- * host replays output buffered while no view was attached.
+ * Connection lifetime is independent of the view: switching tabs, collapsing
+ * the Sidebar, closing the SSH tab, or switching chats never disconnects;
+ * terminals are pooled client-side (`terminal-pool.js`) and the host replays
+ * output buffered while no view was attached.
  */
 import * as React from "react";
 import { createSshApi } from "./api.js";
 import { IconTerminal16 } from "./IconTerminal16.jsx";
-import { SshDrawer } from "./SshDrawer.jsx";
 import { SshSidebarBody } from "./SshSidebarBody.jsx";
 import { SshResources } from "./SshResources.jsx";
-import { getSshUiSnapshot, sshUiAnnounceAgentConnections, sshUiSetOpen, sshUiSetSurfaceOpener, useSshUi } from "./store.js";
+import { sshUiAnnounceAgentConnections, sshUiSetSurfaceOpener } from "./store.js";
 import { startAgentConnectionPoll } from "./agent-connection-poll.js";
 import { activateSidebarWhenAvailable } from "./sidebar-lifecycle.js";
 import TYPERT_REMOTE from "../remote.js";
@@ -66,16 +63,12 @@ export async function apply(ctx) {
 
   const localeDispose = own(ctx.locale.register(NS, {
     zh: {
-      sshAction: "SSH 终端",
-      sshActionClose: "关闭 SSH 终端",
       sidebarTabTitle: "SSH 终端",
       openSidebarTab: "打开或聚焦 SSH 终端标签",
       guideTitle: "SSH 终端",
       guideDescription: "连接服务器，使用终端、远程文件、转发、快捷命令与数据库工具"
     },
     en: {
-      sshAction: "SSH Terminal",
-      sshActionClose: "Close SSH terminal",
       sidebarTabTitle: "SSH Terminal",
       openSidebarTab: "Open or focus the SSH terminal tab",
       guideTitle: "SSH Terminal",
@@ -85,14 +78,14 @@ export async function apply(ctx) {
 
   const t = ctx.locale.bind(NS);
 
-  // Start with the legacy drawer so older DSH releases remain usable. Newer
-  // hosts provide their Sidebar faces asynchronously; a one-time ctx.get()
-  // snapshot here races that startup and permanently selects the drawer.
+  // The Sidebar's service faces may be provided after this bundle is
+  // evaluated; register through the delayed lifecycle instead of a one-time
+  // ctx.get() snapshot that would permanently miss them. There is no fallback
+  // surface anymore — if the Sidebar path fails, the error is only reported.
   own(activateSidebarWhenAvailable(ctx, {
-    registerLegacy: (legacyCtx) => applyLegacyRegistrations(legacyCtx, { api }),
     registerSidebar: (sidebarCtx) => applySidebarRegistrations(sidebarCtx, { api, t }),
     onSidebarError: (error) => {
-      console.error("[dsh-ssh-ops] sidebar tab registration failed; keeping legacy drawer:", error);
+      console.error("[dsh-ssh-ops] sidebar tab registration failed; no terminal surface available:", error);
     }
   }));
 
@@ -129,9 +122,9 @@ function applySidebarRegistrations(ctx, { api, t }) {
   };
   try {
     // Surfaces that do not own a pane (the resources page) ask for the
-    // terminal through the shared store; in this mode that means focusing the
-    // Sidebar tab. Cleared on release so a later mode switch cannot keep
-    // calling into a host whose Sidebar is gone.
+    // terminal through the shared store; that means focusing the Sidebar
+    // tab. Cleared on release so a disposed registration cannot keep calling
+    // into a host whose Sidebar is gone.
     sshUiSetSurfaceOpener(() => {
       try {
         ctx.sidebarRight.openTab(SSH_TAB_KIND);
@@ -202,49 +195,6 @@ function applySidebarRegistrations(ctx, { api, t }) {
     for (const dispose of disposers.reverse()) dispose();
     throw error;
   }
-}
-
-/** Drawer-mode registrations (legacy DSH): toggle button + shell.overlay panel. */
-function applyLegacyRegistrations(ctx, { api }) {
-  const disposers = [];
-  const own = (dispose) => {
-    if (typeof dispose === "function") disposers.push(dispose);
-    return dispose;
-  };
-  // DSH does not expose an additive slot inside the session tab strip.  This
-  // session-scoped contribution mounts a native button beside the existing
-  // Conversation/Trajectory tabs, while preserving the current chat view and
-  // the resizable right-side terminal drawer.
-  own(ctx.slots.inject("conversation.session.header.actions", () =>
-    ctx.slots.register(
-      {
-        name: "conversation.session.header.actions",
-        id: "ssh-ops-tab-action",
-        order: 90,
-        locale: NS
-      },
-      SshDrawerTabAction
-    )
-  ));
-
-  // The panel itself: a fixed right-side floating panel, mounted at the shell
-  // overlay level so it spans the whole app frame regardless of conversation
-  // scroll state.
-  own(ctx.slots.inject("shell.overlay", () =>
-    ctx.slots.register(
-      {
-        name: "shell.overlay",
-        id: "ssh-ops-panel",
-        order: 100,
-        locale: NS,
-        inject: () => ({ api, credentials: ctx.remote?.credentials })
-      },
-      SshDrawer
-    )
-  ));
-  return () => {
-    for (const dispose of disposers.reverse()) dispose();
-  };
 }
 
 const SSH_TAB_SELECTOR = '[data-dsh-ssh-ops-tab="true"]';
@@ -361,17 +311,4 @@ function SshTabButtonHost({ press, isActive, title, activeTitle, ariaLabel, watc
   }, [watchActive]);
 
   return null;
-}
-
-/** Drawer mode: the button toggles the floating panel via the UI store. */
-function SshDrawerTabAction() {
-  const ui = useSshUi();
-  return React.createElement(SshTabButtonHost, {
-    press: () => sshUiSetOpen(!getSshUiSnapshot().open),
-    isActive: () => getSshUiSnapshot().open,
-    title: "打开 SSH 终端",
-    activeTitle: "关闭 SSH 终端",
-    ariaLabel: "SSH 终端",
-    watchActive: false
-  });
 }

@@ -41,7 +41,7 @@ for (const path of ["relative/project", "/srv/app\nnext", ""]) {
 assert.equal(profileInfoSchema.parse({
   ...identity,
   profileId: "00000000-0000-4000-8000-000000000001",
-  groupId: null, groupName: null, credentialConfigured: true, passphraseConfigured: false,
+  groupId: null, groupName: null, credentialConfigured: true, passphraseConfigured: false, secondaryConfigured: false,
   connected: false, credentialId: null, credentialName: null, proxyJump: [],
   defaultProjectPath: "/srv/apps/api"
 }).defaultProjectPath, "/srv/apps/api");

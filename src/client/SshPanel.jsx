@@ -1,13 +1,10 @@
 /**
  * The SSH workspace: connection toolbar, inner tabs (terminal / files /
  * tunnels / snippets / database) and the dialogs. It is the shared INNER
- * content rendered by two hosts:
+ * content rendered by one host:
  *
- * - `SshDrawer.jsx` — the legacy fixed right-side floating panel (old DSH
- *   fallback), which adds positioning, drag-resize and the hide button.
  * - `SshSidebarBody.jsx` — a body of the official right-Sidebar tab
- *   (`sidebar.right.pane.tab`, new DSH), which owns width, split and
- *   fullscreen.
+ *   (`sidebar.right.pane.tab`), which owns width, split and fullscreen.
  *
  * The workspace itself owns no outer geometry. Terminals are keep-alive:
  * unmounting a view (tab switch, sidebar collapse, chat switch) never
@@ -31,7 +28,7 @@ import { availableCommandSnippets, loadCommandSnippets, matchingCommandSnippets,
 import { createTerminalPool } from "./terminal-pool.js";
 import { applyTerminalTheme, createTerminalThemeWatcher, getTerminalTheme } from "./terminal-theme.js";
 import {
-  DRAWER_VIEW_ID,
+  DEFAULT_VIEW_ID,
   adoptIntoView,
   claimPendingOpens,
   closeInView,
@@ -106,8 +103,8 @@ const PANEL_CSS = `
 
 /**
  * Inject the xterm stylesheet and the workspace button styles once. Neither
- * carries outer-geometry rules: outer geometry (drawer width, chat-column
- * reservation, sidebar fit) belongs to the hosts.
+ * carries outer-geometry rules: outer geometry (placement, width, split)
+ * belongs to the Sidebar host.
  */
 function ensureStyles() {
   if (stylesInjected) return;
@@ -1028,7 +1025,7 @@ function BatchDialog({ api, task, onDone }) {
   );
 }
 
-export function SshPanel({ api, credentials, locale, viewId = DRAWER_VIEW_ID, viewSignal }) {
+export function SshPanel({ api, credentials, locale, viewId = DEFAULT_VIEW_ID, viewSignal }) {
   const ui = useSshUi();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [tab, setTab] = useState("terminal");
@@ -1058,8 +1055,8 @@ export function SshPanel({ api, credentials, locale, viewId = DRAWER_VIEW_ID, vi
   const t = zhDict;
 
   // The workspace runs its data loops for exactly as long as it is mounted:
-  // the host (drawer open, or the SSH tab being the Sidebar's active tab in an
-  // expanded panel) decides visibility, and unmounting never touches the
+  // the host (the SSH tab being the Sidebar's active tab in an expanded
+  // panel) decides visibility, and unmounting never touches the
   // host-side connections. Style injection rides the first effect too, so the
   // empty-state add button is styled before any terminal exists.
   useEffect(() => {
@@ -1633,8 +1630,8 @@ const enDict = {
 };
 
 const panelStyles = {
-  /** The workspace fill: works inside the fixed drawer (flex child) and inside
-   * the official Sidebar's tab body (block parent with a definite height). */
+  /** The workspace fill: fits the official Sidebar's tab body (block parent
+   * with a definite height). */
   workspace: {
     boxSizing: "border-box",
     flex: "1 1 auto",

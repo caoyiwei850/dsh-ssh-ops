@@ -4,7 +4,7 @@
  * `dsh.client` (platform "web") beside `dsh.bundle.patch`, and resolves the
  * entries through `exports` (which wins over `main`). Losing the client block
  * loads the host half silently while every client mount point vanishes — the
- * SSH tab button, the terminal drawer and the settings resources tab all
+ * SSH tab button, the right-Sidebar tab body and the settings resources tab all
  * disappear from a freshly loaded web UI (2026-09-03 rc.1 upgrade regression).
  */
 import assert from "node:assert/strict";

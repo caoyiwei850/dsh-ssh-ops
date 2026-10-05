@@ -17,6 +17,17 @@ const IDENT_START = /[A-Za-z_]/;
 const IDENT_PART = /[A-Za-z0-9_$]/;
 
 /**
+ * PG escape-string syntax: a standalone e/E token immediately before the quote
+ * (`E'…'`) turns backslash escapes on. A longer identifier ending in E
+ * (freqE'…') is a plain string in both dialects, so only a lone E qualifies.
+ */
+function isEscapeStringPrefix(sql, quoteIndex) {
+  const e = quoteIndex - 1;
+  if (e < 0 || (sql[e] !== "e" && sql[e] !== "E")) return false;
+  return e === 0 || !IDENT_PART.test(sql[e - 1]);
+}
+
+/**
  * Walk the SQL text and return the leading verb (uppercased) of every
  * top-level statement. Derived from scanTokens so the string/comment/quote
  * handling exists exactly once; a statement whose first bare word sits inside
@@ -37,6 +48,19 @@ export function assessSqlStatement(sql) {
   for (const verb of statementVerbs(sql)) {
     if (DESTRUCTIVE_VERBS.has(verb)) {
       return { blocked: true, reason: `${verb} 不可恢复或会停库`, verb };
+    }
+  }
+  // A backslash before a quote moves string boundaries between dialects: text
+  // the MySQL reading keeps inside a string is a live statement under PG /
+  // SQLite / MySQL-backtick semantics. Take the union — block when the literal
+  // reading exposes a destructive verb the first pass hid.
+  const { literal, diverges } = scanTokensBoth(sql);
+  if (diverges) {
+    for (const stmt of literal) {
+      const first = stmt.tokens[0];
+      if (first && first.depth === 0 && DESTRUCTIVE_VERBS.has(first.word)) {
+        return { blocked: true, reason: `${first.word} 不可恢复或会停库（反斜杠引号使语句边界随方言而变，请改用 '' 引号转义重写）`, verb: first.word };
+      }
     }
   }
   return { blocked: false };
@@ -69,8 +93,15 @@ const WRITE_KEYWORDS = new Set([
  * depth it appears at and whether it is immediately followed by "(" (call).
  * Strings, quoted identifiers and comments are skipped so keywords inside them
  * never produce tokens. Statements are split on top-level ";".
+ *
+ * `escapes` selects the string convention: true (default) is MySQL's default
+ * and ClickHouse, where backslash escapes the next character inside quotes;
+ * false is the literal reading of PG plain strings and quoted identifiers,
+ * MySQL backtick identifiers and SQLite strings, where the first undoubled
+ * quote closes and backslash is an ordinary character. The gates consult BOTH
+ * readings (scanTokensBoth) so neither convention can hide live statements.
  */
-function scanTokens(sql) {
+function scanTokens(sql, { escapes = true } = {}) {
   const statements = [];
   let current = null;
   const n = sql.length;
@@ -105,12 +136,36 @@ function scanTokens(sql) {
       i += 2;
       continue;
     }
+    // PG dollar-quoting: $$…$$ / $tag$…$tag$ — content is literal, including
+    // quotes and semicolons. The tag must be empty or identifier-like (it
+    // cannot start with a digit), so `$1` placeholders never match. This is
+    // PG-family syntax only, but the MySQL/SQLite/ClickHouse channels cannot
+    // execute multi-statement SQL, so recognizing it cannot hide executable
+    // text there; PG with empty params uses the simple-query protocol and
+    // DOES execute what a missed dollar quote would swallow. An unterminated
+    // dollar quote swallows to EOF — the server fails to parse it too.
+    if (ch === "$") {
+      const opener = /^\$([A-Za-z_][A-Za-z0-9_]*)?\$/.exec(sql.slice(i));
+      if (opener !== null) {
+        const close = sql.indexOf(opener[0], i + opener[0].length);
+        i = close === -1 ? n : close + opener[0].length;
+        continue;
+      }
+    }
     if (ch === "'" || ch === '"' || ch === "`") {
+      // Deliberately NO Oracle q'[...]' alternate-quoting here: q is a plain
+      // alias identifier in every supported dialect — under the rules below
+      // the q'[a' quote closes normally and any statement after it is live
+      // SQL. Swallowing q'[..]' as one literal would hide real statements
+      // behind it (verified miss).
       const quote = ch;
+      // PG E'' escape strings keep their escapes in BOTH readings
+      // (isEscapeStringPrefix), so they stay exact under either convention.
+      const stringEscapes = escapes || (quote === "'" && isEscapeStringPrefix(sql, i));
       i++;
       while (i < n) {
         const c = sql[i];
-        if (c === "\\") { i += 2; continue; }
+        if (stringEscapes && c === "\\") { i += 2; continue; }
         if (c === quote) {
           if (sql[i + 1] === quote) { i += 2; continue; }
           i++; break;
@@ -152,6 +207,21 @@ function scanTokens(sql) {
 }
 
 /**
+ * Scan under both string conventions and report whether they disagree.
+ * Agreement — no backslash directly before a quote — covers ordinary SQL,
+ * where both readings tokenize identically; divergence means the statement
+ * structure itself depends on the dialect, so callers must not trust one
+ * reading alone.
+ */
+function scanTokensBoth(sql) {
+  const primary = scanTokens(sql);
+  // Without a backslash the two modes cannot differ.
+  if (!sql.includes("\\")) return { primary, literal: primary, diverges: false };
+  const literal = scanTokens(sql, { escapes: false });
+  return { primary, literal, diverges: JSON.stringify(primary) !== JSON.stringify(literal) };
+}
+
+/**
  * Lexical read-only gate for the query channel: every statement must start
  * with a read verb AND contain no write keyword as a bare word at any depth.
  * `SHOW CREATE TABLE` is allowed (the one legit bare CREATE), and REPLACE is
@@ -162,7 +232,13 @@ function scanTokens(sql) {
  */
 export function assessReadOnlySql(sql) {
   if (typeof sql !== "string" || sql.trim() === "") return { ok: true, verbs: [] };
-  const statements = scanTokens(sql);
+  const { primary: statements, diverges } = scanTokensBoth(sql);
+  // Dialect-ambiguous string boundaries: rather than guess which server's
+  // semantics apply, refuse and ask for doubled quotes, which every supported
+  // dialect reads the same way.
+  if (diverges) {
+    return { ok: false, reason: "查询中的反斜杠引号（\\' 等）使语句边界在 MySQL 与 PostgreSQL/SQLite 间存在歧义；请改用 '' 引号转义重写后再执行", verbs: statements.map((stmt) => stmt.tokens[0].word) };
+  }
   const verbs = statements.map((stmt) => stmt.tokens[0].word);
   for (const stmt of statements) {
     const verb = stmt.tokens[0].word;
@@ -196,6 +272,10 @@ export const QUARANTINE_SUFFIX_RE = /_to_be_dropped_\d{8}(_\d+)?$/;
  */
 export function parseDestructiveTarget(sql) {
   if (typeof sql !== "string" || sql.trim() === "") return null;
+  // Dialect-dependent statement boundaries make the parsed target untrustworthy;
+  // refusing to parse keeps the caller on the plain blocked flow instead of
+  // quarantining (renaming) a possibly-wrong table.
+  if (scanTokensBoth(sql).diverges) return null;
   for (const stmt of scanTokens(sql)) {
     const tokens = stmt.tokens;
     if (tokens.length === 0 || tokens[0].depth !== 0) continue;

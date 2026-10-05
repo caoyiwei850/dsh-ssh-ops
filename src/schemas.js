@@ -23,15 +23,29 @@ export function resultSchema(value) {
 
 // ── auth ────────────────────────────────────────────────────────────────────
 
-export const passwordAuthSchema = z.object({
+// A single authentication factor. Dual-factor devices (firewalls/switches
+// with `AuthenticationMethods password,publickey` or the reverse) require two
+// factors on the SAME connection, so a credential may carry a primary factor
+// plus an optional secondary of the opposite kind.
+export const passwordFactorSchema = z.object({
   kind: z.literal("password"),
   password: z.string()
 });
 
-export const keyAuthSchema = z.object({
+export const keyFactorSchema = z.object({
   kind: z.literal("key"),
   privateKey: z.string(),
   passphrase: z.string().optional()
+});
+
+export const passwordAuthSchema = passwordFactorSchema.extend({
+  // Optional second factor: a key, when the primary factor is the password.
+  secondary: keyFactorSchema.optional()
+});
+
+export const keyAuthSchema = keyFactorSchema.extend({
+  // Optional second factor: a password, when the primary factor is the key.
+  secondary: passwordFactorSchema.optional()
 });
 
 export const authSchema = z.union([passwordAuthSchema, keyAuthSchema]);
@@ -188,6 +202,10 @@ export const profileInfoSchema = profileMetadataSchema.extend({
   groupName: z.string().nullable(),
   credentialConfigured: z.boolean(),
   passphraseConfigured: z.boolean(),
+  // Optional second factor (dual-factor auth): whether the opposite-kind
+  // secret is also configured. Resolved to false for records saved before
+  // dual-factor support existed.
+  secondaryConfigured: z.boolean(),
   connected: z.boolean()
   ,credentialId: credentialIdSchema.nullable(),
   credentialName: z.string().nullable(),
@@ -195,7 +213,7 @@ export const profileInfoSchema = profileMetadataSchema.extend({
   defaultProjectPath: projectDirectorySchema.nullable()
 });
 
-const credentialInfoSchema = z.object({ credentialId: credentialIdSchema, name: z.string(), authKind: profileAuthKindSchema, credentialConfigured: z.boolean(), passphraseConfigured: z.boolean() });
+const credentialInfoSchema = z.object({ credentialId: credentialIdSchema, name: z.string(), authKind: profileAuthKindSchema, credentialConfigured: z.boolean(), passphraseConfigured: z.boolean(), secondaryConfigured: z.boolean() });
 export const credentialListRequestSchema = z.object({});
 export const credentialListResultSchema = resultSchema(z.object({ credentials: z.array(credentialInfoSchema) }));
 export const credentialSaveRequestSchema = z.object({ credentialId: credentialIdSchema.optional(), name: z.string().min(1).max(120), authKind: profileAuthKindSchema });

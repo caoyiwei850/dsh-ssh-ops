@@ -1,14 +1,15 @@
 // Structural contract for the official right-Sidebar integration: the client
 // entry must follow the same two-stage path as the built-in Files tab, keep
-// the drawer as an old-DSH fallback, and never couple SSH lifetime to view
-// mounts. Source-level assertions, matching the repo's client-structure test
-// style (the client bundle runs in a browser, not in this test).
+// no legacy floating drawer (the pre-Sidebar fallback was removed — a host
+// without the Sidebar services shows no terminal UI), and never couple SSH
+// lifetime to view mounts. Source-level assertions, matching the repo's
+// client-structure test style (the client bundle runs in a browser, not in
+// this test).
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
 const entry = await readFile(new URL("../src/client/index.jsx", import.meta.url), "utf8");
 const panel = await readFile(new URL("../src/client/SshPanel.jsx", import.meta.url), "utf8");
-const drawer = await readFile(new URL("../src/client/SshDrawer.jsx", import.meta.url), "utf8");
 const body = await readFile(new URL("../src/client/SshSidebarBody.jsx", import.meta.url), "utf8");
 const pool = await readFile(new URL("../src/client/terminal-pool.js", import.meta.url), "utf8");
 
@@ -31,27 +32,28 @@ assert.match(entry, /id: "ssh-ops-resources"/, "the Settings section keeps a sta
 assert.match(entry, /icon: "terminal"/, "the Settings menu receives the terminal icon");
 assert.doesNotMatch(entry, /settings\.plugins\.tab/, "resources no longer appear as a Plugins sub-tab");
 
-// ── late Sidebar services and old-DSH drawer fallback ──
+// ── late Sidebar services, and no legacy drawer anywhere ──
 // The right-Sidebar's services may be provided after an extension bundle is
-// evaluated.  Waiting on them prevents a one-time `ctx.get()` snapshot from
-// incorrectly selecting the legacy drawer in a host that does support tabs.
+// evaluated. Waiting on them prevents a one-time `ctx.get()` snapshot from
+// missing a host that does support tabs. The old floating-drawer fallback is
+// gone: its component, its shell.overlay slot and its toggle button must all
+// stay deleted.
 assert.match(entry, /activateSidebarWhenAvailable\(/,
-  "new DSH delegates Sidebar readiness to the delayed-service lifecycle");
+  "the plugin delegates Sidebar readiness to the delayed-service lifecycle");
 assert.doesNotMatch(entry, /ctx\.get\("sidebarRightTabs"\)/,
   "the Sidebar decision is not frozen before the host has finished registering services");
-assert.match(entry, /shell\.overlay/, "legacy DSH keeps the floating drawer");
-assert.match(drawer, /sshUiSetOpen\(false\)/, "drawer × only hides, never disconnects");
-assert.match(entry, /applyLegacyRegistrations/, "drawer-mode registrations remain wired");
+for (const src of [entry, panel, body]) {
+  assert.doesNotMatch(src, /SshDrawer|shell\.overlay|applyLegacyRegistrations|sshUiSetOpen\b/,
+    "no legacy drawer component, slot, registration or visibility toggle remains");
+}
 
 // ── the workspace carries no outer geometry of its own ──
 const workspaceBlock = panel.match(/workspace: \{[^}]*\}/)?.[0] ?? "";
 assert.notEqual(workspaceBlock, "", "the workspace root style exists");
 assert.doesNotMatch(workspaceBlock, /position: "fixed"|width:|top:|right:/,
-  "the workspace root is position-less; hosts own placement (dialog modals may be viewport-fixed)");
+  "the workspace root is position-less; the Sidebar owns placement (dialog modals may be viewport-fixed)");
 assert.doesNotMatch(panel, /margin-right|--dsh-ssh-ops-panel-space|data-dsh-ssh-ops-panel-open/,
   "no chat-column reservation inside the workspace: the official Sidebar manages the column");
-assert.doesNotMatch(panel, /sshUiSetOpen/, "the workspace never toggles drawer visibility");
-assert.match(drawer, /data-dsh-ssh-ops-panel="true"/, "the drawer keeps its outer shell marker");
 
 // ── connection lifetime is independent of view mounts ──
 assert.doesNotMatch(panel, /api\.disconnect\((?!connectionId)/, "unmount paths never disconnect by accident");
@@ -62,4 +64,4 @@ assert.doesNotMatch(panel, /term\.dispose\(\)/, "XtermView itself never disposes
 assert.match(panel, /terminalPool\.acquire\(/, "mounts acquire through the pool");
 assert.match(panel, /ResizeObserver\(fitNow\)/, "remounts refit via ResizeObserver (sidebar resize/fullscreen)");
 
-console.log("sidebar integration structure: two-stage registration, drawer fallback, geometry-free workspace: passed");
+console.log("sidebar integration structure: two-stage registration, drawer-free, geometry-free workspace: passed");

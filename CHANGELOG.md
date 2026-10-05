@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.15 - 2026-10-05
+
+- **双因素认证（密码 + 密钥，修真 bug）**：防火墙/交换机把 `AuthenticationMethods` 配成 `password,publickey`（或反序）后，同一条连接必须依次通过两个因素，此前认证模型是密码/私钥二选一的 union，第一因素过后手里没有第二凭据，这类设备必然登录失败。现在凭据升级为「主因素 + 可选相反类型的第二因素」：连接请求 `auth.secondary`、共享凭据与专属凭据的反向槽位（`PASSWORD`/`PRIVATE_KEY` 三个槽本来就都在，此前从不同时解析）、`profileConnect`/跳板链/`connect` 全部路径打通，ssh2 connectConfig 同时带上两种凭据。passphrase 槽复用规则：key 为主存主密钥口令，password 为主存第二因素密钥的口令。完全向后兼容——旧记录、旧请求一字不改照常工作，第二因素留空即单因素。UI：资源表单与共享凭据弹窗新增「第二因素（可选）」字段（带清除勾选），凭据列表显示「密码 + 私钥」组合标记；`credentialInfo`/`profileInfo` 新增 `secondaryConfigured`。
+- **auth handler 修复 partial-success 后序列耗尽（同一 bug 的协议层）**：双因素设备每过一关都回 USERAUTH_FAILURE(partial success)，此前 handler 顺序单趟走完即返回 false——即使两个凭据都在配置里，`publickey,password` 顺序的设备也会在第二因素处断掉。现在收到 partial success 时重启方法序列（跳过无意义的 none 探测），并设有界保护防不合规服务器反复重报同一因素导致死循环；tracker 新增 `partialSuccesses` 计数。
+- **测试**：105 项全通过；新增 `test/dual-factor.mjs` 九个用例——schema 向后兼容与同类型 secondary 拒绝、partial-success 重启序列（`none, password, [partial] → password, publickey`）、重启有界性、主/次双解析组合（password+key / key+password / 留空单因素）、connectConfig 双凭据装配。
+
+- **SQL 词法扫描：navop 方言回归探针（测试加固），并实测否决 Oracle q'' 交替引号识别**：`test/db-safety.mjs` 移植 navop 连续两轮的方言回归现场——三段式 `COMMENT ON`（带引号点号标识符、注释含分号）必须完整成句、`ALTER TABLE "db"."t" ADD ...`、嵌套块注释双向探针（单层收口语义：早收口暴露的文本按活 SQL 处理，误拦方向安全；PG/MSSQL 真嵌套只会多扫文本，绝不漏检）、PG `E''` 转义串，以「破坏性动词门禁 + 只读门禁 + 语句切分数」三重断言落档（嵌套注释组仅断言破坏性动词门禁）。q'' 交替引号曾试做扫描器能力（把 `q'[...]'` 整段当字面量），复测实测否决并回退：本插件 SQL 通道是 MySQL/PG/SQLite/ClickHouse（无 Oracle），`q` 在所有这些方言里都是普通别名标识符，`SELECT q'[a'; DROP TABLE x; --]'` 在服务器上真会执行 DROP，而 Oracle 语义的整段吞掉会让两道门禁双双放行（漏检方向）；扫描器既有的普通引号规则（下一个未转义、未翻倍的引号收口）与 MySQL 串规则逐字符一致，本就无误，`src/db-safety.js` 留有注释防止该分支被当作遗漏重新引入，`q'[a'; DROP …` 两个绕过形态已固化为回归用例。
+
+- **SQL 词法扫描：反斜杠引号与 PG dollar 引用（修两个同族既有漏检）**：扫描器此前对所有引号一律按 MySQL 默认施反斜杠转义，而 PG 普通字符串/引号标识符、MySQL 反引号标识符、SQLite 字符串不认 `\'` 转义——`SELECT 'a\'; DROP TABLE x; SELECT 'b'` 与 MySQL 反引号 `` `a\`; DROP …; --` `` 形态在对应服务器上真会执行 DROP，而扫描器把中段吞进字符串、两道门禁放行（HEAD 即有的漏检，本轮复测审查实测复现）。现在所有门禁对每条 SQL 同时跑「MySQL/ClickHouse 转义读法」与「字面读法（PG/SQLite/MySQL 反引号标识符）」：两种读法分词一致（不含引号前反斜杠的绝大多数查询）时行为不变；分歧时按通道取严——只读通道直接拒绝并提示改用 `''` 引号转义（所有方言读法一致），破坏性动词门禁取两读法并集，DROP 隔离改名的目标解析遇分歧拒绝解析、回落硬拦。PG `E''` 转义串经「独立 e/E 标识符紧邻引号即施转义」规则在两种读法下都精确（`freqE'…'` 的标识符尾部 E 不误认），既有 E'' 行为不变；写通道良性 `\'`（如 `VALUES ('can\'t stop')`）不受影响。另补齐 PG dollar 引用（`$$…$$` / `$tag$…$tag$`）识别：PG 空参数时 node-pg 走 simple-query 协议、多语句真会执行，`SELECT $$'$$; DROP TABLE t` 此前两道门禁放行；现在 dollar 区域按字面量跳过（tag 须标识符形态、不能以数字开头，`$1` 位置参数不误认；未闭合吞到结尾——服务端同样按未终止字符串报错、不执行），MySQL/SQLite/ClickHouse 无此语法且通道不支持多语句执行、不受影响。回归用例落进 `test/db-safety.mjs` 第 5/6 节。
+
+- **会话日志批量删除（多选 + 全选）**：「会话日志」标题旁新增**全选**勾选（部分选中时呈半选态）与「删除所选（N）」按钮；每条日志行首增加复选框（勾选不触发打开日志），勾中行有淡蓝底色提示。批量删除沿用单条删除 RPC 逐条执行，先弹确认（不可恢复提示）；单条失败不中断其余删除，完成后刷新列表并把首条失败原因显示在错误条；正在查看的日志若在删除集合内，查看器自动清空。
+- **移除旧版 DSH 浮动面板（抽屉）回退**：官方右侧边栏（`sidebarRightTabs` + `sidebarRight`）成为 SSH 终端 UI 的唯一宿主形态。删除 `SshDrawer.jsx`（固定定位、拖宽、聊天列让位、Desktop 标题栏对齐等全套旧占位逻辑）、`shell.overlay` 槽位注册、抽屉专属的会话顶栏按钮，以及 UI store 中只有抽屉在读的 `open` 状态与 `dsh-ssh-ops.panel-width` 宽度记忆。侧栏服务就绪的延迟等待逻辑保留（`activateSidebarWhenAvailable`），但不再有旧版回退：缺这两个 API 的宿主上 Agent 的 SSH/SFTP/数据库工具照常工作，只是不显示终端界面；侧栏注册失败改为仅报错（此前会回滚重建抽屉）。README/INSTALL 同步改为「官方侧栏 API 必需」。
+
 ## 0.3.14 - 2026-09-28
 
 - **AI 自动连接已保存服务器（#25，默认关闭）**：新增操作者开关 **设置 → SSH 资源 → AI 自动连接**（`agentSettingsGet`/`agentSettingsSave` RPC，持久化在 `ssh_ops_settings` 存储域）。开启后 Agent 获得 `ssh_connect_profile` 工具：按名称（大小写不敏感，唯一子串亦可）或资源 id 连接已保存的 SSH 资源并设为当前连接，复用该资源已有的活连接而不重复建连，同时 `ssh_list` 会列出已保存服务器（仅坐标信息，不含凭据/跳板链）；连接成功后会在右侧面板显示目标终端；若 PTY 无法打开则报错并清理新建连接。未开启时 `ssh_connect_profile` 明确报错引导转人工，且不会暴露任何已保存资源；危险命令确认、安全审核边界不变。

@@ -270,6 +270,25 @@ function sharedCredentialRefs(credentialId) {
   };
 }
 
+/**
+ * Assemble the wire `auth` object from a primary factor plus an optional
+ * opposite-kind secondary factor (dual-factor devices such as firewalls or
+ * switches configured with `AuthenticationMethods password,publickey`, or
+ * the reverse, require both factors on the SAME connection). For a password
+ * primary the secondary is a key and takes the shared passphrase slot; for a
+ * key primary the secondary is a plain password.
+ */
+function assembleAuth(authKind, primaryValue, { secondaryValue, passphraseValue, secondaryPassphraseValue } = {}) {
+  const primary = authKind === "password"
+    ? { kind: "password", password: primaryValue }
+    : { kind: "key", privateKey: primaryValue, ...(passphraseValue === undefined ? {} : { passphrase: passphraseValue }) };
+  if (secondaryValue === undefined) return primary;
+  const secondary = authKind === "password"
+    ? { kind: "key", privateKey: secondaryValue, ...(secondaryPassphraseValue === undefined ? {} : { passphrase: secondaryPassphraseValue }) }
+    : { kind: "password", password: secondaryValue };
+  return { ...primary, secondary };
+}
+
 function profileJumpPasswordRef(profileId, index) {
   return `DSH_SSH_OPS_${profileId.replaceAll("-", "").toUpperCase()}_JUMP_${index}_PASSWORD`;
 }
@@ -525,6 +544,30 @@ export default class SshOpsService extends TypertRemoteService {
     return { ok: true, value: { activeConnectionId: this.activeConnectionId } };
   }
 
+  /**
+   * Resolve a credential's primary factor plus its optional opposite-kind
+   * secondary (dual-factor auth) from a refs triple. The passphrase slot is
+   * shared: it holds the primary key's passphrase for key-primary records
+   * and the secondary key's passphrase for password-primary records. The
+   * secondary is optional — an unconfigured slot yields a single-factor auth.
+   */
+  async resolveCredentialAuth(refs, authKind) {
+    const primary = await this.ctx.credentials.resolve(credentialRef(authKind === "password" ? refs.password : refs.privateKey));
+    if (primary === undefined) return undefined;
+    const passphrase = authKind === "key"
+      ? await this.ctx.credentials.resolve(credentialRef(refs.passphrase))
+      : undefined;
+    const secondary = await this.ctx.credentials.resolve(credentialRef(authKind === "password" ? refs.privateKey : refs.password));
+    const secondaryPassphrase = authKind === "password"
+      ? await this.ctx.credentials.resolve(credentialRef(refs.passphrase))
+      : undefined;
+    return assembleAuth(authKind, primary.value, {
+      passphraseValue: passphrase?.value,
+      secondaryValue: secondary?.value,
+      secondaryPassphraseValue: secondaryPassphrase?.value
+    });
+  }
+
   async connect(request) {
     let resolvedRequest = request;
     if (request.credentialId !== undefined) {
@@ -532,15 +575,9 @@ export default class SshOpsService extends TypertRemoteService {
         const credential = this.requireCredentialTable().get(request.credentialId);
         if (credential === undefined) return { ok: false, error: fail("no-credential", `SSH credential "${request.credentialId}" does not exist`) };
         const refs = sharedCredentialRefs(request.credentialId);
-        const primary = await this.ctx.credentials.resolve(credentialRef(credential.authKind === "password" ? refs.password : refs.privateKey));
-        if (primary === undefined) return { ok: false, error: fail("credential-missing", `shared credential "${credential.name}" has no saved ${credential.authKind === "password" ? "password" : "private key"}`) };
-        const passphrase = credential.authKind === "key" ? await this.ctx.credentials.resolve(credentialRef(refs.passphrase)) : undefined;
-        resolvedRequest = {
-          ...request,
-          auth: credential.authKind === "password"
-            ? { kind: "password", password: primary.value }
-            : { kind: "key", privateKey: primary.value, ...(passphrase === undefined ? {} : { passphrase: passphrase.value }) }
-        };
+        const auth = await this.resolveCredentialAuth(refs, credential.authKind);
+        if (auth === undefined) return { ok: false, error: fail("credential-missing", `shared credential "${credential.name}" has no saved ${credential.authKind === "password" ? "password" : "private key"}`) };
+        resolvedRequest = { ...request, auth };
       } catch (error) { return { ok: false, error: fail("credential-connect-failed", error.message) }; }
     }
     if (Array.isArray(resolvedRequest.proxyJumpProfileIds) && resolvedRequest.proxyJumpProfileIds.length > 0) {
@@ -553,10 +590,9 @@ export default class SshOpsService extends TypertRemoteService {
           const profile = this.requireProfileTable().get(profileId);
           if (profile === undefined) return { ok: false, error: fail("no-profile", `jump-host profile "${profileId}" does not exist`) };
           const refs = profile.credentialId ? sharedCredentialRefs(profile.credentialId) : profileCredentialRefs(profileId);
-          const primary = await this.ctx.credentials.resolve(credentialRef(profile.authKind === "password" ? refs.password : refs.privateKey));
-          if (primary === undefined) return { ok: false, error: fail("credential-missing", `jump host "${profile.name}" has no saved credential`) };
-          const passphrase = profile.authKind === "key" ? await this.ctx.credentials.resolve(credentialRef(refs.passphrase)) : undefined;
-          proxyJump.push({ host: profile.host, port: profile.port, username: profile.username, hostKeyMode: profile.hostKeyMode, auth: profile.authKind === "password" ? { kind: "password", password: primary.value } : { kind: "key", privateKey: primary.value, ...(passphrase === undefined ? {} : { passphrase: passphrase.value }) } });
+          const auth = await this.resolveCredentialAuth(refs, profile.authKind);
+          if (auth === undefined) return { ok: false, error: fail("credential-missing", `jump host "${profile.name}" has no saved credential`) };
+          proxyJump.push({ host: profile.host, port: profile.port, username: profile.username, hostKeyMode: profile.hostKeyMode, auth });
         }
         return await this.connectInternal({ ...resolvedRequest, proxyJump });
       } catch (error) { return { ok: false, error: fail("profile-jump-connect-failed", error.message) }; }
@@ -574,11 +610,17 @@ export default class SshOpsService extends TypertRemoteService {
       keepaliveInterval: request.keepaliveInterval ?? KEEPALIVE_INTERVAL_MS,
       keepaliveCountMax: request.keepaliveCountMax ?? KEEPALIVE_COUNT_MAX
     };
-    if (request.auth.kind === "password") {
-      connectConfig.password = request.auth.password;
-    } else {
-      connectConfig.privateKey = request.auth.privateKey;
-      if (request.auth.passphrase !== void 0) connectConfig.passphrase = request.auth.passphrase;
+    // Dual-factor devices require both factors on the same connection: apply
+    // the primary and, when present, the secondary to the ssh2 config so the
+    // auth handler can walk password → publickey in either server order.
+    if (request.auth.password !== undefined) connectConfig.password = request.auth.password;
+    if (request.auth.privateKey !== undefined) connectConfig.privateKey = request.auth.privateKey;
+    if (request.auth.passphrase !== void 0) connectConfig.passphrase = request.auth.passphrase;
+    if (request.auth.secondary?.kind === "key") {
+      connectConfig.privateKey = request.auth.secondary.privateKey;
+      if (request.auth.secondary.passphrase !== void 0) connectConfig.passphrase = request.auth.secondary.passphrase;
+    } else if (request.auth.secondary?.kind === "password") {
+      connectConfig.password = request.auth.secondary.password;
     }
     const record = {
       id,
@@ -955,11 +997,18 @@ export default class SshOpsService extends TypertRemoteService {
         // connection (the one that terminates at the device).
         readyTimeout: hopConfig.readyTimeout ?? 20000
       };
-      if (hopConfig.auth?.kind === "password") {
-        hopConnectConfig.password = hopConfig.auth.password;
-      } else if (hopConfig.auth?.kind === "key") {
+      // Primary + optional secondary factor (dual-factor jump devices): the
+      // hop's auth handler walks methods from whatever is configured.
+      if (hopConfig.auth?.password !== undefined) hopConnectConfig.password = hopConfig.auth.password;
+      if (hopConfig.auth?.privateKey !== undefined) {
         hopConnectConfig.privateKey = hopConfig.auth.privateKey;
         if (hopConfig.auth.passphrase !== void 0) hopConnectConfig.passphrase = hopConfig.auth.passphrase;
+      }
+      if (hopConfig.auth?.secondary?.kind === "key") {
+        hopConnectConfig.privateKey = hopConfig.auth.secondary.privateKey;
+        if (hopConfig.auth.secondary.passphrase !== void 0) hopConnectConfig.passphrase = hopConfig.auth.secondary.passphrase;
+      } else if (hopConfig.auth?.secondary?.kind === "password") {
+        hopConnectConfig.password = hopConfig.auth.secondary.password;
       }
       // Jump hosts get the same keyboard-interactive support as targets: an
       // MFA-prompting bastion is exactly where a saved password answers prompts.
@@ -1141,11 +1190,13 @@ export default class SshOpsService extends TypertRemoteService {
   async credentialPublic(credentialId, record) {
     const refs = sharedCredentialRefs(credentialId);
     const primaryRef = record.authKind === "password" ? refs.password : refs.privateKey;
-    const [primary, passphrase] = await Promise.all([
+    const secondaryRef = record.authKind === "password" ? refs.privateKey : refs.password;
+    const [primary, passphrase, secondary] = await Promise.all([
       this.ctx.credentials.describe(credentialRef(primaryRef)),
-      this.ctx.credentials.describe(credentialRef(refs.passphrase))
+      this.ctx.credentials.describe(credentialRef(refs.passphrase)),
+      this.ctx.credentials.describe(credentialRef(secondaryRef))
     ]);
-    return { credentialId, name: record.name, authKind: record.authKind, credentialConfigured: primary.configured, passphraseConfigured: passphrase.configured };
+    return { credentialId, name: record.name, authKind: record.authKind, credentialConfigured: primary.configured, passphraseConfigured: passphrase.configured, secondaryConfigured: secondary.configured };
   }
 
   async credentialList() {
@@ -1190,9 +1241,11 @@ export default class SshOpsService extends TypertRemoteService {
     const shared = record.credentialId ? this.requireCredentialTable().get(record.credentialId) : undefined;
     const refs = shared ? sharedCredentialRefs(record.credentialId) : profileCredentialRefs(profileId);
     const primaryRef = record.authKind === "password" ? refs.password : refs.privateKey;
-    const [primary, passphrase] = await Promise.all([
+    const secondaryRef = record.authKind === "password" ? refs.privateKey : refs.password;
+    const [primary, passphrase, secondary] = await Promise.all([
       this.ctx.credentials.describe(credentialRef(primaryRef)),
-      this.ctx.credentials.describe(credentialRef(refs.passphrase))
+      this.ctx.credentials.describe(credentialRef(refs.passphrase)),
+      this.ctx.credentials.describe(credentialRef(secondaryRef))
     ]);
     const connected = [...this.connections.values()].some((connection) => connection.profileId === profileId);
     const group = record.groupId === null ? undefined : this.requireGroupTable().get(record.groupId);
@@ -1212,6 +1265,7 @@ export default class SshOpsService extends TypertRemoteService {
       groupName: group?.name ?? null,
       credentialConfigured: primary.configured,
       passphraseConfigured: passphrase.configured,
+      secondaryConfigured: secondary.configured,
       connected
     };
   }
@@ -1336,14 +1390,10 @@ export default class SshOpsService extends TypertRemoteService {
         return { ok: true, value };
       }
       const refs = record.credentialId ? sharedCredentialRefs(record.credentialId) : profileCredentialRefs(request.profileId);
-      const primaryRef = record.authKind === "password" ? refs.password : refs.privateKey;
-      const primary = await this.ctx.credentials.resolve(credentialRef(primaryRef));
-      if (primary === undefined) {
+      const targetAuth = await this.resolveCredentialAuth(refs, record.authKind);
+      if (targetAuth === undefined) {
         return { ok: false, error: fail("credential-missing", `SSH resource "${record.name}" has no saved ${record.authKind === "password" ? "password" : "private key"}`) };
       }
-      const passphrase = record.authKind === "key"
-        ? await this.ctx.credentials.resolve(credentialRef(refs.passphrase))
-        : undefined;
       const proxyJump = [];
       const configuredHops = request.proxyJumpProfileIds?.map((profileId) => ({ profileId })) ?? record.proxyJump ?? [];
       const seenHops = new Set();
@@ -1354,10 +1404,9 @@ export default class SshOpsService extends TypertRemoteService {
           const jump = this.requireProfileTable().get(hop.profileId);
           if (jump === undefined) return { ok: false, error: fail("no-profile", `jump-host profile "${hop.profileId}" does not exist`) };
           const jumpRefs = jump.credentialId ? sharedCredentialRefs(jump.credentialId) : profileCredentialRefs(hop.profileId);
-          const secret = await this.ctx.credentials.resolve(credentialRef(jump.authKind === "password" ? jumpRefs.password : jumpRefs.privateKey));
-          if (secret === undefined) return { ok: false, error: fail("credential-missing", `jump host "${jump.name}" has no saved credential`) };
-          const passphrase = jump.authKind === "key" ? await this.ctx.credentials.resolve(credentialRef(jumpRefs.passphrase)) : undefined;
-          proxyJump.push({ host: jump.host, port: jump.port, username: jump.username, hostKeyMode: jump.hostKeyMode, auth: jump.authKind === "password" ? { kind: "password", password: secret.value } : { kind: "key", privateKey: secret.value, ...(passphrase === undefined ? {} : { passphrase: passphrase.value }) } });
+          const auth = await this.resolveCredentialAuth(jumpRefs, jump.authKind);
+          if (auth === undefined) return { ok: false, error: fail("credential-missing", `jump host "${jump.name}" has no saved credential`) };
+          proxyJump.push({ host: jump.host, port: jump.port, username: jump.username, hostKeyMode: jump.hostKeyMode, auth });
           continue;
         }
         if ((hop.authKind ?? "credential") === "password") {
@@ -1375,10 +1424,9 @@ export default class SshOpsService extends TypertRemoteService {
         }
         const credential = this.requireCredentialTable().get(hop.credentialId);
         const hopRefs = sharedCredentialRefs(hop.credentialId);
-        const secret = await this.ctx.credentials.resolve(credentialRef(credential.authKind === "password" ? hopRefs.password : hopRefs.privateKey));
-        if (secret === undefined) return { ok: false, error: fail("credential-missing", `jump host "${hop.host}" has no saved credential`) };
-        const phrase = credential.authKind === "key" ? await this.ctx.credentials.resolve(credentialRef(hopRefs.passphrase)) : undefined;
-        proxyJump.push({ host: hop.host, port: hop.port, username: hop.username, hostKeyMode: hop.hostKeyMode, auth: credential.authKind === "password" ? { kind: "password", password: secret.value } : { kind: "key", privateKey: secret.value, ...(phrase === undefined ? {} : { passphrase: phrase.value }) } });
+        const auth = await this.resolveCredentialAuth(hopRefs, credential.authKind);
+        if (auth === undefined) return { ok: false, error: fail("credential-missing", `jump host "${hop.host}" has no saved credential`) };
+        proxyJump.push({ host: hop.host, port: hop.port, username: hop.username, hostKeyMode: hop.hostKeyMode, auth });
       }
       return await this.connectInternal({
         name: record.name,
@@ -1388,9 +1436,7 @@ export default class SshOpsService extends TypertRemoteService {
         hostKeyMode: record.hostKeyMode,
         readyTimeout: request.readyTimeout,
         retries: request.retries,
-        auth: record.authKind === "password"
-          ? { kind: "password", password: primary.value }
-          : { kind: "key", privateKey: primary.value, ...(passphrase === undefined ? {} : { passphrase: passphrase.value }) },
+        auth: targetAuth,
         ...(proxyJump.length > 0 ? { proxyJump } : {})
       }, request.profileId);
     } catch (error) {

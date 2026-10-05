@@ -32,8 +32,10 @@ function emptyForm() {
     proxyJump: [],
     secret: "",
     passphrase: "",
+    secondary: "",
     clearSecret: false,
-    clearPassphrase: false
+    clearPassphrase: false,
+    clearSecondary: false
   };
 }
 
@@ -170,6 +172,11 @@ function ResourceEditor({ initial, groups, profiles, sharedCredentials = [], cre
         if (form.passphrase) await credentialWrite(credentials, saved.credentialRefs.passphrase, form.passphrase);
         else if (form.clearPassphrase) await credentialUnset(credentials, saved.credentialRefs.passphrase);
       }
+      // Optional second factor for dual-factor devices (AuthenticationMethods
+      // password,publickey or the reverse): stored in the opposite-kind slot.
+      const secondaryRef = form.authKind === "password" ? saved.credentialRefs.privateKey : saved.credentialRefs.password;
+      if (form.secondary.trim()) await credentialWrite(credentials, secondaryRef, form.secondary);
+      else if (form.clearSecondary) await credentialUnset(credentials, secondaryRef);
       await onSaved();
       onClose();
     } catch (cause) {
@@ -237,6 +244,17 @@ function ResourceEditor({ initial, groups, profiles, sharedCredentials = [], cre
             {initial?.passphraseConfigured && <Check label="清除已保存的私钥口令" checked={form.clearPassphrase} onChange={set("clearPassphrase")} />}
           </Field>
         )}
+        <Field
+          label={form.authKind === "password" ? "第二因素：私钥（可选）" : "第二因素：密码（可选）"}
+          hint={initial?.secondaryConfigured ? "已保存；留空保持不变" : "防火墙/交换机启用 AuthenticationMethods password+publickey 双因素认证时填写"}
+        >
+          {form.authKind === "password" ? (
+            <textarea value={form.secondary} onChange={set("secondary")} rows={4} style={{ ...styles.input, fontFamily: "monospace" }} placeholder="双因素设备才需要填写；普通服务器留空" />
+          ) : (
+            <input type="password" value={form.secondary} onChange={set("secondary")} style={styles.input} placeholder="双因素设备才需要填写；普通服务器留空" />
+          )}
+          {initial?.secondaryConfigured && <Check label="清除已保存的第二因素" checked={form.clearSecondary} onChange={set("clearSecondary")} />}
+        </Field>
         <Field label="跳板机（ProxyJump）">
           {form.proxyJump.map((hop, index) => <div key={index} style={styles.jumpRow}><select value={hop.profileId ?? ""} onChange={(event) => updateJump(index, "profileId", event.target.value)} style={styles.input}><option value="">选择已保存服务器</option>{profiles.filter((profile) => profile.profileId !== form.profileId).map((profile) => <option key={profile.profileId} value={profile.profileId}>{profile.name} · {profile.username}@{profile.host}:{profile.port}</option>)}</select><button type="button" onClick={() => removeJump(index)} style={styles.danger}>移除</button></div>)}
           <button type="button" onClick={addJump} style={styles.secondary}>＋ 添加跳板机</button>
@@ -260,14 +278,14 @@ function Check({ label, checked, onChange }) {
 }
 
 function SharedCredentialEditor({ initial, credentials, api, onClose, onSaved }) {
-  const [name, setName] = useState(initial?.name ?? ""); const [authKind, setAuthKind] = useState(initial?.authKind ?? "key"); const [secret, setSecret] = useState(""); const [passphrase, setPassphrase] = useState(""); const [error, setError] = useState(null); const [busy, setBusy] = useState(false); const fileInput = useRef(null);
+  const [name, setName] = useState(initial?.name ?? ""); const [authKind, setAuthKind] = useState(initial?.authKind ?? "key"); const [secret, setSecret] = useState(""); const [passphrase, setPassphrase] = useState(""); const [secondary, setSecondary] = useState(""); const [error, setError] = useState(null); const [busy, setBusy] = useState(false); const fileInput = useRef(null);
   const importKey = async (file) => {
     if (!file) return;
     if (file.size > 1024 * 1024) return setError("私钥文件不能超过 1 MB");
     try { const text = await file.text(); if (!text.trim()) throw new Error("所选私钥文件为空"); const problem = privateKeyProblem(text); if (problem) throw new Error(problem); setSecret(text); setError(null); } catch (cause) { setError(cause?.message ?? "无法读取私钥文件"); }
   };
-  const save = async () => { if (!name.trim()) return setError("请填写凭据名称"); setBusy(true); try { const saved = await api.credentialSave({ ...(initial?.credentialId ? { credentialId: initial.credentialId } : {}), name: name.trim(), authKind }); const ref = authKind === "password" ? saved.credentialRefs.password : saved.credentialRefs.privateKey; if (secret) await credentialWrite(credentials, ref, secret); if (authKind === "key" && passphrase) await credentialWrite(credentials, saved.credentialRefs.passphrase, passphrase); await onSaved(); onClose(); } catch (cause) { setError(cause?.message ?? String(cause)); } finally { setBusy(false); } };
-  return <div style={styles.backdrop} onClick={onClose}><div className="dsh-ssh-ops-resource-modal" style={styles.dialog} onClick={(event) => event.stopPropagation()} onDragOver={(event) => { if (authKind === "key") event.preventDefault(); }} onDrop={(event) => { if (authKind !== "key") return; event.preventDefault(); importKey(event.dataTransfer.files?.[0]); }}><div style={styles.dialogTitle}>{initial ? "编辑共享凭据" : "新增共享凭据"}</div><Field label="名称"><input value={name} onChange={(event) => setName(event.target.value)} placeholder="生产环境运维私钥" style={styles.input} /></Field><Field label="认证方式"><select value={authKind} onChange={(event) => setAuthKind(event.target.value)} style={styles.input}><option value="key">PEM / 私钥</option><option value="password">密码</option></select></Field><Field label={authKind === "key" ? "私钥" : "密码"} hint={initial?.credentialConfigured ? "已保存；留空保持不变" : ""}>{authKind === "key" ? <><textarea value={secret} onChange={(event) => setSecret(event.target.value)} rows={4} style={{ ...styles.input, fontFamily: "monospace" }} /><input ref={fileInput} type="file" accept=".pem,.key,.rsa,.ed25519,.txt,text/plain" onChange={(event) => { importKey(event.target.files?.[0]); event.target.value = ""; }} style={{ display: "none" }} /><button type="button" onClick={() => fileInput.current?.click()} style={styles.secondary}>选择私钥文件</button><small style={styles.hint}>也可将 PEM / 私钥文件拖入此窗口。</small></> : <input type="password" value={secret} onChange={(event) => setSecret(event.target.value)} style={styles.input} />}</Field>{authKind === "key" && <Field label="私钥口令"><input type="password" value={passphrase} onChange={(event) => setPassphrase(event.target.value)} style={styles.input} /></Field>}{error && <div style={styles.error}>{error}</div>}<div style={styles.actions}><button type="button" onClick={onClose} style={styles.secondary}>取消</button><button type="button" disabled={busy} onClick={save} style={styles.primary}>{busy ? "保存中…" : "保存凭据"}</button></div></div></div>;
+  const save = async () => { if (!name.trim()) return setError("请填写凭据名称"); setBusy(true); try { const saved = await api.credentialSave({ ...(initial?.credentialId ? { credentialId: initial.credentialId } : {}), name: name.trim(), authKind }); const ref = authKind === "password" ? saved.credentialRefs.password : saved.credentialRefs.privateKey; if (secret) await credentialWrite(credentials, ref, secret); if (authKind === "key" && passphrase) await credentialWrite(credentials, saved.credentialRefs.passphrase, passphrase); const secondaryRef = authKind === "password" ? saved.credentialRefs.privateKey : saved.credentialRefs.password; if (secondary.trim()) await credentialWrite(credentials, secondaryRef, secondary); await onSaved(); onClose(); } catch (cause) { setError(cause?.message ?? String(cause)); } finally { setBusy(false); } };
+  return <div style={styles.backdrop} onClick={onClose}><div className="dsh-ssh-ops-resource-modal" style={styles.dialog} onClick={(event) => event.stopPropagation()} onDragOver={(event) => { if (authKind === "key") event.preventDefault(); }} onDrop={(event) => { if (authKind !== "key") return; event.preventDefault(); importKey(event.dataTransfer.files?.[0]); }}><div style={styles.dialogTitle}>{initial ? "编辑共享凭据" : "新增共享凭据"}</div><Field label="名称"><input value={name} onChange={(event) => setName(event.target.value)} placeholder="生产环境运维私钥" style={styles.input} /></Field><Field label="认证方式"><select value={authKind} onChange={(event) => setAuthKind(event.target.value)} style={styles.input}><option value="key">PEM / 私钥</option><option value="password">密码</option></select></Field><Field label={authKind === "key" ? "私钥" : "密码"} hint={initial?.credentialConfigured ? "已保存；留空保持不变" : ""}>{authKind === "key" ? <><textarea value={secret} onChange={(event) => setSecret(event.target.value)} rows={4} style={{ ...styles.input, fontFamily: "monospace" }} /><input ref={fileInput} type="file" accept=".pem,.key,.rsa,.ed25519,.txt,text/plain" onChange={(event) => { importKey(event.target.files?.[0]); event.target.value = ""; }} style={{ display: "none" }} /><button type="button" onClick={() => fileInput.current?.click()} style={styles.secondary}>选择私钥文件</button><small style={styles.hint}>也可将 PEM / 私钥文件拖入此窗口。</small></> : <input type="password" value={secret} onChange={(event) => setSecret(event.target.value)} style={styles.input} />}</Field>{authKind === "key" && <Field label="私钥口令"><input type="password" value={passphrase} onChange={(event) => setPassphrase(event.target.value)} style={styles.input} /></Field>}<Field label={authKind === "password" ? "第二因素：私钥（可选）" : "第二因素：密码（可选）"} hint={initial?.secondaryConfigured ? "已保存；留空保持不变" : "双因素设备（AuthenticationMethods password+publickey）才需要填写"}>{authKind === "password" ? <textarea value={secondary} onChange={(event) => setSecondary(event.target.value)} rows={4} style={{ ...styles.input, fontFamily: "monospace" }} /> : <input type="password" value={secondary} onChange={(event) => setSecondary(event.target.value)} style={styles.input} />}</Field>{error && <div style={styles.error}>{error}</div>}<div style={styles.actions}><button type="button" onClick={onClose} style={styles.secondary}>取消</button><button type="button" disabled={busy} onClick={save} style={styles.primary}>{busy ? "保存中…" : "保存凭据"}</button></div></div></div>;
 }
 
 /** Green shield when a host's fingerprint is trusted; grey/dim when not. */
@@ -571,7 +589,7 @@ export function SshResources({ api, credentials }) {
           <div style={styles.groupCreate}><input value={newGroupName} onChange={(event) => setNewGroupName(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") createGroup(); }} placeholder="例如：生产环境" style={{ ...styles.input, flex: 1, minWidth: 0 }} /><button type="button" disabled={creatingGroup || !newGroupName.trim()} onClick={createGroup} style={styles.secondary}>{creatingGroup ? "创建中…" : "创建"}</button></div>
           {groups.length > 0 && <div style={styles.groupChips}>{groups.map((group) => <span key={group.groupId} style={styles.groupChip}>{group.name}（{group.profileCount}）<button type="button" onClick={() => deleteGroup(group)} title={`删除分组 ${group.name}`} style={styles.chipDelete}>×</button></span>)}</div>}
         </section>
-        <section style={{ ...styles.groupPanel, marginBottom: 0 }}><div style={styles.groupTitle}>共享 SSH 凭据</div><button type="button" onClick={() => setCredentialEditor({})} style={styles.secondary}>新增共享凭据</button>{sharedCredentials.length > 0 && <div style={styles.credentialList}>{sharedCredentials.map((item) => <div key={item.credentialId} style={styles.credentialRow}><span title={item.name} style={styles.credentialLabel}>{item.name} · {item.authKind === "key" ? "私钥" : "密码"} · {item.credentialConfigured ? "已保存" : "未配置"}</span><span style={styles.credentialActions}><button type="button" onClick={() => setCredentialEditor(item)} title={`编辑共享凭据 ${item.name}`} aria-label={`编辑共享凭据 ${item.name}`} style={styles.iconButton}>✎</button><button type="button" onClick={async () => { if (!window.confirm(`删除共享凭据“${item.name}”？仍被服务器或跳板机引用时不会删除。`)) return; try { await api.credentialDelete(item.credentialId); await refresh({ showLoading: false }); } catch (cause) { setError(cause?.message ?? String(cause)); } }} title={`删除共享凭据 ${item.name}`} aria-label={`删除共享凭据 ${item.name}`} style={{ ...styles.iconButton, color: "#f07171" }}>×</button></span></div>)}</div>}</section>
+        <section style={{ ...styles.groupPanel, marginBottom: 0 }}><div style={styles.groupTitle}>共享 SSH 凭据</div><button type="button" onClick={() => setCredentialEditor({})} style={styles.secondary}>新增共享凭据</button>{sharedCredentials.length > 0 && <div style={styles.credentialList}>{sharedCredentials.map((item) => <div key={item.credentialId} style={styles.credentialRow}><span title={item.name} style={styles.credentialLabel}>{item.name} · {item.authKind === "key" ? "私钥" : "密码"}{item.secondaryConfigured ? " + " + (item.authKind === "key" ? "密码" : "私钥") : ""} · {item.credentialConfigured ? "已保存" : "未配置"}</span><span style={styles.credentialActions}><button type="button" onClick={() => setCredentialEditor(item)} title={`编辑共享凭据 ${item.name}`} aria-label={`编辑共享凭据 ${item.name}`} style={styles.iconButton}>✎</button><button type="button" onClick={async () => { if (!window.confirm(`删除共享凭据“${item.name}”？仍被服务器或跳板机引用时不会删除。`)) return; try { await api.credentialDelete(item.credentialId); await refresh({ showLoading: false }); } catch (cause) { setError(cause?.message ?? String(cause)); } }} title={`删除共享凭据 ${item.name}`} aria-label={`删除共享凭据 ${item.name}`} style={{ ...styles.iconButton, color: "#f07171" }}>×</button></span></div>)}</div>}</section>
       </div>
       {error && <div style={styles.error} role="alert">{error}</div>}
       {loading ? <div style={styles.empty}>加载 SSH 资源中…</div> : profiles.length === 0 ? <div style={styles.empty}>还没有保存的服务器。新增后可一键连接并打开右侧终端。</div> : <div style={styles.groupedList}>{groups.map((group) => {

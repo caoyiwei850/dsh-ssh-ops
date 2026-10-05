@@ -8,7 +8,7 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.3.14-blue)
+![version](https://img.shields.io/badge/version-0.3.15-blue)
 [![dsh.so risk](https://www.dsh.so/badge/dsh-ssh-ops.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![dsh.so install · dsh 0.1.7-rc.2](https://www.dsh.so/badge/install/dsh-ssh-ops@0.1.7-rc.2.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/caoyiwei850/dsh-ssh-ops)
@@ -32,8 +32,7 @@
 ## 兼容性
 
 - **目标宿主**：DSH Desktop / Web Profile，经四个官方包的 `peerDependencies` 声明为无上界区间 `>=0.1.5-alpha.1`——宿主以 `includePrerelease` 语义按 DSH 运行时版本评估，覆盖 `0.1.5` 起的全部宿主版本（含一切预发布），宿主升级无需发版跟进。当前开发环境已验证 `0.2.0-rc.1` 桌面版。插件使用 DSH 自带的 Node.js 运行时，不要求系统另装 `ssh`、`sftp` 或独立 Node.js。
-- **新版右侧边栏**：宿主同时提供 `sidebarRightTabs` 与 `sidebarRight` 时，SSH 作为官方右侧边栏标签运行，支持宿主分栏、缩放和全屏。
-- **旧版回退**：缺少上述右侧边栏 API 时，插件自动使用原有浮动 SSH 面板；终端、SFTP、隧道、数据库和 Agent 工具仍可用，但不会获得官方边栏标签和分栏体验。
+- **新版右侧边栏（必需）**：宿主须同时提供 `sidebarRightTabs` 与 `sidebarRight`，SSH 以官方右侧边栏标签运行，支持宿主分栏、缩放和全屏。缺少这两个 API 的旧版宿主不再有浮动面板回退（已移除）：插件宿主半（Agent 的 SSH/SFTP/数据库工具）照常工作，但不会显示终端 UI。
 - **文件字节流**：大文件的浏览器上传／下载路由仅在 Web Profile 同时提供 `webServer` 与请求来源校验服务时注册；不具备该接口的宿主继续使用既有 SFTP 操作。目录归档下载在所有宿主上均返回 `501 archive-unavailable`，避免 SFTP chroot 与 SSH shell 命名空间不一致造成越界。
 - **升级方式**：安装或升级后必须完整退出并重启对应 DSH Profile。SSH 资源、已知主机和凭据位于 DSH 的独立本地存储，不在插件包内；常规升级不会删除它们。
 
@@ -53,9 +52,9 @@
 
 ## 能做什么
 
-- **官方右侧边栏集成（新版 DSH）**：SSH 终端是官方右侧边栏的一个标签页（与内置「文件」并列），聊天顶部的 **SSH** 按钮打开或聚焦该标签（重复点击只聚焦、不重复创建）；需要同时看文件和终端时使用官方分栏，拖宽、全屏、收起全部由官方管理，终端尺寸随之自动重算。**分栏时每个窗格独立**：各自维护可见的服务器与选中项，新窗格默认空白、不继承已有服务器；同一台服务器在两栏打开会各建一条独立连接（可在连接对话框勾选复用），关掉其中一栏不影响另一栏，某台服务器不再被任何窗格显示时才真正断开宿主连接。被 Agent 使用的连接带「Agent」徽标，点另一栏即可把 Agent 切过去。**连接生命周期与标签显示分离**：切换标签、收起侧栏、关闭标签、切换聊天都不会断开 SSH；终端实例常驻内存池，重新打开即恢复完整回看，隐藏期间服务器输出由宿主缓冲、重开时自动补齐。旧版 DSH（无 `sidebarRightTabs`）自动回退为浮动面板模式，行为不变。
+- **官方右侧边栏集成（新版 DSH）**：SSH 终端是官方右侧边栏的一个标签页（与内置「文件」并列），聊天顶部的 **SSH** 按钮打开或聚焦该标签（重复点击只聚焦、不重复创建）；需要同时看文件和终端时使用官方分栏，拖宽、全屏、收起全部由官方管理，终端尺寸随之自动重算。**分栏时每个窗格独立**：各自维护可见的服务器与选中项，新窗格默认空白、不继承已有服务器；同一台服务器在两栏打开会各建一条独立连接（可在连接对话框勾选复用），关掉其中一栏不影响另一栏，某台服务器不再被任何窗格显示时才真正断开宿主连接。被 Agent 使用的连接带「Agent」徽标，点另一栏即可把 Agent 切过去。**连接生命周期与标签显示分离**：切换标签、收起侧栏、关闭标签、切换聊天都不会断开 SSH；终端实例常驻内存池，重新打开即恢复完整回看，隐藏期间服务器输出由宿主缓冲、重开时自动补齐。
 - **终端跟随 DSH 明暗主题**：xterm 渲染在自己的 canvas 上、继承不了 CSS 文字色，因此内置完整的明／暗两套对比色板（含光标与选区），随宿主主题切换立即重绘已经打开的终端。
-- 在 **设置 → SSH 资源** 中管理任意数量的服务器和分组；它作为左侧菜单的一等项，与通用设置、模型并列，不再藏在“插件”下。顶部的 **SSH** 仅打开或聚焦右侧终端标签（旧版 DSH 中为显示/隐藏浮动面板，均不断开连接）。
+- 在 **设置 → SSH 资源** 中管理任意数量的服务器和分组；它作为左侧菜单的一等项，与通用设置、模型并列，不再藏在“插件”下。顶部的 **SSH** 仅打开或聚焦右侧终端标签，不断开连接。
 - **固定远程项目目录**：每台保存的服务器可选填一个绝对路径作为默认项目目录。资源卡片上的“进入项目”会建立连接、在经过空闲 shell 与单 PTY 校验后切换终端目录，并让 SFTP 从同一路径载入；目录不接受相对路径或控制字符。未设置的资源仍从登录目录和 SFTP 根目录开始。
 - 服务器名称、地址、端口、用户名、认证类型和分组保存到 DSH 本地存储；数量不设上限。
 - 密码、PEM 私钥和私钥口令仅保存到 DSH 官方本机凭据库 `~/.dsh/.credentials.yaml`（owner-only 权限）；浏览器存储、Agent 上下文、工具结果和资源列表均不会读取或显示秘密内容。
@@ -98,7 +97,7 @@ Agent 命中上述黑名单时不会被静默拒绝：插件会创建一条一�
 ### 从 GitHub 安装（推荐）
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.14
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.15
 ```
 
 安装后重启 DSH Web：
@@ -111,14 +110,14 @@ dsh web
 
 ### 从发布压缩包安装
 
-从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.14) 下载 `dsh-ssh-ops-0.3.14.tgz` 后：
+从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.15) 下载 `dsh-ssh-ops-0.3.15.tgz` 后：
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.14.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.15.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.3.14.zip` 适用于离线审阅或二次开发；解压后可在目录中执行 `npm install && npm run build`。
+`dsh-ssh-ops-0.3.15.zip` 适用于离线审阅或二次开发；解压后可在目录中执行 `npm install && npm run build`。
 
 ## 使用方式
 
@@ -208,8 +207,8 @@ npm run pack:release
 
 生成物位于 `release/`：
 
-- `dsh-ssh-ops-0.3.14.tgz`：可直接被 DSH 安装。
-- `dsh-ssh-ops-0.3.14.zip`：完整离线源码包。
+- `dsh-ssh-ops-0.3.15.tgz`：可直接被 DSH 安装。
+- `dsh-ssh-ops-0.3.15.zip`：完整离线源码包。
 
 ## 许可
 

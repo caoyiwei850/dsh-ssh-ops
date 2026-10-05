@@ -8,7 +8,7 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.3.14-blue)
+![version](https://img.shields.io/badge/version-0.3.15-blue)
 [![dsh.so risk](https://www.dsh.so/badge/dsh-ssh-ops.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![dsh.so install · dsh 0.1.7-rc.2](https://www.dsh.so/badge/install/dsh-ssh-ops@0.1.7-rc.2.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/caoyiwei850/dsh-ssh-ops)
@@ -32,8 +32,7 @@
 ## Compatibility
 
 - **Target host**: the DSH Desktop / Web Profile, declared via the four official-package `peerDependencies` as the unbounded range `>=0.1.5-alpha.1` — the gate evaluates it against the DSH runtime version with `includePrerelease` semantics, covering every host version from `0.1.5` on (all prereleases included), so host upgrades require no release follow-up. Validated on the `0.2.0-rc.1` desktop build. The plugin uses DSH's bundled Node.js runtime and does not require a system `ssh`, `sftp`, or standalone Node.js installation.
-- **Current right Sidebar**: when the host supplies both `sidebarRightTabs` and `sidebarRight`, SSH runs as an official right-Sidebar tab and uses the host's split, resize, and fullscreen behavior.
-- **Older-host fallback**: if those Sidebar APIs are absent, the plugin automatically keeps the earlier floating SSH panel. Terminal, SFTP, tunnels, databases, and agent tools remain available, but there is no official Sidebar-tab or split-pane experience.
+- **Current right Sidebar (required)**: the host must supply both `sidebarRightTabs` and `sidebarRight`; SSH then runs as an official right-Sidebar tab and uses the host's split, resize, and fullscreen behavior. Hosts without those APIs no longer get a floating-panel fallback (removed): the host half (agent SSH/SFTP/database tools) keeps working, but no terminal UI is shown.
 - **File byte streaming**: browser upload/download routes register only when the Web Profile exposes both `webServer` and the request-origin guard; hosts without them retain the existing SFTP operations. Directory archive download returns `501 archive-unavailable` on every host, preventing traversal across differing SFTP-chroot and SSH-shell filesystem namespaces.
 - **Upgrades**: fully quit and restart the affected DSH Profile after installing or upgrading. SSH resources, known hosts, and credentials live in DSH-owned local storage outside the plugin package, so a normal upgrade does not remove them.
 
@@ -53,9 +52,9 @@ The Files tab provides SFTP management and can `cd` the interactive terminal int
 
 ## What it does
 
-- **Official right-Sidebar integration (current DSH)**: the SSH terminal is a tab of the official right Sidebar, beside the built-in Files tab. The **SSH** button in the conversation header opens or focuses that tab (repeated clicks focus instead of duplicating). Use the official split view to see files and the terminal together; drag-resize, fullscreen, and collapse are the sidebar's, and the terminal re-fits automatically. **Each split pane is independent**: it keeps its own visible servers and selection, a new pane starts empty and never inherits another pane's servers, opening the same server in both panes gives each its own connection (reuse is opt-in), closing it in one pane leaves the other alone, and the host session is disconnected only once no pane shows it any more. The connection the agent is using carries an **Agent** badge — click the other pane to move the agent there. **Connection lifetime is independent of the tab**: switching tabs, collapsing the sidebar, closing the tab, or switching chats never disconnects SSH; terminal instances live in a client-side pool, so reopening restores the full scrollback while host-buffered output from the hidden period replays on return. Older DSH builds (no `sidebarRightTabs`) fall back to the floating panel unchanged.
+- **Official right-Sidebar integration (current DSH)**: the SSH terminal is a tab of the official right Sidebar, beside the built-in Files tab. The **SSH** button in the conversation header opens or focuses that tab (repeated clicks focus instead of duplicating). Use the official split view to see files and the terminal together; drag-resize, fullscreen, and collapse are the sidebar's, and the terminal re-fits automatically. **Each split pane is independent**: it keeps its own visible servers and selection, a new pane starts empty and never inherits another pane's servers, opening the same server in both panes gives each its own connection (reuse is opt-in), closing it in one pane leaves the other alone, and the host session is disconnected only once no pane shows it any more. The connection the agent is using carries an **Agent** badge — click the other pane to move the agent there. **Connection lifetime is independent of the tab**: switching tabs, collapsing the sidebar, closing the tab, or switching chats never disconnects SSH; terminal instances live in a client-side pool, so reopening restores the full scrollback while host-buffered output from the hidden period replays on return.
 - **Terminal follows DSH's theme**: xterm draws to its own canvas and cannot inherit the CSS text color, so the plugin ships complete light and dark palettes (cursor and selection included) and repaints open terminals as soon as the host theme changes.
-- Manage any number of servers and groups under **Settings → SSH Resources**. It is a first-class left-menu item beside General and Models, not a Plugins sub-tab. The top **SSH** button only opens or focuses the right-side terminal tab (on older DSH it shows/hides the floating panel — neither disconnects).
+- Manage any number of servers and groups under **Settings → SSH Resources**. It is a first-class left-menu item beside General and Models, not a Plugins sub-tab. The top **SSH** button only opens or focuses the right-side terminal tab — it never disconnects.
 - **Saved remote project directory**: a server resource can hold one optional absolute default project path. **Enter project** connects, opens the terminal, changes directory only after the existing idle-shell/single-PTY guard succeeds, and starts SFTP at the same path. Relative paths and control characters are rejected; resources without a project path retain the normal login-directory and SFTP-root behavior.
 - **Command library**: the SSH panel has a dedicated Command Library tab with system inspection, service, Docker, logs, networking, storage, scheduler, and Ubuntu/RHEL/CentOS install/update templates. Search matches command names and contents. Custom commands are managed inside this tab; they are stored only in browser local storage and must never contain passwords, tokens, or other secrets.
 - Server name, address, port, username, auth type, and group are stored in DSH local storage; there is no count limit.
@@ -93,7 +92,7 @@ The same model covers `sftp_delete` (the agent no longer deletes directly; inste
 ### From GitHub (recommended)
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.14
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.15
 ```
 
 Then restart DSH Web:
@@ -106,14 +105,14 @@ Open any session, click the top **SSH** tab, and use the right-side panel to con
 
 ### From a release archive
 
-Download `dsh-ssh-ops-0.3.14.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.14), then:
+Download `dsh-ssh-ops-0.3.15.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.15), then:
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.14.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.15.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.3.14.zip` is for offline review or further development; extract it and run `npm install && npm run build` in the directory.
+`dsh-ssh-ops-0.3.15.zip` is for offline review or further development; extract it and run `npm install && npm run build` in the directory.
 
 ## Usage
 
@@ -201,8 +200,8 @@ Pushing a `vX.Y.Z` tag that matches `package.json.version` runs tests, builds th
 
 Artifacts are written to `release/`:
 
-- `dsh-ssh-ops-0.3.14.tgz`: installable directly by DSH.
-- `dsh-ssh-ops-0.3.14.zip`: full offline source archive.
+- `dsh-ssh-ops-0.3.15.tgz`: installable directly by DSH.
+- `dsh-ssh-ops-0.3.15.zip`: full offline source archive.
 
 ## License
 

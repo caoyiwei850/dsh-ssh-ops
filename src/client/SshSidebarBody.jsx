@@ -15,7 +15,7 @@
  *   remount, and the tab's abort signal distinguishes a vanished tab record.
  * - The Sidebar keeps the panel mounted while collapsed (translated
  *   off-edge), so a collapse with SSH active keeps the workspace's polls and
- *   streams running — same semantics as the legacy drawer being open.
+ *   streams running.
  * - Resize correctness after drag/fullscreen/remount comes from the
  *   workspace's ResizeObserver-driven fit, which re-fits on the first observe
  *   of every fresh mount.

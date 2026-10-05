@@ -13,8 +13,11 @@
  * after this view drops a connection, does any other view still show it?
  */
 
-/** The legacy drawer is one view for the whole page lifetime. */
-export const DRAWER_VIEW_ID = "drawer";
+/**
+ * Fallback view id for a degenerate host that registers the tab type without
+ * handing the body a `useTabInfo`: one view for the whole page lifetime.
+ */
+export const DEFAULT_VIEW_ID = "default";
 
 /** The pane's selection over its own visible connections. */
 export function resolvePaneActiveConnection(connections, preferredConnectionId) {
