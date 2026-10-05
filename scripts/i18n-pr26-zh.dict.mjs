@@ -1,6 +1,7 @@
 /**
- * PROVENANCE ONLY — do not import. This is the zh dictionary from
- * alexeyfadeev's PR #26 ("feat(i18n): add two-language plugin UI"), kept
+ * PROVENANCE ONLY — do not import. This is the zh dictionary authored by
+ * Alexey Fadeev (@alexeyfadeev), contributed upstream as PR #26
+ * ("feat(i18n): add two-language plugin UI"), kept
  * verbatim as the record of the translation work our src/i18n/messages.en.js
  * was generated from (his dict maps his English source strings to the
  * plugin's Chinese wordings; inverting it gave us zh→en).

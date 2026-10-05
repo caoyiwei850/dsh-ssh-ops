@@ -13,6 +13,8 @@
 [![dsh.so install · dsh 0.1.7-rc.2](https://www.dsh.so/badge/install/dsh-ssh-ops@0.1.7-rc.2.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/caoyiwei850/dsh-ssh-ops)
 
+> **v0.3.16**: adds a **bilingual UI** — always following DSH's own language setting (including live switches, no reload), Chinese as the source language with an English overlay; the settings-nav label and terminal glyph follow along. The settings page gains a **self-update bar** (version badge, GitHub link, check-for-updates dialog, one-click update and a copyable manual command). **lib build outputs leave the repo**; the resource form is compacted; the broken ~/.ssh/config import is removed; the trusted-hosts list gains a delete button.
+
 > **v0.3.15**: adds **dual-factor authentication** — when a firewall/switch requires `AuthenticationMethods password,publickey` (or the reverse), you can now configure a second factor of the opposite kind beside the password or private key in the resource or shared-credential form; such devices previously always failed to log in. **SQL lexer hardening** fixes two destructive-statement bypasses (backslash-quote dialects and PG dollar references; the Oracle `q''` alternating-quote idea was tested and rejected, kept as a regression probe). Session logs gain **multi-select + select-all batch delete**. The legacy floating-panel fallback is removed — the official right Sidebar is now the only host surface for the terminal.
 
 > **v0.3.14**: adds an operator-controlled, off-by-default AI auto-connect switch. When enabled, the agent can connect saved SSH resources by name and reveal the target terminal on the right. When disabled, saved resources remain hidden from the agent. Also fixes reading empty session logs.
@@ -207,6 +209,22 @@ Artifacts are written to `release/`:
 
 - `dsh-ssh-ops-0.3.16.tgz`: installable directly by DSH.
 - `dsh-ssh-ops-0.3.16.zip`: full offline source archive.
+
+## Contributors
+
+<table>
+  <tr>
+    <td align="center">
+      <a href="https://github.com/alexeyfadeev">
+        <img src="https://github.com/alexeyfadeev.png?size=72" width="72" alt="alexeyfadeev" /><br />
+        <sub><b>alexeyfadeev</b></sub>
+      </a><br />
+      <sub>bilingual engine 💻 · English translation 🌍 · design 💡</sub>
+    </td>
+  </tr>
+</table>
+
+The bilingual engine and the English translation base come from alexeyfadeev's [PR #26](https://github.com/caoyiwei850/dsh-ssh-ops/pull/26) (shipped in v0.3.16 after dictionary inversion and host adaptation); the self-updater is adapted from [@michengai/dsh-archive-manager](https://github.com/MichengAI/dsh-archive-manager) (Apache-2.0).
 
 ## License
 

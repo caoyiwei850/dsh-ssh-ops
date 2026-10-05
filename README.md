@@ -13,6 +13,8 @@
 [![dsh.so install · dsh 0.1.7-rc.2](https://www.dsh.so/badge/install/dsh-ssh-ops@0.1.7-rc.2.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/caoyiwei850/dsh-ssh-ops)
 
+> **v0.3.16**：新增**中英双语界面**——始终自动跟随 DSH「设置 → 语言」（含运行中切换，无需刷新），中文为源、英文覆盖，左侧「SSH 资源」标签与终端图标随语言动态变化；设置页新增**自更新条**（版本徽标、GitHub 链接、检查更新对话框、一键更新与可复制的手工更新命令）；**lib 构建产物出库**（仓库不再提交打包产物）；资源表单布局紧凑化；移除损坏的 ~/.ssh/config 导入；已信任主机列表支持直接删除。
+
 > **v0.3.15**：新增**双因素认证**——防火墙/交换机把 `AuthenticationMethods` 配成 `password,publickey`（或反序）时，可在资源或共享凭据里为密码/私钥再配一条相反类型的第二因素，这类设备此前必然登录失败；**SQL 词法扫描加固**，修复反斜杠引号方言与 PG dollar 引用两个破坏性语句漏检（Oracle `q''` 交替引号经实测否决并固化为回归探针）；会话日志支持**多选 + 全选批量删除**；移除旧版 DSH 的浮动面板回退，官方右侧边栏成为 SSH 终端的唯一宿主形态。
 
 > **v0.3.14**：新增默认关闭的「AI 自动连接」开关。开启后，Agent 可按名称连接已保存的 SSH 资源，目标终端自动出现在右侧；关闭时，Agent 无法枚举保存资源。修复会话日志空文件读取问题。
@@ -214,6 +216,22 @@ npm run pack:release
 
 - `dsh-ssh-ops-0.3.16.tgz`：可直接被 DSH 安装。
 - `dsh-ssh-ops-0.3.16.zip`：完整离线源码包。
+
+## 贡献者
+
+<table>
+  <tr>
+    <td align="center">
+      <a href="https://github.com/alexeyfadeev">
+        <img src="https://github.com/alexeyfadeev.png?size=72" width="72" alt="alexeyfadeev" /><br />
+        <sub><b>alexeyfadeev</b></sub>
+      </a><br />
+      <sub>双语引擎 💻 · 英文翻译 🌍 · 方案 💡</sub>
+    </td>
+  </tr>
+</table>
+
+双语界面的模式引擎与其英文译词典底稿出自 alexeyfadeev 的 [PR #26](https://github.com/caoyiwei850/dsh-ssh-ops/pull/26)（经词典反转与宿主适配后随 v0.3.16 发布）；自更新条适配自 [@michengai/dsh-archive-manager](https://github.com/MichengAI/dsh-archive-manager)（Apache-2.0）。
 
 ## 许可
 
