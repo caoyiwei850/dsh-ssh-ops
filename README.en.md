@@ -10,7 +10,7 @@
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
 ![version](https://img.shields.io/badge/version-0.3.16-blue)
 [![dsh.so risk](https://www.dsh.so/badge/dsh-ssh-ops.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
-[![dsh.so install · dsh 0.1.7-rc.2](https://www.dsh.so/badge/install/dsh-ssh-ops@0.1.7-rc.2.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
+[![dsh.so install · dsh 0.2.0-rc.1](https://www.dsh.so/badge/install/dsh-ssh-ops@0.2.0-rc.1.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/caoyiwei850/dsh-ssh-ops)
 
 > **v0.3.16**: adds a **bilingual UI** — always following DSH's own language setting (including live switches, no reload), Chinese as the source language with an English overlay; the settings-nav label and terminal glyph follow along. The settings page gains a **self-update bar** (version badge, GitHub link, check-for-updates dialog, one-click update and a copyable manual command). **lib build outputs leave the repo**; the resource form is compacted; the broken ~/.ssh/config import is removed; the trusted-hosts list gains a delete button.

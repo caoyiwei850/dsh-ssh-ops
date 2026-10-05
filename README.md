@@ -10,7 +10,7 @@
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
 ![version](https://img.shields.io/badge/version-0.3.16-blue)
 [![dsh.so risk](https://www.dsh.so/badge/dsh-ssh-ops.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
-[![dsh.so install · dsh 0.1.7-rc.2](https://www.dsh.so/badge/install/dsh-ssh-ops@0.1.7-rc.2.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
+[![dsh.so install · dsh 0.2.0-rc.1](https://www.dsh.so/badge/install/dsh-ssh-ops@0.2.0-rc.1.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/caoyiwei850/dsh-ssh-ops)
 
 > **v0.3.16**：新增**中英双语界面**——始终自动跟随 DSH「设置 → 语言」（含运行中切换，无需刷新），中文为源、英文覆盖，左侧「SSH 资源」标签与终端图标随语言动态变化；设置页新增**自更新条**（版本徽标、GitHub 链接、检查更新对话框、一键更新与可复制的手工更新命令）；**lib 构建产物出库**（仓库不再提交打包产物）；资源表单布局紧凑化；移除损坏的 ~/.ssh/config 导入；已信任主机列表支持直接删除。
