@@ -339,20 +339,32 @@ function syncLanguageWithHost(api, ctx) {
   let unsubscribe = null;
   const applyFollow = async () => {
     if (disposed) return;
+    let stored = null;
     try {
-      const host = readHostLanguage(ctx.locale);
-      if (host !== null) {
-        setLanguage(host);
-        // Write back so the host half (agent-visible messages) follows the
-        // same language immediately and after the next restart.
-        api.languageSave(host).catch(() => {});
-        return;
-      }
-      const stored = await api.languageGet();
-      if (!disposed && stored.language !== null) setLanguage(stored.language);
+      // The stored settings decide whether the plugin follows the host at
+      // all: autoApplySystemLanguage=false pins the stored language (a
+      // third-party system locale such as "ru" would otherwise be coerced to
+      // "zh" and written back on every load). Read them first so the pin is
+      // respected even before the host locale is consulted.
+      stored = await api.languageGet();
+      if (disposed) return;
     } catch {
-      // A host without the RPC yet keeps the default language.
+      // Older host without the languageGet RPC: treat as auto mode with no
+      // stored pin and fall through to the synchronous host-locale read.
     }
+    if (stored?.autoApplySystemLanguage === false) {
+      if (stored.language !== null) setLanguage(stored.language);
+      return;
+    }
+    const host = readHostLanguage(ctx.locale);
+    if (host !== null) {
+      setLanguage(host);
+      // Write back so the host half (agent-visible messages) follows the
+      // same language immediately and after the next restart.
+      api.languageSave(host).catch(() => {});
+      return;
+    }
+    if (stored?.language !== null) setLanguage(stored.language);
   };
   void applyFollow();
   // Best-effort live follow: the documented face exposes subscribe; older

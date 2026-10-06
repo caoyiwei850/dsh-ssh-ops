@@ -126,6 +126,27 @@ dsh web
 4. In the main conversation, just say "check server memory usage" or "configure the Nginx SSL certificate". The agent can only operate the active connection and cannot read credentials; by default it also cannot enumerate saved resources or auto-connect with saved credentials — after enabling the switch in **Settings → SSH resources → AI auto-connect**, the agent may connect saved servers by name and switch the active connection (every connect opens a terminal in the right-side panel, so the operator always sees which machine the agent is on).
 5. For databases, have the agent call `db_connect` (or create a connection yourself in the Database tab), then query/execute from the conversation.
 6. The plugin UI language **automatically follows DSH's own language setting** (中文 / English): switching repaints the whole plugin UI immediately, agent-visible tool messages follow via write-back both live and after restart, and the settings-nav label and glyph for this plugin follow along.
+
+**Pinning the interface language.** The follow behaviour can be switched off through the plugin settings file (`~/.dsh/storages/ssh_ops_settings.json`). This is meant for setups where DSH runs a third-party locale the plugin does not ship (e.g. Russian) — without a pin, such a locale is coerced to the default Chinese and the plugin would keep writing that back. Pin it to a fixed language instead:
+
+```json
+{
+  "unit": { "name": "ssh_ops_settings", "version": 1 },
+  "global": null,
+  "tables": {
+    "settings": {
+      "main": {
+        "language": "en",
+        "autoApplySystemLanguage": false
+      }
+    }
+  }
+}
+```
+
+- `autoApplySystemLanguage` — `true` (the default; absent means the same) follows DSH's own language and writes it back on every load, exactly as before. `false` pins the plugin to the stored `language` value: the host language is neither followed nor written back, so the file stays as you edited it. On the first load after upgrading, the default `true` is materialized into the file so the knob is visible.
+- `language` — `"zh"` or `"en"`, the pinned language used while `autoApplySystemLanguage` is `false`; ignored while auto-follow is on.
+- Edit the file while the harness is **stopped** (a running instance may rewrite it on load) and restart the harness afterwards to apply the change.
 ### Agent tools
 
 There are 34 agent tools. Omitting `connection_id` / `db_connection_id` targets the active connection — **no need to call `ssh_list` / `db_list_connections` first**.

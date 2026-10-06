@@ -153,7 +153,13 @@ export const agentSettingsSaveRequestSchema = z.object({ agentAutoConnect: z.boo
 
 const languageValueSchema = z.enum(["zh", "en"]);
 export const languageGetRequestSchema = z.object({});
-export const languageResultSchema = resultSchema(z.object({ language: z.enum(["zh", "en"]).nullable() }));
+export const languageResultSchema = resultSchema(z.object({
+  language: z.enum(["zh", "en"]).nullable(),
+  // When false, the plugin never follows (or writes back) the host language:
+  // the stored `language` value is authoritative. Absent means "true" (follow
+  // the host), matching the behaviour of installs written before this field.
+  autoApplySystemLanguage: z.boolean().optional()
+}));
 export const languageSaveRequestSchema = z.object({ language: languageValueSchema });
 
 // ── saved SSH resources ────────────────────────────────────────────────────

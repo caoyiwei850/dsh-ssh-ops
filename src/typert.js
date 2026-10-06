@@ -114,7 +114,7 @@ export const TYPERT = {
           { name: "SshAgentSettingsResult", declaration: "export type SshAgentSettingsResult = SshResult<{ agentAutoConnect: boolean }>;" },
           { name: "SshLanguageGetRequest", declaration: "export interface SshLanguageGetRequest {}" },
           { name: "SshLanguageSaveRequest", declaration: "export interface SshLanguageSaveRequest { readonly language: \"zh\" | \"en\"; }" },
-          { name: "SshLanguageResult", declaration: "export type SshLanguageResult = SshResult<{ language: \"zh\" | \"en\" | null }>;" },
+          { name: "SshLanguageResult", declaration: "export type SshLanguageResult = SshResult<{ language: \"zh\" | \"en\" | null; autoApplySystemLanguage: boolean }>;" },
           { name: "SshConnectRequest", declaration: "export interface SshConnectRequest { readonly host: string; readonly port?: number; readonly username: string; readonly auth?: SshAuth; readonly credentialId?: string; readonly readyTimeout?: number; readonly name?: string; }" },
           { name: "SshConnectResult", declaration: "export type SshConnectResult = SshResult<{ connectionId: string; name?: string; host: string; port: number; username: string }>;" },
           { name: "SshCredentialListRequest", declaration: "export interface SshCredentialListRequest {}" },

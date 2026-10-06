@@ -131,6 +131,27 @@ dsh web
 4. 在主对话中直接说“查询服务器内存使用情况”或“配置 Nginx SSL 证书”。主 Agent 只能操作当前活动连接，不能读取凭据；默认也不能枚举保存资源或自动用保存凭据连接——在 **设置 → SSH 资源 → AI 自动连接** 打开开关后，Agent 才能按名称连接已保存服务器并切换当前连接（每次连接都会在右侧面板打开终端，操作者始终可见）。
 5. 需要数据库时，让 Agent 调 `db_connect`（或自己在「数据库」页签新建连接），随后即可在对话中查询/执行。
 6. 插件界面语言**自动跟随 DSH 自身的语言设置**（中文 / English）：切换即时重绘整个插件界面，Agent 可见的工具消息经回写即时并持久跟随；左侧设置菜单的「SSH 资源」标签与图标也随语言动态变化。
+
+**固定界面语言。** 可以通过插件设置文件（`~/.dsh/storages/ssh_ops_settings.json`）关闭自动跟随行为。该功能适用于系统使用插件未内置的第三方语言（如俄语）的场景——若不固定，此类语言会被强制回退为默认中文，且插件会在每次加载时把该值回写进配置文件。改为固定使用指定语言即可：
+
+```json
+{
+  "unit": { "name": "ssh_ops_settings", "version": 1 },
+  "global": null,
+  "tables": {
+    "settings": {
+      "main": {
+        "language": "en",
+        "autoApplySystemLanguage": false
+      }
+    }
+  }
+}
+```
+
+- `autoApplySystemLanguage`：`true`（默认值；字段缺失时与 `true` 相同）表示跟随 DSH 自身语言并在每次加载时回写，行为与之前完全一致。`false` 表示固定使用存储的 `language` 值：既不跟随宿主语言，也不回写，文件保持你手动编辑的状态。升级后首次加载时，插件会把默认值 `true` 写入配置文件，以便看到该开关。
+- `language`：`"zh"` 或 `"en"`，当 `autoApplySystemLanguage` 为 `false` 时作为固定语言使用；自动跟随开启时忽略该字段。
+- 请在 Harness **停止**时编辑该文件（运行中的实例在加载时可能会改写它），编辑完成后重启 Harness 使更改生效。
 ### Agent 工具
 
 共 34 个 Agent 工具，省略 `connection_id` / `db_connection_id` 时默认作用于当前活动连接，**无需先调 `ssh_list` / `db_list_connections`**。
