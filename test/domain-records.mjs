@@ -13,6 +13,8 @@ import SshOpsService, {
   credentialDomainSpec,
   dbProfileDomainSpec,
   knownHostDomainSpec,
+  loadSettingsRecord,
+  settingsDomainSpec,
 } from "../src/index.js";
 import { KnownHosts } from "../src/hostkey.js";
 
@@ -142,4 +144,68 @@ function makeService({ credentials, dbProfiles }) {
   assert.equal(table.size(), 1);
 }
 
-console.log("domain records: credential, DB-profile and known-host writes round-trip through their boot-time schemas");
+// ── settings: autoApplySystemLanguage pin round-trips and is reported ────────
+{
+  const settings = fakeTable();
+  const service = Object.create(SshOpsService.prototype);
+  service.settingsTable = settings;
+  service.language = null;
+  service.autoApplySystemLanguage = true;
+
+  // The pin is an operator edit of ssh_ops_settings.json; the boot-time schema
+  // must keep it (a stripped flag would silently re-enable auto-follow and the
+  // stored language would be overwritten again on the next load).
+  const pinnedSource = { language: "en", autoApplySystemLanguage: false };
+  const pinned = settingsDomainSpec.tables.settings.valueSchema.parse(pinnedSource);
+  assert.equal(pinned.language, "en");
+  assert.equal(pinned.autoApplySystemLanguage, false, "the pin survives schema parsing");
+
+  // A later languageSave spreads the previous record, so the pin must not be
+  // dropped when the browser half writes a language value back.
+  settings.put("main", pinned);
+  await service.languageSave({ language: "en" });
+  const after = settings.get("main");
+  assert.equal(after.language, "en");
+  assert.equal(after.autoApplySystemLanguage, false, "languageSave preserves an existing pin");
+
+  // languageGet reports the pin; matching host state is what the boot path
+  // would have loaded from this record.
+  service.language = after.language;
+  service.autoApplySystemLanguage = after.autoApplySystemLanguage !== false;
+  const got = await service.languageGet();
+  assert.equal(got.ok, true);
+  assert.equal(got.value.language, "en");
+  assert.equal(got.value.autoApplySystemLanguage, false, "languageGet exposes the pin");
+
+  // Absent flag (fresh install / older file) means the safe default: follow
+  // the host, i.e. the browser half keeps writing its resolved language back.
+  const fresh = settingsDomainSpec.tables.settings.valueSchema.parse({});
+  assert.equal(fresh.autoApplySystemLanguage, undefined, "an old record has no flag");
+  assert.equal(loadSettingsRecord(fresh).autoApplySystemLanguage, true, "absent flag = auto-apply stays on");
+  assert.equal(loadSettingsRecord(fresh).language, null, "no language stored when the record has none");
+  assert.equal(loadSettingsRecord(pinnedSource).autoApplySystemLanguage, false, "the pin reads as false");
+  assert.equal(loadSettingsRecord(pinnedSource).language, "en");
+}
+
+// ── settings: the default flag is materialized into the record on first boot ─
+{
+  const settings = fakeTable();
+  // A record written by an older build: no flag. The boot path must persist
+  // the explicit "true" so the operator sees the knob in ssh_ops_settings.json
+  // and can flip it; without this the file would keep a hidden default.
+  settings.put("main", { language: "zh", updatedAt: "2026-10-06T00:00:00.000Z" });
+
+  const record = settings.get("main");
+  const loaded = loadSettingsRecord(record);
+  assert.equal(loaded.autoApplySystemLanguage, true, "the default reads as true");
+
+  // What the boot path persists when the flag was absent.
+  const materialized = settingsDomainSpec.tables.settings.valueSchema.parse({
+    ...record,
+    autoApplySystemLanguage: true
+  });
+  assert.equal(materialized.autoApplySystemLanguage, true, "the materialized default survives schema parsing");
+  assert.equal(materialized.language, "zh", "the stored language is kept when materializing");
+}
+
+console.log("domain records: credential, DB-profile and known-host writes round-trip through their boot-time schemas; settings language pin round-trips and is reported");

@@ -245,6 +245,10 @@ const settingsRecordSchema = z.object({
   // "never chosen explicitly", so the settings page adopts whatever DSH
   // Settings → Language is showing and writes that back.
   language: z.enum(["zh", "en"]).optional(),
+  // When false, the host language is never followed or written back: the
+  // stored `language` value is authoritative. Absent means "true" so first
+  // installs behave exactly as before this flag existed.
+  autoApplySystemLanguage: z.boolean().optional(),
   updatedAt: z.string().optional()
 });
 
@@ -257,6 +261,20 @@ export const settingsDomainSpec = defineDomain({
 });
 
 const SETTINGS_ROW_ID = "main";
+
+/**
+ * Interpret one persisted settings record into the runtime switches. Absent
+ * `autoApplySystemLanguage` means "true" (follow the host), which is also what
+ * a first install must behave like. Extracted so boot and tests share one
+ * reading of the record.
+ */
+export function loadSettingsRecord(record = {}) {
+  return {
+    agentAutoConnect: record.agentAutoConnect === true,
+    language: record.language === "zh" || record.language === "en" ? record.language : null,
+    autoApplySystemLanguage: record.autoApplySystemLanguage !== false
+  };
+}
 
 function profileCredentialRefs(profileId) {
   const stem = profileId.replaceAll("-", "").toUpperCase();
@@ -388,6 +406,13 @@ export default class SshOpsService extends TypertRemoteService {
    * the same language from the first message built after boot.
    */
   language = null;
+  /**
+   * Whether the plugin follows DSH's own Settings → Language ("true", the
+   * default) or is pinned to the stored `language` value ("false", operator
+   * edit of ssh_ops_settings.json). When false the host language is neither
+   * followed nor written back by the browser half.
+   */
+  autoApplySystemLanguage = true;
   profileTable = null;
   groupTable = null;
   credentialTable = null;
@@ -474,12 +499,28 @@ export default class SshOpsService extends TypertRemoteService {
     // Load the persisted operator switch; a missing row (first boot) keeps the
     // safe default off, and a read failure must not block service startup.
     try {
-      this.agentAutoConnect = this.settingsTable.get(SETTINGS_ROW_ID)?.agentAutoConnect === true;
+      const settingsRecord = this.settingsTable.get(SETTINGS_ROW_ID) ?? {};
+      const loaded = loadSettingsRecord(settingsRecord);
+      this.agentAutoConnect = loaded.agentAutoConnect;
       // An explicit choice drives the host half from the first message it
       // builds. With no choice stored, the host keeps its default (zh) and
       // the browser half adopts DSH's language and writes it back.
-      const storedLanguage = this.settingsTable.get(SETTINGS_ROW_ID)?.language;
-      this.language = storedLanguage === "zh" || storedLanguage === "en" ? storedLanguage : null;
+      this.language = loaded.language;
+      // "false" pins the stored language: the browser half must never follow
+      // (or write back) the host language. Absent defaults to true so first
+      // installs keep the auto-follow behaviour.
+      this.autoApplySystemLanguage = loaded.autoApplySystemLanguage;
+      // Materialize the default: the flag is an operator-editable field of
+      // ssh_ops_settings.json, so a record that predates it must gain the
+      // explicit "true" on first load after the upgrade — otherwise the
+      // settings file would never show the knob the operator can flip.
+      if (settingsRecord.autoApplySystemLanguage === undefined) {
+        await this.settingsTable.put(SETTINGS_ROW_ID, {
+          ...settingsRecord,
+          autoApplySystemLanguage: true,
+          updatedAt: new Date().toISOString()
+        });
+      }
       // The browser half refreshes this from the live host on every load;
       // until then it is the best-known host language.
       if (this.language !== null) setLanguage(this.language);
@@ -1526,7 +1567,7 @@ export default class SshOpsService extends TypertRemoteService {
    * same language as the panel.
    */
   async languageGet() {
-    return { ok: true, value: { language: this.language, explicit: this.languageExplicit } };
+    return { ok: true, value: { language: this.language, autoApplySystemLanguage: this.autoApplySystemLanguage } };
   }
 
   /**
