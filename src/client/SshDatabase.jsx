@@ -58,7 +58,6 @@ function typeLabel(type) {
 export function SshDatabase({ api }) {
   const [connections, setConnections] = useState([]);
   const [profiles, setProfiles] = useState([]);
-  const [sshConns, setSshConns] = useState([]);
   const [sshProfiles, setSshProfiles] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [showForm, setShowForm] = useState(false);
@@ -84,15 +83,13 @@ export function SshDatabase({ api }) {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [dbList, dbProfiles, sshList, sshProfs] = await Promise.all([
+      const [dbList, dbProfiles, sshProfs] = await Promise.all([
         api.dbListConnections(),
         api.dbProfileList().catch(() => ({ profiles: [] })),
-        api.list().catch(() => ({ connections: [] })),
         api.profileList().catch(() => ({ profiles: [] }))
       ]);
       setConnections(dbList.connections ?? []);
       setProfiles(dbProfiles.profiles ?? []);
-      setSshConns(sshList.connections ?? []);
       setSshProfiles(sshProfs.profiles ?? []);
       setError(null);
     } catch (err) {
@@ -389,7 +386,6 @@ export function SshDatabase({ api }) {
         {showForm ? (
           <ConnectForm
             sshProfiles={sshProfiles}
-            api={api}
             onSubmit={handleConnect}
             onCancel={() => { setShowForm(false); setError(null); }}
           />
@@ -412,7 +408,7 @@ export function SshDatabase({ api }) {
 
 // ── Connect form ─────────────────────────────────────────────────────────────
 
-function ConnectForm({ sshProfiles, api, onSubmit, onCancel }) {
+function ConnectForm({ sshProfiles, onSubmit, onCancel }) {
   const [type, setType] = useState("mysql");
   const [host, setHost] = useState("");
   const [port, setPort] = useState("3306");

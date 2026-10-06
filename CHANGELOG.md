@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.17 - 2026-10-06
+
+- **修复：0.3.16 下 SSH 终端 UI 完全不可见（#27）**：i18n 重构把根作用域的 `t` 改名 `hostT` 时漏改了侧栏注册的传参链——`applySidebarRegistrations(sidebarCtx, { api, t })` 引用了不存在的 `t`，官方侧栏注册一触发即抛 `ReferenceError`，被延迟注册的生命周期捕获后仅打印 console 错误，于是 host 半一切正常而浏览器侧没有任何终端界面（0.3.16 又移除了浮动面板回退，故无任何兜底）。修复为传参与签名统一使用 `hostT`。感谢 [#27](https://github.com/caoyiwei850/dsh-ssh-ops/issues/27) 报告人精确到行号的定位。
+- **系统性补网：eslint 覆盖客户端 JSX**——此前的 flat config 默认只匹配 `**/*.js`，整个 `src/client` 从未被 lint，`no-undef` 本可拦住本缺陷。现已在坏代码上验证捕获有效，并顺手清理了由此暴露的存量问题（未使用的批量连接残块、`sshConns` 空状态、未用参数与过时的 disable 指令）；`test/sidebar-integration.mjs` 新增 #27 回归断言（传参与签名必须同名为 `hostT`、入口禁止出现裸 `{ api, t }`）。另修复残留的 12 处旧词典键式读取（服务器标签芯片「+ undefined」、内页签空白等，中英文模式均受影响），词典补齐 10 条并清理孤儿词条；侧栏引导页的终端图标改为品牌蓝（`--dsw-static-deepseek-500`，与「新建终端」等官方引导图标同色）。
+
 ## 0.3.16 - 2026-10-05
 
 - **中英双语界面（自动跟随宿主）**：插件界面语言**始终跟随 DSH「设置 → 语言」**自动切换——包括运行中的切换（插件根订阅宿主 locale 变更，即时重绘面板、对话框、确认卡片、终端提示），不设手动语言开关（真机三轮反馈裁定）。宿主半（Agent 可见的工具结果、安全拦截消息、会话日志脱敏输出）经回写 RPC 即时并持久跟随同一语言。左侧设置菜单「SSH 资源」：标签注册为 getter 随宿主语言动态变化（此前一次性求值冻结在加载时语言——真机反馈：宿主切英文后标签仍中文；参照 @michengai/dsh-archive-manager 的 `label: () => locale.bind(NS)(key)` 注册方式）；图标用 DOM 标记法绘上终端形（宿主 `settings.section` 无 icon 字段、导航图标按 section id 硬编码，未知 id 一律齿轮——dshmarket/dsh-better-sidebar/dsh-skill-mcp-panel 均以同款 MutationObserver 方案自绘，本插件照做：样式表隐藏齿轮、CSS mask 绘出终端符号（几何 28→16 缩放自自绘图标，1.3px 描边），语言切换经观察器自动重认领）。自绘终端图标（侧栏引导页用）同步从实心蓝底白纹改为官方 outline 风格（currentColor、1.3px 官方中粗线），与相邻图标统一色调。宿主语言读取三级探测（`getSnapshot().active` → `getLocale().active` → 自有词典 bind 探针），形状对照真机 `dsh-client-locale` 包核验。实现为「中文为源语言 + 英文覆盖词典」（`src/i18n/`）：源码保留中文字面量包一层 `t()`，查不到词条优雅降级为中文；插值消息由模板模式引擎按字面段匹配回填。安全约束：策略类别等**标识符常量恒中文**（回收站改写按类别字符串匹配，翻译标识符会破坏 en 模式下的可逆删除），仅在展示点翻译；模块顶层不出现 `t()` 求值（否则冻结在 import 时的语言）。配套 `npm run i18n:extract` 覆盖率检查（t() 调用点 ↔ 词典双向比对 + 未包裹中文字符串检测，进 `test/i18n.mjs` 强制执行），新增界面字符串漏配词条会直接红。**翻译底稿与模式引擎源自 alexeyfadeev 的 PR #26**（其英文译文经词典反转复用；引擎分桶在他的英文为源场景下依赖空格分词，本仓改为字面前缀首字符并增加特异性排序），原词典存档于 `scripts/i18n-pr26-zh.dict.mjs` 备查，感谢贡献。

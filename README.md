@@ -8,10 +8,12 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.3.16-blue)
+![version](https://img.shields.io/badge/version-0.3.17-blue)
 [![dsh.so risk](https://www.dsh.so/badge/dsh-ssh-ops.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![dsh.so install · dsh 0.2.0-rc.1](https://www.dsh.so/badge/install/dsh-ssh-ops@0.2.0-rc.1.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/caoyiwei850/dsh-ssh-ops)
+
+> **v0.3.17**：修复 0.3.16 的 [#27](https://github.com/caoyiwei850/dsh-ssh-ops/issues/27)——i18n 重构漏改变量名导致官方侧栏注册抛 `ReferenceError`、SSH 终端 UI 完全不可见；eslint 现已覆盖客户端 JSX 并新增回归断言。
 
 > **v0.3.16**：新增**中英双语界面**——始终自动跟随 DSH「设置 → 语言」（含运行中切换，无需刷新），中文为源、英文覆盖，左侧「SSH 资源」标签与终端图标随语言动态变化；设置页新增**自更新条**（版本徽标、GitHub 链接、检查更新对话框、一键更新与可复制的手工更新命令）；**lib 构建产物出库**（仓库不再提交打包产物）；资源表单布局紧凑化；移除损坏的 ~/.ssh/config 导入；已信任主机列表支持直接删除。
 
@@ -101,7 +103,7 @@ Agent 命中上述黑名单时不会被静默拒绝：插件会创建一条一�
 ### 从 GitHub 安装（推荐）
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.16
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.17
 ```
 
 安装后重启 DSH Web：
@@ -114,14 +116,14 @@ dsh web
 
 ### 从发布压缩包安装
 
-从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.16) 下载 `dsh-ssh-ops-0.3.16.tgz` 后：
+从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.17) 下载 `dsh-ssh-ops-0.3.17.tgz` 后：
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.16.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.17.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.3.16.zip` 适用于离线审阅或二次开发；解压后可在目录中执行 `npm install && npm run build`。
+`dsh-ssh-ops-0.3.17.zip` 适用于离线审阅或二次开发；解压后可在目录中执行 `npm install && npm run build`。
 
 ## 使用方式
 
@@ -214,8 +216,8 @@ npm run pack:release
 
 生成物位于 `release/`：
 
-- `dsh-ssh-ops-0.3.16.tgz`：可直接被 DSH 安装。
-- `dsh-ssh-ops-0.3.16.zip`：完整离线源码包。
+- `dsh-ssh-ops-0.3.17.tgz`：可直接被 DSH 安装。
+- `dsh-ssh-ops-0.3.17.zip`：完整离线源码包。
 
 ## 贡献者
 

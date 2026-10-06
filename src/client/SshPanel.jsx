@@ -646,44 +646,6 @@ function ConnectDialog({ api, credentials, onClose, onConnected }) {
     setError(null);
   };
 
-  const [batchSelected, setBatchSelected] = useState({});
-  const [batchBusy, setBatchBusy] = useState(false);
-
-  const toggleBatch = (profileId) => {
-    setBatchSelected((s) => ({ ...s, [profileId]: !s[profileId] }));
-  };
-
-  const batchConnect = async () => {
-    const ids = Object.keys(batchSelected).filter((id) => batchSelected[id]);
-    if (ids.length === 0) return;
-    setBatchBusy(true);
-    setError(null);
-    setStatus(t(`正在批量连接 ${ids.length} 台服务器…`));
-    let ok = 0;
-    let fail = 0;
-    for (const profileId of ids) {
-      try {
-        const connection = await api.profileConnect({ profileId, readyTimeout: 15000, retries: 0 });
-        onConnected?.(connection.connectionId);
-        try {
-          await api.openSession(connection.connectionId, 100, 30);
-        } catch {}
-        ok++;
-      } catch {
-        fail++;
-      }
-    }
-    await refreshConnections(api);
-    setStatus(null);
-    setBatchBusy(false);
-    setBatchSelected({});
-    if (fail === 0) {
-      onClose();
-    } else {
-      setError(t(`批量连接完成：${ok} 台成功，${fail} 台失败`));
-    }
-  };
-
   return (
     <div style={panelStyles.dialogBackdrop} onClick={busy ? undefined : onClose}>
       <div style={panelStyles.dialog} onClick={(e) => e.stopPropagation()}>
@@ -979,7 +941,7 @@ function BatchDialog({ api, task, onDone }) {
   );
 }
 
-export function SshPanel({ api, credentials, locale, viewId = DEFAULT_VIEW_ID, viewSignal }) {
+export function SshPanel({ api, credentials, viewId = DEFAULT_VIEW_ID, viewSignal }) {
   // Repaint on language change; child tabs re-render with this root.
   useLanguage();
   const ui = useSshUi();
@@ -1331,16 +1293,16 @@ export function SshPanel({ api, credentials, locale, viewId = DEFAULT_VIEW_ID, v
             </div>
           );
         })}
-        {paneConnections.length === 0 && <span style={panelStyles.connEmpty}>{t.empty}</span>}
+        {paneConnections.length === 0 && <span style={panelStyles.connEmpty}>{t("还没有连接。")}</span>}
         <button
           type="button"
           className="dsh-ssh-ops-add-btn"
           style={paneConnections.length === 0 ? panelStyles.serverTabAddLabeled : panelStyles.serverTabAdd}
           onClick={() => setDialogOpen(true)}
-          title={t.connect}
+          title={t("连接服务器")}
           aria-label={t("连接新服务器")}
         >
-          {paneConnections.length === 0 ? t(`＋ ${t.connect}`) : t("＋")}
+          {paneConnections.length === 0 ? t("＋ 连接服务器") : t("＋")}
         </button>
       </div>
 
@@ -1348,9 +1310,9 @@ export function SshPanel({ api, credentials, locale, viewId = DEFAULT_VIEW_ID, v
 
       <div style={panelStyles.tabs}>
         {[
-          ["terminal", t.tabTerminal],
-          ["files", t.tabFiles],
-          ["tunnels", t.tabTunnels],
+          ["terminal", t("终端")],
+          ["files", t("文件")],
+          ["tunnels", t("转发")],
           ["snippets", t("快捷命令")]
         ].map(([key, label]) => (
           <button
@@ -1378,7 +1340,7 @@ export function SshPanel({ api, credentials, locale, viewId = DEFAULT_VIEW_ID, v
           }}
           title={t("数据库连接与查询")}
         >
-          {t.tabDatabase}
+          {t("数据库")}
         </button>
         <button
           onClick={() => setTab("logs")}
@@ -1426,10 +1388,10 @@ export function SshPanel({ api, credentials, locale, viewId = DEFAULT_VIEW_ID, v
                       <XtermView api={api} sessionId={sessionId} connectionId={conn.connectionId} />
                     ) : (
                       <div style={panelStyles.emptyState}>
-                        {t.sessionClosed}
+                        {t("会话已关闭")}
                         {isActive && (
                           <button onClick={openSession} disabled={ui.busy} style={{ ...panelStyles.btnTiny, marginTop: 8 }}>
-                            {ui.busy ? t.busy : t.openSession}
+                            {ui.busy ? t("忙…") : t("打开终端")}
                           </button>
                         )}
                       </div>
@@ -1438,7 +1400,7 @@ export function SshPanel({ api, credentials, locale, viewId = DEFAULT_VIEW_ID, v
                 );
               })
             ) : (
-              <div style={panelStyles.emptyState}>{t.noConnection}</div>
+              <div style={panelStyles.emptyState}>{t("未连接")}</div>
             )}
           </div>
         </TabErrorBoundary>

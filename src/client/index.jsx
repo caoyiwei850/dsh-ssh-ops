@@ -63,7 +63,7 @@ export async function apply(ctx) {
   // slow poll; the panel's own refresh is the fast path while it is open.
   own(startAgentConnectionPoll(api, sshUiAnnounceAgentConnections));
 
-  const localeDispose = own(ctx.locale.register(NS, {
+  own(ctx.locale.register(NS, {
     zh: {
       settingsSectionLabel: "SSH 资源", // i18n-ignore: host locale entry
       sidebarTabTitle: "SSH 终端", // i18n-ignore: host locale entry
@@ -94,7 +94,7 @@ export async function apply(ctx) {
   // ctx.get() snapshot that would permanently miss them. There is no fallback
   // surface anymore — if the Sidebar path fails, the error is only reported.
   own(activateSidebarWhenAvailable(ctx, {
-    registerSidebar: (sidebarCtx) => applySidebarRegistrations(sidebarCtx, { api, t }),
+    registerSidebar: (sidebarCtx) => applySidebarRegistrations(sidebarCtx, { api, hostT }),
     onSidebarError: (error) => {
       console.error("[dsh-ssh-ops] sidebar tab registration failed; no terminal surface available:", error);
     }
@@ -130,7 +130,7 @@ export async function apply(ctx) {
 }
 
 /** Official Sidebar registrations: both stages live under one disposable scope. */
-function applySidebarRegistrations(ctx, { api, t }) {
+function applySidebarRegistrations(ctx, { api, hostT }) {
   const disposers = [];
   const own = (dispose) => {
     if (typeof dispose === "function") disposers.push(dispose);

@@ -32,7 +32,6 @@ export function SshTunnels({ api, connectionId }) {
 
   useEffect(() => {
     if (connectionId) load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connectionId]);
 
   const isDynamic = kind === "dynamic";

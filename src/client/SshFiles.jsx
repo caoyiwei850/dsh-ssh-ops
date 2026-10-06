@@ -103,7 +103,6 @@ export function SshFiles({ api, connectionId, onCd, initialPath = "/" }) {
     setScpUploadPath("");
     setScpDownloadPath("");
     if (connectionId) load(initialPath);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connectionId, initialPath]);
 
   const goUp = () => {

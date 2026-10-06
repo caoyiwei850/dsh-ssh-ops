@@ -40,6 +40,15 @@ assert.doesNotMatch(entry, /settings\.plugins\.tab/, "resources no longer appear
 // stay deleted.
 assert.match(entry, /activateSidebarWhenAvailable\(/,
   "the plugin delegates Sidebar readiness to the delayed-service lifecycle");
+// #27 regression: the i18n rename left the registration passing an undefined
+// `t`, so the whole Sidebar path threw ReferenceError and the terminal UI
+// vanished silently. The host-locale binding must arrive as `hostT`, and the
+// signature must consume exactly that name.
+assert.match(entry, /applySidebarRegistrations\(sidebarCtx, \{ api, hostT \}\)/,
+  "the registration passes the host-locale binding as hostT (no bare t)");
+assert.match(entry, /function applySidebarRegistrations\(ctx, \{ api, hostT \}\)/,
+  "the signature consumes hostT under the same name it is passed");
+assert.doesNotMatch(entry, /\{ api, t \}/, "no unbound t is passed anywhere in the entry");
 assert.doesNotMatch(entry, /ctx\.get\("sidebarRightTabs"\)/,
   "the Sidebar decision is not frozen before the host has finished registering services");
 for (const src of [entry, panel, body]) {
