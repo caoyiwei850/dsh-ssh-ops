@@ -13,6 +13,7 @@
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import {
   DEFAULT_LANGUAGE,
   EN_MESSAGES,
@@ -90,9 +91,11 @@ assert.equal(normalizeLanguage(null), DEFAULT_LANGUAGE);
 
 // ── every call site is covered, nothing bypasses t() ───────────────────────
 {
-  const checker = new URL("../scripts/i18n-extract.mjs", import.meta.url);
+  // fileURLToPath: on Windows, URL.pathname is "/D:/…" which node cannot
+  // execute directly (found by alexeyfadeev in PR #28).
+  const checker = fileURLToPath(new URL("../scripts/i18n-extract.mjs", import.meta.url));
   try {
-    execFileSync(process.execPath, [checker.pathname, "--quiet"], { stdio: "pipe" });
+    execFileSync(process.execPath, [checker, "--quiet"], { stdio: "pipe" });
   } catch (error) {
     const output = String(error.stderr ?? error.stdout ?? "");
     assert.fail(`i18n extract checker reports drift:\n${output.slice(0, 2000)}`);
