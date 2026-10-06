@@ -8,10 +8,12 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.3.17-blue)
+![version](https://img.shields.io/badge/version-0.3.18-blue)
 [![dsh.so risk](https://www.dsh.so/badge/dsh-ssh-ops.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![dsh.so install · dsh 0.2.0-rc.1](https://www.dsh.so/badge/install/dsh-ssh-ops@0.2.0-rc.1.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/caoyiwei850/dsh-ssh-ops)
+
+> **v0.3.18**：新增**界面语言钉住开关**——DSH 运行插件未内置的语言（如俄语）时，可在设置文件设 `autoApplySystemLanguage: false` + `language` 钉住插件语言，不再被强制回退中文回写；默认跟随行为不变。见「固定界面语言」说明。贡献：@alexeyfadeev（PR #28）。
 
 > **v0.3.17**：修复 0.3.16 的 [#27](https://github.com/caoyiwei850/dsh-ssh-ops/issues/27)——i18n 重构漏改变量名导致官方侧栏注册抛 `ReferenceError`、SSH 终端 UI 完全不可见；eslint 现已覆盖客户端 JSX 并新增回归断言。
 
@@ -103,7 +105,7 @@ Agent 命中上述黑名单时不会被静默拒绝：插件会创建一条一�
 ### 从 GitHub 安装（推荐）
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.17
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.18
 ```
 
 安装后重启 DSH Web：
@@ -116,14 +118,14 @@ dsh web
 
 ### 从发布压缩包安装
 
-从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.17) 下载 `dsh-ssh-ops-0.3.17.tgz` 后：
+从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.18) 下载 `dsh-ssh-ops-0.3.18.tgz` 后：
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.17.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.18.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.3.17.zip` 适用于离线审阅或二次开发；解压后可在目录中执行 `npm install && npm run build`。
+`dsh-ssh-ops-0.3.18.zip` 适用于离线审阅或二次开发；解压后可在目录中执行 `npm install && npm run build`。
 
 ## 使用方式
 
@@ -237,8 +239,8 @@ npm run pack:release
 
 生成物位于 `release/`：
 
-- `dsh-ssh-ops-0.3.17.tgz`：可直接被 DSH 安装。
-- `dsh-ssh-ops-0.3.17.zip`：完整离线源码包。
+- `dsh-ssh-ops-0.3.18.tgz`：可直接被 DSH 安装。
+- `dsh-ssh-ops-0.3.18.zip`：完整离线源码包。
 
 ## 贡献者
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.18 - 2026-10-06
+
+- **新增：界面语言钉住开关（`autoApplySystemLanguage`）**：DSH 运行插件未内置的第三方语言（如俄语）时，此前会被强制回退为中文且每次加载回写设置文件，手工钉住的语言无法保留。现在可在 `~/.dsh/storages/ssh_ops_settings.json` 的 `settings.main` 中设 `autoApplySystemLanguage: false` + `language: "en"`（或 `"zh"`）钉住界面语言——不跟随宿主、不回写；默认（缺省）行为不变。纯设置文件级开关，无界面改动；README 双语新增「固定界面语言」说明（含「Harness 停止时编辑、改完重启」注意事项）。**贡献：[alexeyfadeev](https://github.com/alexeyfadeev)（[PR #28](https://github.com/caoyiwei850/dsh-ssh-ops/pull/28)，rebase 合并并保留作者归属）**。
+- **修复：i18n 覆盖率检查器的 Windows 路径**（PR #28 发现）：`test/i18n.mjs` 把 `URL.pathname` 直接传给子进程，Windows 上 `/D:/…` 形式不可执行，改经 `fileURLToPath` 转换。
+
 ## 0.3.17 - 2026-10-06
 
 - **修复：0.3.16 下 SSH 终端 UI 完全不可见（#27）**：i18n 重构把根作用域的 `t` 改名 `hostT` 时漏改了侧栏注册的传参链——`applySidebarRegistrations(sidebarCtx, { api, t })` 引用了不存在的 `t`，官方侧栏注册一触发即抛 `ReferenceError`，被延迟注册的生命周期捕获后仅打印 console 错误，于是 host 半一切正常而浏览器侧没有任何终端界面（0.3.16 又移除了浮动面板回退，故无任何兜底）。修复为传参与签名统一使用 `hostT`。感谢 [#27](https://github.com/caoyiwei850/dsh-ssh-ops/issues/27) 报告人精确到行号的定位。

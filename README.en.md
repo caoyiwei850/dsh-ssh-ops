@@ -8,10 +8,12 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.3.17-blue)
+![version](https://img.shields.io/badge/version-0.3.18-blue)
 [![dsh.so risk](https://www.dsh.so/badge/dsh-ssh-ops.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![dsh.so install · dsh 0.2.0-rc.1](https://www.dsh.so/badge/install/dsh-ssh-ops@0.2.0-rc.1.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/caoyiwei850/dsh-ssh-ops)
+
+> **v0.3.18**: adds an **interface-language pin** — when DSH runs a language the plugin does not ship (e.g. Russian), set `autoApplySystemLanguage: false` + `language` in the settings file to pin the plugin language instead of being coerced to Chinese and overwritten; the default follow behaviour is unchanged. See "Pinning the interface language". Contribution: @alexeyfadeev (PR #28).
 
 > **v0.3.17**: fixes [#27](https://github.com/caoyiwei850/dsh-ssh-ops/issues/27) — the i18n rename left the Sidebar registration throwing `ReferenceError`, hiding the terminal UI entirely in 0.3.16; eslint now covers the client JSX and regression assertions were added.
 
@@ -98,7 +100,7 @@ The same model covers `sftp_delete` (the agent no longer deletes directly; inste
 ### From GitHub (recommended)
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.17
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.18
 ```
 
 Then restart DSH Web:
@@ -111,14 +113,14 @@ Open any session, click the top **SSH** tab, and use the right-side panel to con
 
 ### From a release archive
 
-Download `dsh-ssh-ops-0.3.17.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.17), then:
+Download `dsh-ssh-ops-0.3.18.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.18), then:
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.17.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.18.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.3.17.zip` is for offline review or further development; extract it and run `npm install && npm run build` in the directory.
+`dsh-ssh-ops-0.3.18.zip` is for offline review or further development; extract it and run `npm install && npm run build` in the directory.
 
 ## Usage
 
@@ -230,8 +232,8 @@ Pushing a `vX.Y.Z` tag that matches `package.json.version` runs tests, builds th
 
 Artifacts are written to `release/`:
 
-- `dsh-ssh-ops-0.3.17.tgz`: installable directly by DSH.
-- `dsh-ssh-ops-0.3.17.zip`: full offline source archive.
+- `dsh-ssh-ops-0.3.18.tgz`: installable directly by DSH.
+- `dsh-ssh-ops-0.3.18.zip`: full offline source archive.
 
 ## Contributors
 
