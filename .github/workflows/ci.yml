@@ -78,6 +78,7 @@ jobs:
       - name: Pack the publishable tarball
         run: |
           npm ci
+          mkdir -p /tmp/npmpkg
           npm pack --pack-destination /tmp/npmpkg
       - name: Install the tarball into a clean prefix (no scripts, like a registry install)
         run: |

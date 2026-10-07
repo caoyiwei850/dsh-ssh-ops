@@ -78,7 +78,14 @@ const packJson = spawnSync("npm", ["pack", "--dry-run", "--json", "--ignore-scri
   cwd: root, encoding: "utf8", shell: process.platform === "win32"
 });
 assert.equal(packJson.status, 0, `npm pack --dry-run failed: ${packJson.stderr}`);
-const packedFiles = JSON.parse(packJson.stdout)[0].files.map((f) => f.path).sort();
+// Some npm versions run `prepare` during pack even under --ignore-scripts, so
+// build output ("gen-xterm-css: wrote …") can precede the JSON on stdout.
+// Extract the JSON body instead of parsing stdout wholesale.
+const stdout = packJson.stdout;
+const start = stdout.indexOf("[");
+const end = stdout.lastIndexOf("]");
+assert.ok(start !== -1 && end > start, `npm pack produced no JSON manifest; stdout was: ${stdout.slice(0, 400)}`);
+const packedFiles = JSON.parse(stdout.slice(start, end + 1))[0].files.map((f) => f.path).sort();
 const expectedPackedFiles = [
   "INSTALL.md",
   "LICENSE",
