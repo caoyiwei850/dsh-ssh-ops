@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="#4176e6" stroke-width="1.3">
+  <!-- Same terminal mark the plugin draws next to its Settings nav row (see
+       src/client/nav-icon.js), inlined with a literal stroke colour because the
+       Host renders this file as an image: `currentColor` and CSS variables do
+       not resolve. Brand blue reads on both light and dark surfaces. -->
+  <rect x="1.6" y="3" width="12.8" height="10" rx="2.4"/>
+  <path d="M5 6.17L6.94 8L5 9.83" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M8.46 9.86H11.03" stroke-linecap="round"/>
+</svg>

@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "SSH Ops",
+    "description": "Drive remote servers from the conversation: interactive terminal, SFTP file management, port forwarding and database management."
+  }
+}
