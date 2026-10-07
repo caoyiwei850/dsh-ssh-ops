@@ -13,7 +13,7 @@
 [![dsh.so install · dsh 0.2.0-rc.1](https://www.dsh.so/badge/install/dsh-ssh-ops@0.2.0-rc.1.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/caoyiwei850/dsh-ssh-ops)
 
-> **v0.3.19**：新增 **SSH Agent 转发**（资源「高级选项」开关——跳板机上可用本机密钥继续登录更深层的机器，无需把私钥铺到每一跳；本机未运行 ssh-agent 时连接直接报错，不做静默降级）；数据库连接新增**查询超时覆盖**（`db_connect` 的 `query_timeout_ms`，慢库上的大查询/大导出不再被 35s 默认死线掐死，`0` 为不限）；认证阶段设备主动 `SSH_MSG_DISCONNECT` 时给出**人话化断开原因**（原因码 + 设备原文 + 两层排查提示）；设置页「服务器分组 / 共享 SSH 凭据」改为**滑动分段切换**；修复 **#29**——`github:` 渠道装出来没有 `lib/` 导致插件整体加载失败，现由 `prepare` 钩子在安装期自动构建。
+> **v0.3.19**：新增 **SSH Agent 转发**（资源「高级选项」开关——跳板机上可用本机密钥继续登录更深层的机器，无需把私钥铺到每一跳；本机未运行 ssh-agent 时连接直接报错，不做静默降级）；数据库连接新增**查询超时覆盖**（`db_connect` 的 `query_timeout_ms`，慢库上的大查询/大导出不再被 35s 默认死线掐死，`0` 为不限）；认证阶段设备主动 `SSH_MSG_DISCONNECT` 时给出**人话化断开原因**（原因码 + 设备原文 + 两层排查提示）；设置页「服务器分组 / 共享 SSH 凭据」改为**滑动分段切换**；**插件页换上展示图标与双语标题/描述**（DSH 0.2.x 插件管理行，品牌蓝终端标记）；修复 **#29**——`github:` 渠道装出来没有 `lib/` 导致插件整体加载失败，现由 `prepare` 钩子在安装期自动构建。CI 同步加固：测试矩阵加 Windows 腿、npm 渠道产物冒烟作业、tarball 文件清单进断言。
 
 > **v0.3.18**：新增**界面语言钉住开关**——DSH 运行插件未内置的语言（如俄语）时，可在设置文件设 `autoApplySystemLanguage: false` + `language` 钉住插件语言，不再被强制回退中文回写；默认跟随行为不变。见「固定界面语言」说明。贡献：@alexeyfadeev（PR #28）。
 

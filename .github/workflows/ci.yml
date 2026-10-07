@@ -9,10 +9,18 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
     strategy:
       matrix:
         node-version: [20, 22]
+        os: [ubuntu-latest]
+        include:
+          # Path-class regressions (path separators, drive-letter URLs, platform
+          # binaries) never reproduce on a Linux-only matrix — the i18n checker's
+          # Windows path bug (found in PR #28) is the precedent. One Windows leg
+          # on the newest LTS is enough to catch that class.
+          - os: windows-latest
+            node-version: 22
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - name: Use Node.js ${{ matrix.node-version }}
@@ -53,10 +61,47 @@ jobs:
           test -f lib/index.js
           test -f lib/client.js
 
+  # npm/tgz users install a CI-built tarball whose file set is invisible from a
+  # link:-mounted dev tree (the local tree always has lib/ on disk). Pack the
+  # real artifact, install it the way a registry tarball installs (no prepare
+  # run — tarballs are presumed pre-built), and import the runtime entries so
+  # a packaging drift fails here, before the tag, not on a user's host.
+  npm-channel:
+    name: Packed tarball installs and loads
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Pack the publishable tarball
+        run: |
+          npm ci
+          npm pack --pack-destination /tmp/npmpkg
+      - name: Install the tarball into a clean prefix (no scripts, like a registry install)
+        run: |
+          mkdir -p /tmp/npmsmoke
+          cd /tmp/npmsmoke
+          npm init -y >/dev/null
+          npm install --no-audit --no-fund "$(ls /tmp/npmpkg/dsh-ssh-ops-*.tgz)"
+          test -f node_modules/dsh-ssh-ops/lib/index.js
+          test -f node_modules/dsh-ssh-ops/lib/client.js
+      - name: Import the runtime entries from the installed package
+        run: |
+          cd /tmp/npmsmoke
+          node --input-type=module -e "
+            const base = 'file:///tmp/npmsmoke/node_modules/dsh-ssh-ops/lib/';
+            await import(base + 'typert.js');
+            await import(base + 'remote.js');
+            await import(base + 'index.js');
+            console.log('npm-channel smoke: runtime entries import cleanly');
+          "
+
   release:
     name: Publish npm and GitHub release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build, git-channel]
+    needs: [build, git-channel, npm-channel]
     runs-on: ubuntu-latest
     permissions:
       contents: write
