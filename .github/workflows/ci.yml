@@ -52,7 +52,7 @@ jobs:
         with:
           node-version: 20
           cache: npm
-      - name: Install a source snapshot the way github: deps install
+      - name: "Install a source snapshot the way github: deps install"
         run: |
           mkdir -p /tmp/gitpkg
           git archive HEAD | tar -x -C /tmp/gitpkg
