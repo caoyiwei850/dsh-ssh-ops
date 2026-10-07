@@ -37,8 +37,21 @@ import {
 // The db layer wraps every failure straight into the full result envelope.
 import { failResult as fail } from "./envelope.js";
 import { t } from "./i18n/core.js";
+import { DB_QUERY_TIMEOUT_MAX_MS } from "./schemas.js";
 
-const DB_QUERY_TIMEOUT_MS = 30000;
+/**
+ * Validate a per-connection statement-deadline override (see DB_DEADLINES):
+ * 0 means "no per-statement ceiling", 1000..DB_QUERY_TIMEOUT_MAX_MS raises it
+ * above the default for slow databases and large exports. Anything else falls
+ * back to the default so a garbage value can neither tighten nor abolish the
+ * ceiling by accident.
+ */
+export function normalizeQueryTimeoutMs(value) {
+  if (value === 0) return 0;
+  if (Number.isInteger(value) && value >= 1000 && value <= DB_QUERY_TIMEOUT_MAX_MS) return value;
+  return undefined;
+}
+
 /** Export defaults: rows pulled when the caller names no limit, and the ceiling. */
 const EXPORT_DEFAULT_ROWS = 50000;
 const EXPORT_MAX_ROWS = 200000;
@@ -347,6 +360,7 @@ export class DbOpsManager {
     // protocol default port when the caller left the port out (an empty/0
     // value from a stored record counts as absent).
     const port = request.port || defaultDbPort(type);
+    const queryTimeoutMs = normalizeQueryTimeoutMs(request.queryTimeoutMs);
     if (needsNetwork(type) && !host) {
       return fail("db-connect-failed", t(`${type} connect 需要填写主机地址`));
     }
@@ -461,7 +475,9 @@ export class DbOpsManager {
     const record = {
       id, type, name: name ?? `${type}:${host ?? database}:${port}`,
       config: { host: host ?? "", port, database, username, ssl: ssl ?? "disabled", sshConnectionId: sshConnectionId ?? null },
-      client, tunnel, createdAt: new Date().toISOString()
+      client, tunnel, createdAt: new Date().toISOString(),
+      // Connect-time statement-deadline override (absent = class default).
+      ...(queryTimeoutMs !== undefined ? { queryTimeoutMs } : {})
     };
     this.dbConnections.set(id, record);
     this.attachDbTransportHandlers(record);
@@ -525,6 +541,31 @@ export class DbOpsManager {
   /** Deadline lookup; `this.deadlines` is an instance override used by tests. */
   dl(key) {
     return this.deadlines?.[key] ?? DB_DEADLINES[key];
+  }
+
+  /**
+   * Per-connection statement ceiling: the record's connect-time override
+   * (0 = none) beats the class default. Every race around ONE driver
+   * statement goes through here, so a slow-database connection can outlive
+   * the 35s default without loosening it for every other connection.
+   */
+  opDeadlineFor(record) {
+    const override = record?.queryTimeoutMs;
+    if (override === 0) return Infinity; // raceDeadline skips non-finite budgets
+    if (Number.isFinite(override)) return override;
+    return this.dl("op");
+  }
+
+  /**
+   * Server/driver-side statement_timeout for one connection: the client-side
+   * ceiling minus a 5s grace (the default pair is 30s server / 35s client),
+   * so the server's specific "statement timeout" error wins over the generic
+   * client race. 0 disables the server-side guard — only reachable through
+   * an explicit unlimited override.
+   */
+  statementTimeoutFor(record) {
+    const ceiling = this.opDeadlineFor(record);
+    return Number.isFinite(ceiling) ? Math.max(0, ceiling - 5000) : 0;
   }
 
   /**
@@ -602,7 +643,7 @@ export class DbOpsManager {
     const client = await this.pgCheckout(record, { signal: opts?.signal, label, timeoutMs: this.dl("checkout") });
     let dead = false;
     const run = (sql, params) => raceDeadline(client.query(sql, params), {
-      signal: opts?.signal, timeoutMs: this.dl("op"), label, onLose: () => { dead = true; }
+      signal: opts?.signal, timeoutMs: this.opDeadlineFor(record), label, onLose: () => { dead = true; }
     });
     try {
       try {
@@ -640,7 +681,7 @@ export class DbOpsManager {
     const target = conn.kind === "pool" ? conn.pool : conn;
     let killed = false;
     const run = (sql, params) => raceDeadline(target.query(sql, params), {
-      signal: opts?.signal, timeoutMs: this.dl("op"), label, onLose: () => { killed = true; }
+      signal: opts?.signal, timeoutMs: this.opDeadlineFor(record), label, onLose: () => { killed = true; }
     }).catch((error) => {
       // A timed-out or protocol-fatal command leaves the connection
       // mid-protocol; it must never go back to the pool (see mysqlQueryPaged).
@@ -761,6 +802,7 @@ export class DbOpsManager {
       database: r.config.database ?? null,
       username: r.config.username ?? null,
       ssl: r.config.ssl, sshConnectionId: r.config.sshConnectionId ?? null,
+      ...(r.queryTimeoutMs !== undefined ? { queryTimeoutMs: r.queryTimeoutMs } : {}),
       createdAt: r.createdAt
     }));
     return { ok: true, value: { connections } };
@@ -841,7 +883,7 @@ export class DbOpsManager {
       // Object form: mysql2 renders `statement` with `?` placeholders and
       // sends `bindings` through the protocol's separate parameter slot.
       const stream = conn.connection
-        .query({ sql: statement, values: bindings, timeout: DB_QUERY_TIMEOUT_MS })
+        .query({ sql: statement, values: bindings, timeout: this.statementTimeoutFor(record) })
         .stream();
       const streamed = new Promise((resolve, reject) => {
         const once = (fn) => {
@@ -877,7 +919,7 @@ export class DbOpsManager {
         stream.resume();
       });
       await raceDeadline(streamed, {
-        signal: opts.signal, timeoutMs: this.dl("op"), label,
+        signal: opts.signal, timeoutMs: this.opDeadlineFor(record), label,
         onLose: () => { killed = true; try { stream.destroy(); } catch {} }
       });
     } finally {
@@ -912,10 +954,10 @@ export class DbOpsManager {
     let truncated = false;
     let dead = false;
     const run = (text, params) => raceDeadline(client.query(text, params), {
-      signal: opts.signal, timeoutMs: this.dl("op"), label, onLose: () => { dead = true; }
+      signal: opts.signal, timeoutMs: this.opDeadlineFor(record), label, onLose: () => { dead = true; }
     });
     try {
-      await run("SELECT set_config('statement_timeout', $1, false)", [String(DB_QUERY_TIMEOUT_MS)]);
+      await run("SELECT set_config('statement_timeout', $1, false)", [String(this.statementTimeoutFor(record))]);
       const pgCursorModule = await import("pg-cursor");
       const Cursor = pgCursorModule.default ?? pgCursorModule;
       const cursor = client.query(new Cursor(statement, bindings));
@@ -937,7 +979,7 @@ export class DbOpsManager {
           };
           readBatch();
         }), {
-          signal: opts.signal, timeoutMs: this.dl("op"), label,
+          signal: opts.signal, timeoutMs: this.opDeadlineFor(record), label,
           // The portal is mid-fetch: the client must not return to the pool.
           onLose: () => { dead = true; }
         });
@@ -1513,27 +1555,27 @@ export class DbOpsManager {
         let lost = false;
         try {
           await raceDeadline(conn.query("START TRANSACTION"), {
-            signal, timeoutMs: this.dl("op"), label: "db_tx_begin",
+            signal, timeoutMs: this.opDeadlineFor(record), label: "db_tx_begin",
             onLose: () => { lost = true; try { conn.destroy(); } catch {} }
           });
         } catch (error) {
           if (!lost) { try { conn.destroy(); } catch {} }
           throw error;
         }
-        handle = { kind: "mysql", conn, signal };
+        handle = { kind: "mysql", conn, signal, opTimeoutMs: this.opDeadlineFor(record) };
       } else {
         const client = await this.pgCheckout(record, { signal, label: "db_tx_begin" });
         let lost = false;
         try {
           await raceDeadline(client.query("BEGIN"), {
-            signal, timeoutMs: this.dl("op"), label: "db_tx_begin",
+            signal, timeoutMs: this.opDeadlineFor(record), label: "db_tx_begin",
             onLose: () => { lost = true; try { client.release(new Error("db_tx_begin: connection killed")); } catch {} }
           });
         } catch (error) {
           if (!lost) { try { client.release(new Error("db_tx_begin failed")); } catch {} }
           throw error;
         }
-        handle = { kind: "pg", client, signal };
+        handle = { kind: "pg", client, signal, opTimeoutMs: this.opDeadlineFor(record) };
       }
     } catch (error) {
       // START TRANSACTION/BEGIN failed before a transaction record existed.
@@ -1571,7 +1613,7 @@ export class DbOpsManager {
       let value;
       if (tx.handle.kind === "mysql") {
         const [r] = await raceDeadline(tx.handle.conn.query(statement, bindings), {
-          signal, timeoutMs: this.dl("op"), label: "db_tx_execute",
+          signal, timeoutMs: tx.handle.opTimeoutMs ?? this.dl("op"), label: "db_tx_execute",
           onLose: () => this.killTransaction(tx)
         });
         if (Array.isArray(r)) {
@@ -1584,7 +1626,7 @@ export class DbOpsManager {
         }
       } else {
         const r = await raceDeadline(tx.handle.client.query(statement, bindings), {
-          signal, timeoutMs: this.dl("op"), label: "db_tx_execute",
+          signal, timeoutMs: tx.handle.opTimeoutMs ?? this.dl("op"), label: "db_tx_execute",
           onLose: () => this.killTransaction(tx)
         });
         const allRows = r.rows ?? [];
@@ -1628,14 +1670,16 @@ export class DbOpsManager {
     const tx = this.dbTransactions.get(txId);
     if (!tx) return fail("tx-missing", `transaction ${txId} not found or already finished`);
     const label = action === "COMMIT" ? "db_tx_commit" : "db_tx_rollback";
+    // The connection's connect-time override (if any) travels on the handle.
+    const opBudget = tx.handle.opTimeoutMs ?? this.dl("op");
     let killed = false;
     try {
       const settled = tx.handle.kind === "mysql"
         ? await raceDeadline(tx.handle.conn.query(action), {
-          signal, timeoutMs: this.dl("op"), label, onLose: () => { killed = true; }
+          signal, timeoutMs: opBudget, label, onLose: () => { killed = true; }
         })
         : await raceDeadline(tx.handle.client.query(action), {
-          signal, timeoutMs: this.dl("op"), label, onLose: () => { killed = true; }
+          signal, timeoutMs: opBudget, label, onLose: () => { killed = true; }
         });
       void settled;
       if (killed) {
@@ -1645,7 +1689,7 @@ export class DbOpsManager {
         else tx.handle.client.release(new Error(`${label}: connection killed after timeout`));
         this.dbTransactions.delete(txId);
         if (tx.timer) clearTimeout(tx.timer);
-        return fail(errorCode, `${label} timed out after ${this.dl("op")}ms: the transaction outcome is unknown — verify the data before retrying`);
+        return fail(errorCode, `${label} timed out after ${opBudget}ms: the transaction outcome is unknown — verify the data before retrying`);
       }
       if (tx.handle.kind === "mysql") tx.handle.conn.release();
       else tx.handle.client.release();
@@ -1793,7 +1837,7 @@ export class DbOpsManager {
         // happens, so the command must race client-side. A lost race leaves the
         // connection suspect: drop it (disconnect also stops the retry loop).
         const result = await raceDeadline(record.client.sendCommand([command, ...(args ?? [])]), {
-          signal: request.signal, timeoutMs: this.dl("op"), label: "db_run",
+          signal: request.signal, timeoutMs: this.opDeadlineFor(record), label: "db_run",
           onLose: (error) => { this.handleDbTransportLoss(record.id, record.client, error); }
         });
         return { ok: true, value: { result: serializeDbValue(result) } };
@@ -1816,7 +1860,7 @@ export class DbOpsManager {
           }
         };
         const result = await raceDeadline(mongoRun(), {
-          signal: request.signal, timeoutMs: this.dl("op"), label: "db_run",
+          signal: request.signal, timeoutMs: this.opDeadlineFor(record), label: "db_run",
           onLose: (error) => {
             // Clear the stuck topology so the next call starts from a clean
             // selection instead of queueing behind the dead one.

@@ -8,10 +8,12 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.3.18-blue)
+![version](https://img.shields.io/badge/version-0.3.19-blue)
 [![dsh.so risk](https://www.dsh.so/badge/dsh-ssh-ops.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![dsh.so install · dsh 0.2.0-rc.1](https://www.dsh.so/badge/install/dsh-ssh-ops@0.2.0-rc.1.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/caoyiwei850/dsh-ssh-ops)
+
+> **v0.3.19**：新增 **SSH Agent 转发**（资源「高级选项」开关——跳板机上可用本机密钥继续登录更深层的机器，无需把私钥铺到每一跳；本机未运行 ssh-agent 时连接直接报错，不做静默降级）；数据库连接新增**查询超时覆盖**（`db_connect` 的 `query_timeout_ms`，慢库上的大查询/大导出不再被 35s 默认死线掐死，`0` 为不限）；认证阶段设备主动 `SSH_MSG_DISCONNECT` 时给出**人话化断开原因**（原因码 + 设备原文 + 两层排查提示）；设置页「服务器分组 / 共享 SSH 凭据」改为**滑动分段切换**；修复 **#29**——`github:` 渠道装出来没有 `lib/` 导致插件整体加载失败，现由 `prepare` 钩子在安装期自动构建。
 
 > **v0.3.18**：新增**界面语言钉住开关**——DSH 运行插件未内置的语言（如俄语）时，可在设置文件设 `autoApplySystemLanguage: false` + `language` 钉住插件语言，不再被强制回退中文回写；默认跟随行为不变。见「固定界面语言」说明。贡献：@alexeyfadeev（PR #28）。
 
@@ -100,8 +102,10 @@ Agent 命中上述黑名单时不会被静默拒绝：插件会创建一条一�
 ### 从 GitHub 安装（推荐）
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.18
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.19
 ```
+
+git 渠道装的是源码，安装期由 `prepare` 钩子自动执行 `npm run build` 生成入口 `lib/`，无需手动构建。**注意：pnpm ≥ 10 默认拦截依赖包的构建脚本**——若重启后 SSH 标签未出现，按 [INSTALL.md](INSTALL.md) 第 3 步检查 `node_modules/dsh-ssh-ops/lib/`：缺失说明构建被拦，进入该包目录执行 `npm install && npm run build`（或在该 profile 的 pnpm 配置 `onlyBuiltDependencies` 中放行 `dsh-ssh-ops`）后重启即可。
 
 安装后重启 DSH Web：
 
@@ -113,14 +117,14 @@ dsh web
 
 ### 从发布压缩包安装
 
-从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.18) 下载 `dsh-ssh-ops-0.3.18.tgz` 后：
+从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.19) 下载 `dsh-ssh-ops-0.3.19.tgz` 后：
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.18.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.19.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.3.18.zip` 适用于离线审阅或二次开发；解压后可在目录中执行 `npm install && npm run build`。
+`dsh-ssh-ops-0.3.19.zip` 适用于离线审阅或二次开发；解压后在目录中执行 `npm install`（构建自动完成）。
 
 ## 使用方式
 
@@ -228,14 +232,14 @@ npm run build   # 生成 lib/（宿主三件 + 客户端 bundle）；lib 是构�
 npm run pack:release
 ```
 
-`lib/` 目录由 `npm run build` 生成并列入 `.gitignore`（PR diff 因此不再被构建产物淹没）。从 git 直接安装（非 npm/tgz 渠道）需先执行 `npm install && npm run build`。
+`lib/` 目录由 `npm run build` 生成并列入 `.gitignore`（PR diff 因此不再被构建产物淹没）。git 渠道（`github:`）安装依赖 `prepare` 钩子在安装期自动构建出 `lib/`（pnpm ≥ 10 拦截构建脚本时需放行或手动构建，见「安装」一节）；npm 与 tgz 渠道的包内自带产物。仓库内 `npm install` 也会顺带构建一次。
 
 推送与 `package.json.version` 一致的 `vX.Y.Z` tag 时，GitHub Actions 会测试、构建并从同一个 `.tgz` 同时发布 npm 包和 GitHub Release。首次启用前，在仓库 Secrets 配置 `NPM_TOKEN`。发版改完版本号后先执行 `npm run bump:readme`，把 README/README.en 中的徽章、安装命令与发布链接一并同步到新版本。
 
 生成物位于 `release/`：
 
-- `dsh-ssh-ops-0.3.18.tgz`：可直接被 DSH 安装。
-- `dsh-ssh-ops-0.3.18.zip`：完整离线源码包。
+- `dsh-ssh-ops-0.3.19.tgz`：可直接被 DSH 安装。
+- `dsh-ssh-ops-0.3.19.zip`：完整离线源码包。
 
 ## 贡献者
 

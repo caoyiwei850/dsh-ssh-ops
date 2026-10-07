@@ -11,7 +11,8 @@
  *    server said it still accepts (from USERAUTH_FAILURE), plus whether a
  *    keyboard-interactive prompt was ever served;
  *  - `makeAuthHandler` reproduces ssh2's default method order (none →
- *    password → publickey → keyboard-interactive) while feeding the tracker;
+ *    password → publickey → agent → keyboard-interactive) while feeding the
+ *    tracker;
  *  - `classifyConnectFailure` maps the final error onto a stage, a reason and
  *    a short list of actionable hints;
  *  - `wasAuthCut` detects "the device killed the transport mid-authentication"
@@ -23,8 +24,8 @@
  * socket.
  */
 
-/** ssh2's default auth method order (client.js `authsAllowed`). */
-const AUTH_METHOD_ORDER = ["none", "password", "publickey", "keyboard-interactive"];
+/** ssh2's default auth method order (client.js `authsAllowed`), with its separate `agent` method. */
+const AUTH_METHOD_ORDER = ["none", "password", "publickey", "agent", "keyboard-interactive"];
 
 /**
  * Build the per-connection auth tracker. Lives on the connection record so
@@ -55,10 +56,13 @@ export function createAuthTracker() {
  * terminates in at most (factors × methods) steps and the second factor
  * actually gets offered instead of exhausting the list after the first.
  */
-export function makeAuthHandler(tracker, { hasPassword, hasPrivateKey, tryKeyboard }) {
+export function makeAuthHandler(tracker, { hasPassword, hasPrivateKey, hasAgent, tryKeyboard }) {
   const available = AUTH_METHOD_ORDER.filter((method) => {
     if (method === "password") return hasPassword === true;
     if (method === "publickey") return hasPrivateKey === true;
+    // ssh2 exposes the local ssh-agent as its own method name; it is only in
+    // `authsAllowed` when the connect config carried an `agent` socket.
+    if (method === "agent") return hasAgent === true;
     if (method === "keyboard-interactive") return tryKeyboard === true;
     return true; // 'none' is always probed first (RFC 4252 §5.2 semantics)
   });
@@ -94,6 +98,44 @@ const TRANSPORT_CUT_RE = /connection closed before handshake|Connection lost bef
 /** ssh2's terminal auth verdict. */
 const AUTH_REJECTED_RE = /All configured authentication methods failed/;
 
+/**
+ * ssh2 surfaces a server-sent SSH_MSG_DISCONNECT as an Error whose `message`
+ * is the device's own description text and whose numeric `code` is the RFC
+ * 4253 §11.1 disconnect reason (ssh2 sets no `level` on it). Node system
+ * errors carry STRING codes, so an integer in 1..15 is unambiguous.
+ */
+export function isServerDisconnect(error) {
+  return error instanceof Error && Number.isInteger(error.code) && error.code >= 1 && error.code <= 15;
+}
+
+/** RFC 4253 §11.1 reason names, for the diagnosis message line. */
+const DISCONNECT_REASON_NAMES = {
+  1: "HOST_NOT_ALLOWED_TO_CONNECT", 2: "PROTOCOL_ERROR", 3: "KEY_EXCHANGE_FAILED",
+  4: "RESERVED", 5: "MAC_ERROR", 6: "COMPRESSION_ERROR", 7: "SERVICE_NOT_AVAILABLE",
+  8: "PROTOCOL_VERSION_NOT_SUPPORTED", 9: "HOST_KEY_NOT_VERIFIABLE", 10: "CONNECTION_LOST",
+  12: "TOO_MANY_CONNECTIONS", 13: "AUTH_CANCELED_BY_USER", 14: "NO_MORE_AUTH_METHODS_AVAILABLE",
+  15: "ILLEGAL_USER_NAME"
+};
+
+/** Cause hints keyed by reason code; absent codes fall back to the device-log hint. */
+const DISCONNECT_CODE_HINTS = {
+  1: "the host refused the connection by policy (hosts.allow/deny or an allowlist on the device)",
+  3: "the key exchange failed on the device side — a legacy device may need the legacy algorithms option",
+  7: "the device's SSH service is unavailable — it may be overloaded or sshd is not fully up; retry later",
+  12: "the device hit its connection/VTY limit — wait for other sessions to free up or raise the device limit",
+  14: "the device saw every offered auth method rejected — verify the credentials and the account's allowed methods",
+  15: "the username is not known to the device or not allowed to log in"
+};
+
+/** Vendor texts worth translating; matched case-insensitively against the description. */
+const DISCONNECT_TEXT_HINTS = [
+  { re: /already (?:been )?(?:logged|connected)|logged (?:in|on) (?:elsewhere|on another)/i, hint: "the account is already logged in elsewhere — many devices allow only one active session per account" },
+  { re: /RADIUS|TACACS|LDAP|AAA (?:server|backend)/i, hint: "the device cannot reach its authentication backend (RADIUS/TACACS/LDAP) — logins fail until it recovers" },
+  { re: /VTY|virtual terminal/i, hint: "the device's VTY lines are exhausted or misconfigured" },
+  { re: /auth\w*[ ?]?timed? ?out|timed? ?out (?:during|waiting for) auth/i, hint: "the device's authentication timeout is shorter than the login round trip — check network latency or the device timeout" },
+  { re: /\blocked\b|\bdisabled\b|deactivated/i, hint: "the account appears locked or disabled on the device" }
+];
+
 /** Stages of a failed connect, used by the agent to decide the next move. */
 export const CONNECT_FAILURE_STAGES = Object.freeze({
   AUTH: "auth",
@@ -113,8 +155,12 @@ export function wasAuthCut(tracker, error) {
   const authStarted = tracker.sawFailure || tracker.kbdSeen || tracker.attempts.length > 1;
   if (!authStarted) return false;
   if (error instanceof Error && TRANSPORT_CUT_RE.test(error.message)) return true;
-  // ssh2 protocol-level fatal during the auth phase also counts.
-  return error instanceof Error && error.level === "handshake" && tracker.kbdSeen;
+  // ssh2 protocol-level fatal during the auth phase also counts. A device that
+  // sends SSH_MSG_DISCONNECT mid keyboard-interactive exchange is the same
+  // firmware behaviour as dropping the transport — the plain-password retry
+  // is the documented remedy for both shapes.
+  if (error instanceof Error && error.level === "handshake" && tracker.kbdSeen) return true;
+  return isServerDisconnect(error) && tracker.kbdSeen;
 }
 
 /** Hints for an auth rejection, from what was attempted and what the server allows. */
@@ -123,6 +169,7 @@ function authHints(tracker, { hasPassword, hasPrivateKey }) {
   const tried = tracker?.attempts ?? [];
   if (tried.includes("password")) hints.push("the password may be wrong, or this account is not allowed to log in with a password");
   if (tried.includes("publickey")) hints.push("the private key may not be authorized on the server (missing from authorized_keys), unreadable, or need a passphrase");
+  if (tried.includes("agent")) hints.push("none of the keys in the local ssh-agent is authorized for this account (check ssh-add -l on this machine)");
   const left = tracker?.lastMethodsLeft;
   if (Array.isArray(left) && left.length > 0) {
     hints.push(`the server still accepts: ${left.join(", ")}`);
@@ -170,6 +217,26 @@ export function classifyConnectFailure(error, tracker, creds = {}) {
       stage: CONNECT_FAILURE_STAGES.AUTH,
       reason: "auth-rejected",
       message: `authentication rejected by the server (tried: ${tried})`,
+      hints
+    };
+  }
+
+  if (isServerDisconnect(error)) {
+    const name = DISCONNECT_REASON_NAMES[error.code] ?? `reason ${error.code}`;
+    const desc = message.trim();
+    const hints = [];
+    const codeHint = DISCONNECT_CODE_HINTS[error.code];
+    if (codeHint) hints.push(codeHint);
+    for (const { re, hint } of DISCONNECT_TEXT_HINTS) {
+      if (re.test(desc)) hints.push(hint);
+    }
+    if (hints.length === 0) {
+      hints.push("the device closed the connection itself with the reason above; its own log will say what triggered it");
+    }
+    return {
+      stage: CONNECT_FAILURE_STAGES.TRANSPORT,
+      reason: "server-disconnect",
+      message: `the server disconnected (code ${error.code} ${name})${desc !== "" && desc !== name ? `: ${desc}` : ""}`,
       hints
     };
   }

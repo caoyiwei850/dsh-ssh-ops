@@ -73,6 +73,11 @@ export const connectRequestSchema = z.object({
   // on KEX selection; true → use the legacy set up front (no downgrade
   // warning); false → modern algorithms only, no automatic retry.
   legacy: z.boolean().optional(),
+  // Opt-in SSH agent forwarding: hand the local ssh-agent to the remote host
+  // so terminals opened on it can authenticate onward with the local keys.
+  // Requires a running local agent (SSH_AUTH_SOCK); the connect fails fast
+  // with an actionable message otherwise.
+  agentForward: z.boolean().optional(),
   name: z.string().optional(),
   hostKeyMode: hostKeyModeSchema.optional(),
   proxyJump: z.array(z.object({
@@ -189,7 +194,11 @@ const profileMetadataSchema = z.object({
   port: z.number().int().min(1).max(65535).default(22),
   username: z.string().min(1).max(128),
   authKind: profileAuthKindSchema,
-  hostKeyMode: hostKeyModeSchema.default("accept-new")
+  hostKeyMode: hostKeyModeSchema.default("accept-new"),
+  // SSH agent forwarding (resolved false for records saved before this
+  // field existed): forward the local ssh-agent so a terminal on this server
+  // can authenticate onward with the local keys.
+  agentForward: z.boolean().default(false)
 });
 
 export const profileSaveRequestSchema = profileMetadataSchema.extend({
@@ -729,6 +738,22 @@ export const sessionLogDeleteResultSchema = resultSchema(
 export const dbTypeSchema = z.enum(["mysql", "postgresql", "opengauss", "sqlite", "clickhouse", "redis", "mongodb"]);
 export const dbSslSchema = z.enum(["disabled", "preferred", "verify"]).default("disabled");
 
+/**
+ * Per-connection statement-deadline override ceiling (ms). The db layer's
+ * default op ceiling stays 35s; a connection created with `queryTimeoutMs`
+ * (0 = no per-statement ceiling, or 1000..this max) opts into longer
+ * statements for slow databases and large exports. The db tool family
+ * declares a budget above this ceiling so an override is never cut off by
+ * the tool-level timeout.
+ */
+export const DB_QUERY_TIMEOUT_MAX_MS = 1_800_000;
+
+/** Validation shared by the connect request and the db-profile record. */
+export const dbQueryTimeoutSchema = z.number().int().refine(
+  (v) => v === 0 || (v >= 1000 && v <= DB_QUERY_TIMEOUT_MAX_MS),
+  "queryTimeoutMs 为 0（不限）或 1000..1800000 毫秒" // i18n-ignore: schema-time message, frozen by design
+);
+
 export const dbConnectRequestSchema = z.object({
   type: dbTypeSchema,
   // Absent for SQLite (addressed by file path in `database`); every other
@@ -741,6 +766,8 @@ export const dbConnectRequestSchema = z.object({
   ssl: dbSslSchema,
   sshConnectionId: z.string().optional(),
   name: z.string().optional(),
+  // Per-connection statement deadline override (ms); see DB_QUERY_TIMEOUT_MAX_MS.
+  queryTimeoutMs: dbQueryTimeoutSchema.optional(),
   signal: z.any().optional()
 });
 
@@ -754,6 +781,8 @@ export const dbConnectionInfoSchema = z.object({
   username: z.string().nullable(),
   ssl: z.string(),
   sshConnectionId: z.string().nullable(),
+  // Present only when the connection was created with an override.
+  queryTimeoutMs: dbQueryTimeoutSchema.optional(),
   createdAt: z.string()
 });
 
@@ -952,6 +981,8 @@ export const dbProfileInfoSchema = z.object({
   username: z.string().nullable(),
   ssl: z.string(),
   sshProfileId: z.string().uuid().nullable(),
+  // Per-connection statement deadline (ms) applied on connect; null = default.
+  queryTimeoutMs: dbQueryTimeoutSchema.nullable(),
   credentialConfigured: z.boolean(),
   connected: z.boolean()
 });
@@ -966,7 +997,8 @@ export const dbProfileSaveRequestSchema = z.object({
   username: z.string().optional(),
   password: z.string().optional(),
   ssl: dbSslSchema,
-  sshProfileId: z.string().uuid().nullable().optional()
+  sshProfileId: z.string().uuid().nullable().optional(),
+  queryTimeoutMs: dbQueryTimeoutSchema.nullable().optional()
 });
 
 export const dbProfileSaveResultSchema = resultSchema(

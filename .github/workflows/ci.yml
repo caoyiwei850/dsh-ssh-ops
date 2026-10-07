@@ -31,10 +31,32 @@ jobs:
       - name: Run tests
         run: npm test
 
+  # #29: the recommended github: channel installs a source tarball; the entry
+  # files under lib/ only exist if the prepare hook builds them at install
+  # time. Simulate exactly that path (git archive == codeload tarball) and
+  # assert the artifacts land on disk before a release may ship.
+  git-channel:
+    name: Git-channel install produces lib/
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install a source snapshot the way github: deps install
+        run: |
+          mkdir -p /tmp/gitpkg
+          git archive HEAD | tar -x -C /tmp/gitpkg
+          cd /tmp/gitpkg
+          npm install --no-audit --no-fund
+          test -f lib/index.js
+          test -f lib/client.js
+
   release:
     name: Publish npm and GitHub release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: [build, git-channel]
     runs-on: ubuntu-latest
     permissions:
       contents: write

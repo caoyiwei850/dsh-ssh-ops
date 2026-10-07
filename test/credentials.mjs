@@ -56,10 +56,11 @@ function fakeTable(entries = []) {
   assert.equal(profile.port, 22, "port defaults to 22");
   assert.equal(profile.defaultProjectPath, "/srv/apps/web-1", "project entry is returned without touching credentials");
   assert.equal(table.entries()[0][1].defaultProjectPath, "/srv/apps/web-1", "project entry persists as ordinary profile metadata");
+  assert.equal(table.entries()[0][1].agentForward, false, "agent forwarding defaults to off for records saved without the field");
   // The saved record itself must never carry secret material.
   assert.deepEqual(
     Object.keys(table.entries()[0][1]).sort(),
-    ["authKind", "createdAt", "credentialId", "defaultProjectPath", "groupId", "host", "hostKeyMode", "name", "port", "proxyJump", "updatedAt", "username"].sort(),
+    ["agentForward", "authKind", "createdAt", "credentialId", "defaultProjectPath", "groupId", "host", "hostKeyMode", "name", "port", "proxyJump", "updatedAt", "username"].sort(),
     "stored record holds config only, no password/privateKey field"
   );
   const stem = profile.profileId.replaceAll("-", "").toUpperCase();

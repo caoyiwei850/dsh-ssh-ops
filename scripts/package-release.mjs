@@ -16,7 +16,9 @@ for (const entry of ["assets", "lib", "src", "scripts", "test", "package.json", 
   if (existsSync(source)) cpSync(source, join(stage, basename(entry)), { recursive: true });
 }
 
-execFileSync("npm", ["pack", "--pack-destination", release], { cwd: root, stdio: "inherit" });
+// --ignore-scripts: prepare (which builds lib/) must not re-run during pack —
+// pack:release has already built the exact artifacts this tarball should ship.
+execFileSync("npm", ["pack", "--ignore-scripts", "--pack-destination", release], { cwd: root, stdio: "inherit" });
 execFileSync("zip", ["-q", "-r", "-X", join(release, `${archiveRoot}.zip`), archiveRoot], { cwd: release, stdio: "inherit" });
 rmSync(stage, { recursive: true, force: true });
 

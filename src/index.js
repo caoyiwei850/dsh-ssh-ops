@@ -23,6 +23,7 @@ import { redactForModel } from "./redact.js";
 import { isTransientConnectError } from "./net-errors.js";
 import { isIdentMismatchError, withRepairedBanner } from "./ssh-banner.js";
 import { createAuthTracker, makeAuthHandler, classifyConnectFailure, formatConnectFailure, wasAuthCut } from "./ssh-auth.js";
+import { applyAgentForwarding } from "./ssh-agent.js";
 import { processTerminalInput } from "./terminal-input.js";
 import { fail } from "./envelope.js";
 import { POLICY_NOTICE_PREFIX, DANGEROUS_DEFAULT_REASON } from "./policy-messages.js";
@@ -208,6 +209,9 @@ const dbProfileRecordSchema = z.object({
   username: z.string().nullable(),
   ssl: z.string(),
   sshProfileId: z.string().uuid().nullable(),
+  // Connect-time statement deadline (0 = unlimited; null/absent = default).
+  // Optional so records written by older builds keep loading.
+  queryTimeoutMs: z.number().int().nullable().optional(),
   createdAt: z.string(),
   updatedAt: z.string()
 });
@@ -691,6 +695,16 @@ export default class SshOpsService extends TypertRemoteService {
     } else if (request.auth.secondary?.kind === "password") {
       connectConfig.password = request.auth.secondary.password;
     }
+    // Opt-in SSH agent forwarding (jump-host workflows): wire the local agent
+    // into the config BEFORE the record exists — a missing agent is an
+    // environment problem the user must fix, not a transient failure worth
+    // retrying. On success every shell/exec channel on this connection
+    // requests forwarding (ssh2 handles the auth-agent channel plumbing), and
+    // the agent also becomes an additional auth method for the handshake.
+    const agentApplied = applyAgentForwarding(connectConfig, request.agentForward === true);
+    if (!agentApplied.ok) {
+      return { ok: false, error: fail(agentApplied.error.code, agentApplied.error.message) };
+    }
     const record = {
       id,
       client: null,
@@ -925,6 +939,9 @@ export default class SshOpsService extends TypertRemoteService {
           config.authHandler = makeAuthHandler(record.authTracker, {
             hasPassword,
             hasPrivateKey: record.connectConfig.privateKey !== undefined,
+            // A forwarded agent doubles as an auth source (ssh2's separate
+            // "agent" method), so a keyless resource can still log in.
+            hasAgent: typeof record.connectConfig.agent === "string",
             tryKeyboard: config.tryKeyboard
           });
           if (sock !== undefined) config.sock = sock;
@@ -1326,6 +1343,7 @@ export default class SshOpsService extends TypertRemoteService {
       username: record.username,
       authKind: record.authKind,
       hostKeyMode: record.hostKeyMode ?? DEFAULT_HOST_KEY_MODE,
+      agentForward: record.agentForward === true,
       credentialId: shared ? record.credentialId : null,
       credentialName: shared?.name ?? null,
       proxyJump: record.proxyJump ?? [],
@@ -1391,6 +1409,7 @@ export default class SshOpsService extends TypertRemoteService {
         username: request.username.trim(),
         authKind: request.authKind,
         hostKeyMode: request.hostKeyMode ?? DEFAULT_HOST_KEY_MODE,
+        agentForward: request.agentForward === true,
         // An explicit null detaches a shared credential and restores the
         // server's legacy dedicated credential slot; only an omitted field
         // preserves old records for backwards-compatible callers.
@@ -1503,6 +1522,7 @@ export default class SshOpsService extends TypertRemoteService {
         port: record.port,
         username: record.username,
         hostKeyMode: record.hostKeyMode,
+        agentForward: record.agentForward === true,
         readyTimeout: request.readyTimeout,
         retries: request.retries,
         auth: targetAuth,
@@ -2415,6 +2435,7 @@ export default class SshOpsService extends TypertRemoteService {
       username: record.username,
       ssl: record.ssl,
       sshProfileId: record.sshProfileId,
+      queryTimeoutMs: record.queryTimeoutMs ?? null,
       credentialConfigured: cred.configured,
       connected
     };
@@ -2452,6 +2473,9 @@ export default class SshOpsService extends TypertRemoteService {
         username: request.username?.trim() || null,
         ssl: request.ssl ?? "disabled",
         sshProfileId: request.sshProfileId || null,
+        // Connect-time statement deadline (0 = unlimited, null = default);
+        // omitted preserves the stored value for backwards-compatible callers.
+        queryTimeoutMs: Object.hasOwn(request, "queryTimeoutMs") ? request.queryTimeoutMs : (previous?.queryTimeoutMs ?? null),
         createdAt: previous?.createdAt ?? now,
         updatedAt: now
       };
@@ -2516,7 +2540,8 @@ export default class SshOpsService extends TypertRemoteService {
         password: cred?.value,
         ssl: record.ssl,
         sshConnectionId,
-        name: record.name
+        name: record.name,
+        ...(record.queryTimeoutMs !== null && record.queryTimeoutMs !== undefined ? { queryTimeoutMs: record.queryTimeoutMs } : {})
       });
       if (!result.ok) return result;
       // Tag the db connection with the profile name for connected-status lookup.

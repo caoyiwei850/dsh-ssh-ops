@@ -16,8 +16,16 @@ import { defineTool } from "@deepseek-ai/dsh-tools";
 import { backupSummary, pickSshConnectionId } from "../db-ops.js";
 import { t } from "../i18n/core.js";
 
-/** Cooperative tool-call budget; the db layer's own ceilings are all lower. */
-export const DB_TOOL_TIMEOUT_MS = 60000;
+/**
+ * Cooperative tool-call budget. It must sit above the db layer's own ceilings
+ * AND above the largest per-connection query_timeout_ms override
+ * (DB_QUERY_TIMEOUT_MAX_MS, 30 min) so an opted-in slow-database connection
+ * is never cut off by the tool budget. Default connections are unaffected in
+ * practice: every driver await is still bounded by the db layer's own
+ * deadlines (the 35s op ceiling fires first), so this budget only matters as
+ * the last-resort backstop.
+ */
+export const DB_TOOL_TIMEOUT_MS = 1_860_000;
 
 export function registerDbTools(ctx, service) {
   ctx.tools.register(defineTool({
@@ -34,6 +42,7 @@ export function registerDbTools(ctx, service) {
       ssl: { type: "string", enum: ["disabled", "preferred", "verify"], description: "TLS mode: 'disabled' (default) plain TCP; 'preferred' encrypt without cert verification (self-signed cloud DBs); 'verify' encrypt and verify CA (public-CA cloud DBs)." },
       ssh_connection_id: { type: "string", description: "Optional. An existing SSH connection id to tunnel through, reaching databases on private networks. Takes precedence over via_ssh." },
       via_ssh: { type: "string", enum: ["auto", "yes", "no"], description: "Tunnel routing when ssh_connection_id is omitted: 'auto' (default) tunnels loopback hosts (127.0.0.1/localhost) through the current SSH server; 'yes' always tunnels through the current server; 'no' always connects directly." },
+      query_timeout_ms: { type: "integer", description: "Optional per-connection statement deadline in milliseconds, set once at connect time for slow databases and large exports: 0 disables the per-statement ceiling (this tool-call budget still applies), 1000..1800000 raises it above the 35s default. Omit for the default." },
       name: { type: "string", description: "Optional display name." }
     },
     output: {
@@ -60,7 +69,8 @@ export function registerDbTools(ctx, service) {
       const result = await service.dbConnect({
         type: args.type, host: args.host, port: args.port, database: args.database,
         username: args.username, password: args.password, ssl: args.ssl,
-        sshConnectionId: routed.sshConnectionId, name: args.name, signal: exec?.signal
+        sshConnectionId: routed.sshConnectionId, name: args.name, signal: exec?.signal,
+        ...(args.query_timeout_ms !== undefined ? { queryTimeoutMs: args.query_timeout_ms } : {})
       });
       if (!result.ok) throw new Error(`db_connect failed: ${result.error.message}`);
       return result.value;
@@ -101,7 +111,8 @@ export function registerDbTools(ctx, service) {
             c.type !== "sqlite" && c.database ? `db: ${c.database}` : null,
             c.username ? `user: ${c.username}` : null,
             c.ssl && c.ssl !== "disabled" ? `TLS: ${c.ssl}` : null,
-            c.sshConnectionId ? "via SSH" : null
+            c.sshConnectionId ? "via SSH" : null,
+            c.queryTimeoutMs !== undefined ? `query timeout: ${c.queryTimeoutMs === 0 ? "none" : `${Math.round(c.queryTimeoutMs / 1000)}s`}` : null
           ].filter(Boolean);
           return `- ${c.name} (${c.type}): ${endpoint}${metadata.length ? ` · ${metadata.join(" · ")}` : ""} (id: ${c.dbConnectionId})`;
         });

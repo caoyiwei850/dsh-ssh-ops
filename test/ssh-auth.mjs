@@ -106,6 +106,86 @@ test("protocol failures map to their device hint", () => {
   assert.ok(kex.hints[0].includes("legacy"));
 });
 
+// ── server-sent SSH_MSG_DISCONNECT (ssh2: numeric `code`, text message) ─────
+
+function disconnectError(code, desc) {
+  const err = new Error(desc);
+  err.code = code;
+  return err;
+}
+
+test("a server DISCONNECT with a numeric reason code becomes a structured diagnosis", () => {
+  const diagnosis = classifyConnectFailure(
+    disconnectError(12, "Too many connections"),
+    createAuthTracker(),
+    {}
+  );
+  assert.equal(diagnosis.stage, CONNECT_FAILURE_STAGES.TRANSPORT);
+  assert.equal(diagnosis.reason, "server-disconnect");
+  assert.match(diagnosis.message, /code 12 TOO_MANY_CONNECTIONS/);
+  assert.match(diagnosis.message, /Too many connections/);
+  assert.ok(diagnosis.hints.some((h) => /connection\/VTY limit/.test(h)));
+});
+
+test("known device-side disconnect texts translate into cause hints", () => {
+  const elsewhere = classifyConnectFailure(
+    disconnectError(2, "Account admin already logged in on another terminal"),
+    createAuthTracker(),
+    {}
+  );
+  assert.equal(elsewhere.reason, "server-disconnect");
+  assert.ok(elsewhere.hints.some((h) => /already logged in elsewhere/.test(h)));
+
+  const aaa = classifyConnectFailure(
+    disconnectError(14, "No more auth methods available; RADIUS server unreachable"),
+    createAuthTracker(),
+    {}
+  );
+  assert.ok(aaa.hints.some((h) => /RADIUS\/TACACS\/LDAP/.test(h)));
+
+  const illegal = classifyConnectFailure(
+    disconnectError(15, "Illegal user name"),
+    createAuthTracker(),
+    {}
+  );
+  assert.ok(illegal.hints.some((h) => /username is not known/.test(h)));
+});
+
+test("an unrecognized server DISCONNECT still carries the raw text and a pointer to the device log", () => {
+  const diagnosis = classifyConnectFailure(
+    disconnectError(10, "weird vendor string"),
+    createAuthTracker(),
+    {}
+  );
+  assert.equal(diagnosis.reason, "server-disconnect");
+  assert.match(diagnosis.message, /weird vendor string/);
+  assert.ok(diagnosis.hints.some((h) => /device closed the connection itself/.test(h)));
+});
+
+test("string error codes (Node system errors) never take the server-disconnect branch", () => {
+  const err = new Error("connect ETIMEDOUT 10.0.0.1:22");
+  err.code = "ETIMEDOUT";
+  const diagnosis = classifyConnectFailure(err, createAuthTracker(), {});
+  assert.notEqual(diagnosis.reason, "server-disconnect");
+});
+
+test("wasAuthCut treats a server DISCONNECT mid keyboard-interactive like a transport cut", () => {
+  const midKbd = createAuthTracker();
+  midKbd.kbdSeen = true;
+  assert.equal(wasAuthCut(midKbd, disconnectError(2, "Packet integrity error")), true);
+
+  const fresh = createAuthTracker();
+  assert.equal(wasAuthCut(fresh, disconnectError(2, "Packet integrity error")), false);
+
+  // A disconnect after plain password attempts (no interactive round-trip) is
+  // the device rejecting the credentials, not firmware aborting an interactive
+  // exchange — the password-only retry has nothing new to offer.
+  const onlyPassword = createAuthTracker();
+  onlyPassword.attempts.push("none", "password");
+  onlyPassword.sawFailure = true;
+  assert.equal(wasAuthCut(onlyPassword, disconnectError(14, "No more auth methods available")), false);
+});
+
 test("unknown errors pass through without throwing", () => {
   const diagnosis = classifyConnectFailure(new Error("getaddrinfo ENOTFOUND x"), createAuthTracker(), {});
   assert.equal(diagnosis.stage, CONNECT_FAILURE_STAGES.UNKNOWN);

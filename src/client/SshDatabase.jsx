@@ -168,6 +168,16 @@ export function SshDatabase({ api }) {
   const handleConnect = async (form) => {
     setError(null);
     try {
+      // UI speaks seconds (0 = unlimited per statement); the wire speaks ms.
+      let queryTimeoutMs;
+      const seconds = form.queryTimeout?.trim?.();
+      if (seconds) {
+        const parsed = Number(seconds);
+        if (!Number.isInteger(parsed) || parsed < 0 || parsed > 1800) {
+          throw new Error(t("查询超时需为 0–1800 的整数秒（0 不限制，留空默认 35 秒）"));
+        }
+        queryTimeoutMs = parsed === 0 ? 0 : parsed * 1000;
+      }
       if (form.saveProfile) {
         // Save as durable profile with credential, then connect via profile.
         const isFile = form.type === "sqlite";
@@ -180,7 +190,8 @@ export function SshDatabase({ api }) {
           username: form.username?.trim() || undefined,
           password: form.password || undefined,
           ssl: form.ssl || "disabled",
-          sshProfileId: form.sshProfileId || null
+          sshProfileId: form.sshProfileId || null,
+          queryTimeoutMs: queryTimeoutMs ?? null
         });
         setShowForm(false);
         await handleProfileConnect(saved.profile.dbProfileId);
@@ -202,7 +213,8 @@ export function SshDatabase({ api }) {
         password: form.password || undefined,
         ssl: form.ssl || "disabled",
         sshConnectionId,
-        name: form.name?.trim() || undefined
+        name: form.name?.trim() || undefined,
+        ...(queryTimeoutMs !== undefined ? { queryTimeoutMs } : {})
       });
       setShowForm(false);
       await refresh();
@@ -418,6 +430,7 @@ function ConnectForm({ sshProfiles, onSubmit, onCancel }) {
   const [ssl, setSsl] = useState("disabled");
   const [sshProfileId, setSshProfileId] = useState("");
   const [name, setName] = useState("");
+  const [queryTimeout, setQueryTimeout] = useState("");
   const [saveProfile, setSaveProfile] = useState(true);
   const [busy, setBusy] = useState(false);
   const formRef = useRef(null);
@@ -440,7 +453,7 @@ function ConnectForm({ sshProfiles, onSubmit, onCancel }) {
     if (!canSubmit) return;
     setBusy(true);
     try {
-      await onSubmit({ type, host, port, database, username, password, ssl, sshProfileId, name, saveProfile });
+      await onSubmit({ type, host, port, database, username, password, ssl, sshProfileId, name, saveProfile, queryTimeout });
     } finally {
       setBusy(false);
     }
@@ -491,6 +504,13 @@ function ConnectForm({ sshProfiles, onSubmit, onCancel }) {
         </label>
         <label style={dbStyles.formLabel2w}>{t("名称")}<input value={name} onChange={(e) => setName(e.target.value)} placeholder={t("可选")} style={inputStyle} />
         </label>
+      </div>
+
+      <div style={dbStyles.formRow2}>
+        <label style={dbStyles.formLabel2w}>{t("查询超时（秒）")}
+          <input value={queryTimeout} onChange={(e) => setQueryTimeout(e.target.value)} inputMode="numeric" placeholder={t("默认 35；0 不限制")} style={inputStyle} title={t("单条语句的死线。慢库跑大查询/大导出时调大；0 表示不限制单条语句（仍受整体调用预算约束）")} />
+        </label>
+        <label style={dbStyles.formLabel2} />
       </div>
 
       <div style={dbStyles.formRow2}>

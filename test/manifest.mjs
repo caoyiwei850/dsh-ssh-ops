@@ -27,4 +27,10 @@ assert.ok(manifest.files.includes("lib"), "the npm package keeps generated runti
 assert.ok(manifest.files.includes("scripts"), "the npm package keeps its declared install helper");
 assert.ok(!manifest.files.includes("src") && !manifest.files.includes("assets"),
   "source and documentation screenshots stay in Git/GitHub release archives, not the runtime npm package");
+// #29: the entry files under lib/ are build artifacts excluded from git, so
+// git-channel installs (github: tarballs) depend on the prepare hook to build
+// them at install time. Removing it resurrects ERR_MODULE_NOT_FOUND with an
+// install that exits 0 and only breaks after the host restarts.
+assert.match(manifest.scripts?.prepare ?? "", /npm run build/,
+  "scripts.prepare must run npm run build — git-channel installs rely on it to generate lib/ (#29)");
 console.log("manifest: dsh bundle+client declarations intact");

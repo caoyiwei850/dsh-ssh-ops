@@ -53,6 +53,8 @@ dsh plugin --profile web add "<TARBALL>\dsh-ssh-ops-0.3.12.tgz"
 2. 同一文件 `dsh.profile.bundles` 数组含 `"dsh-ssh-ops"`；
 3. `profiles\web\node_modules\dsh-ssh-ops\lib\` 下存在 `index.js` 与 `client.js`。
 
+> 第 3 条不满足（`lib\` 缺失）通常出现在 `github:` 源码渠道且宿主 pnpm（≥ 10）拦截了依赖的构建脚本：进入 `node_modules\dsh-ssh-ops\` 执行 `npm install && npm run build`（或在该 profile 的 pnpm 配置 `onlyBuiltDependencies` 中放行 `dsh-ssh-ops`），然后重启。tgz 渠道的包自带 `lib\`，不受此影响。
+
 ## 4. 重启 DSH Desktop（必做，不可省略）
 
 - 完全退出：系统托盘 → DSH Desktop 图标 → 右键 → **退出**；
