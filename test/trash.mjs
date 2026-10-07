@@ -8,6 +8,15 @@ import {
   parseTrashManifest, buildRestoreCommand, buildPurgeCommand, TRASH_RETENTION_MS
 } from "../src/trash.js";
 
+// The parser/serialiser halves run anywhere, but the end-to-end half executes
+// the generated scripts through /bin/sh in a sandbox with HOME overrides and
+// symlinks — POSIX shell semantics are the subject under test (the trash
+// flow targets remote POSIX servers, not the local platform).
+if (process.platform === "win32") {
+  console.log("trash: skipped on Windows (end-to-end half requires /bin/sh sandbox semantics)");
+  process.exit(0);
+}
+
 // ── parser ───────────────────────────────────────────────────────────────────
 
 const parseable = [

@@ -7,6 +7,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Client } from "ssh2";
 
 const freePort = () => new Promise((resolve) => {
@@ -22,7 +23,9 @@ const root = mkdtempSync(join(tmpdir(), "dsh-sshd-sftp-test-"));
 writeFileSync(join(root, "seed.txt"), "seeded\n");
 
 const child = spawn(process.execPath, [
-  new URL("../test-sshd.mjs", import.meta.url).pathname,
+  // fileURLToPath: `new URL(...).pathname` on Windows is "/D:/…" and the
+  // child exits instantly with code 1 (same URL-pathname class as PR #28).
+  fileURLToPath(new URL("../test-sshd.mjs", import.meta.url)),
   String(port), "--sftp-root", root
 ], { stdio: ["ignore", "pipe", "pipe"] });
 

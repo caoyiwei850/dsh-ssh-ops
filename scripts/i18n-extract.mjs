@@ -14,7 +14,7 @@
  */
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, dirname, relative } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { parse } from "espree";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -159,7 +159,10 @@ function push(map, key, where) {
   map.set(key, list);
 }
 
-const { en } = await import(join(root, "src/i18n/messages.en.js"));
+// pathToFileURL: on Windows a plain `D:\…` path is parsed as a URL with
+// protocol "d:" and the dynamic import dies with ERR_UNSUPPORTED_ESM_URL_SCHEME
+// (same class as the checker-path fix from PR #28, one level deeper).
+const { en } = await import(pathToFileURL(join(root, "src/i18n/messages.en.js")).href);
 
 const dictNormalized = new Map(Object.keys(en).map((key) => [normalizeKey(key), key]));
 const missing = [...callKeys.entries()].filter(([key]) => !dictNormalized.has(key)).map(([key, where]) => `${where.join(", ")}  ${key.slice(0, 70)}`);

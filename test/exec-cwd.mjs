@@ -4,6 +4,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { EXEC_CWD_MARKER, buildCwdAwareCommand, extractExecCwd, posixLoginShell } from '../src/exec-cwd.js';
+
+// The whole feature inspects Linux /proc (fd/cwd symlinks, comm, environ) and
+// drives POSIX shells — there is nothing to exercise on Windows, and the
+// fixture's /dev/pts symlinks cannot exist there.
+if (process.platform === 'win32') {
+  console.log('exec-cwd: skipped on Windows (POSIX /proc + /bin/sh are the subject under test)');
+  process.exit(0);
+}
 const root = mkdtempSync(join(tmpdir(), 'dsh-cwd-test-'));
 const procRoot = join(root, 'proc'); mkdirSync(procRoot);
 const cwd = join(root, "working dir 'quoted' "); mkdirSync(cwd);

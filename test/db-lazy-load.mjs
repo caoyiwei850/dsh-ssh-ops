@@ -53,7 +53,10 @@ import { DbOpsManager } from "./src/db-ops.js";
 const require = createRequire(import.meta.url);
 const DRIVERS = ["mysql2", "pg", "pg-cursor", "redis", "mongodb"];
 const loaded = () => [...new Set(Object.keys(require.cache)
-  .map((path) => path.split("node_modules/")[1]?.split("/")[0]).filter(Boolean))]
+  // require.cache keys use backslashes on Windows — normalize before slicing
+  // around the "node_modules/" separator or every lookup comes back empty.
+  // (Inside this template literal \\\\ reaches the child as the /\\/ regex.)
+  .map((path) => path.replace(/\\\\/g, "/").split("node_modules/")[1]?.split("/")[0]).filter(Boolean))]
   .filter((name) => DRIVERS.includes(name));
 
 function makeManager() {
