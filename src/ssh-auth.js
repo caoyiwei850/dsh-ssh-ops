@@ -21,8 +21,10 @@
  *    session is in flight but accepts the plain password method).
  *
  * Pure and side-effect-free so the connect path can be unit-tested without a
- * socket.
+ * socket (the t() calls live inside the diagnosis function, never at module
+ * top level, so they follow the active language instead of freezing at import).
  */
+import { t } from "./i18n/core.js";
 
 /** ssh2's default auth method order (client.js `authsAllowed`), with its separate `agent` method. */
 const AUTH_METHOD_ORDER = ["none", "password", "publickey", "agent", "keyboard-interactive"];
@@ -141,8 +143,51 @@ export const CONNECT_FAILURE_STAGES = Object.freeze({
   AUTH: "auth",
   TRANSPORT: "transport",
   PROTOCOL: "protocol",
+  // Local credential problem (an encrypted key saved without its passphrase,
+  // an unparseable key): the server never saw an authentication attempt.
+  CREDENTIAL: "credential",
   UNKNOWN: "unknown"
 });
+
+/**
+ * Diagnose ssh2's private-key parse failures. ssh2 surfaces a bad LOCAL key
+ * as a plain Error ("Cannot parse privateKey: …", no `level`/`code`) thrown
+ * from its auth context before any server-side attempt — an encrypted key
+ * saved without its passphrase is the field-report case. These used to fall
+ * into the unknown bucket as raw English with zero hints (and a
+ * level-carrying variant would masquerade as a server rejection). Returns
+ * undefined when the message is not a key-parse failure.
+ */
+function keyParseDiagnosis(message) {
+  if (!/Cannot parse privateKey|no passphrase given|Private key is encrypted|integrity check failed|bad passphrase/i.test(message)) {
+    return undefined;
+  }
+  if (/no passphrase given|Private key is encrypted/i.test(message)) {
+    return {
+      stage: CONNECT_FAILURE_STAGES.CREDENTIAL,
+      reason: "key-encrypted-without-passphrase",
+      message: t("私钥是加密的，但「私钥口令」是空的——口令没有随连接送出，这把私钥解不开"),
+      hints: [
+        t("打开该服务器（或共享凭据）的编辑表单，在「私钥口令」一栏填写生成私钥时设置的口令，保存后重连"),
+        t("口令填在「密码」或「第二因素：密码」里不会生效：那是登录服务器用的密码槽，不是解密私钥的口令槽")
+      ]
+    };
+  }
+  if (/integrity check failed|bad passphrase/i.test(message)) {
+    return {
+      stage: CONNECT_FAILURE_STAGES.CREDENTIAL,
+      reason: "key-bad-passphrase",
+      message: t("私钥口令不正确：用当前保存的口令解不开这把私钥"),
+      hints: [t("在编辑表单的「私钥口令」里重新输入正确的口令后保存（留空表示保持原值）")]
+    };
+  }
+  return {
+    stage: CONNECT_FAILURE_STAGES.CREDENTIAL,
+    reason: "key-unparseable",
+    message: t("无法解析这把私钥的格式"),
+    hints: [message, t("确认粘贴的是完整私钥（含首尾 BEGIN/END 行），OpenSSH 或 PEM 格式；.pub 公钥不能用于登录")]
+  };
+}
 
 /**
  * Detect "the device killed the connection while authentication was in
@@ -209,6 +254,11 @@ export function classifyConnectFailure(error, tracker, creds = {}) {
     return { stage: CONNECT_FAILURE_STAGES.UNKNOWN, reason: "unknown", message: String(error ?? "connection failed"), hints: [] };
   }
   const message = error.message ?? String(error);
+
+  // Local key problems first: they never reach the server, and ssh2 variants
+  // that stamp a level on them must not be read as a server-side rejection.
+  const keyParse = keyParseDiagnosis(message);
+  if (keyParse !== undefined) return keyParse;
 
   if (error.level === "client-authentication" || AUTH_REJECTED_RE.test(message)) {
     const hints = authHints(tracker, creds);

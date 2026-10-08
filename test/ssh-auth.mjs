@@ -8,6 +8,13 @@ import {
   wasAuthCut,
   CONNECT_FAILURE_STAGES
 } from "../src/ssh-auth.js";
+import { execFileSync, spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import ssh2Pkg from "ssh2";
+
+const { parseKey } = ssh2Pkg.utils;
 
 function authError(message, level) {
   const err = new Error(message);
@@ -191,4 +198,61 @@ test("unknown errors pass through without throwing", () => {
   assert.equal(diagnosis.stage, CONNECT_FAILURE_STAGES.UNKNOWN);
   assert.equal(diagnosis.message, "getaddrinfo ENOTFOUND x");
   assert.equal(classifyConnectFailure(undefined, undefined, {}).stage, CONNECT_FAILURE_STAGES.UNKNOWN);
+});
+
+// ── ssh2 key-parse failures: local credential problems, never unknowns ──────
+test("encrypted key without a passphrase is diagnosed as a credential problem", () => {
+  const message = "Cannot parse privateKey: Encrypted private OpenSSH key detected, but no passphrase given";
+  const diagnosis = classifyConnectFailure(authError(message), createAuthTracker(), {});
+  assert.equal(diagnosis.stage, CONNECT_FAILURE_STAGES.CREDENTIAL);
+  assert.equal(diagnosis.reason, "key-encrypted-without-passphrase");
+  assert.ok(diagnosis.message.includes("私钥口令"), "the message names the passphrase field");
+  assert.equal(diagnosis.hints.length, 2, "one hint per fix path: fill the field / stop mis-slotting it");
+  assert.ok(formatConnectFailure(diagnosis, "root@h:22").includes("私钥口令"), "the formatted failure carries the guidance");
+  // A level-carrying variant must not masquerade as a server-side rejection.
+  const leveled = classifyConnectFailure(authError(message, "client-authentication"), createAuthTracker(), {});
+  assert.equal(leveled.reason, "key-encrypted-without-passphrase");
+  // The encrypted-PEM wording ssh2 uses for classic formats lands in the same bucket.
+  assert.equal(classifyConnectFailure(authError("Cannot parse privateKey: Private key is encrypted"), createAuthTracker(), {}).reason, "key-encrypted-without-passphrase");
+});
+
+test("a wrong passphrase is separated from a missing one", () => {
+  const diagnosis = classifyConnectFailure(
+    authError("Cannot parse privateKey: OpenSSH key integrity check failed -- bad passphrase?"),
+    createAuthTracker(), {}
+  );
+  assert.equal(diagnosis.stage, CONNECT_FAILURE_STAGES.CREDENTIAL);
+  assert.equal(diagnosis.reason, "key-bad-passphrase");
+});
+
+test("other unparseable keys keep the ssh2 detail visible", () => {
+  const diagnosis = classifyConnectFailure(authError("Cannot parse privateKey: Invalid OpenSSH private key format"), createAuthTracker(), {});
+  assert.equal(diagnosis.reason, "key-unparseable");
+  assert.equal(diagnosis.hints[0], "Cannot parse privateKey: Invalid OpenSSH private key format", "the raw detail stays the first hint");
+});
+
+test("the real ssh2 wording for an encrypted key is recognized end to end", { skip: false }, async () => {
+  const probe = spawnSync("ssh-keygen", []);
+  if (probe.error) {
+    console.log("ssh-keygen unavailable — skipping the real-key wording guard");
+    return;
+  }
+  const dir = mkdtempSync(join(tmpdir(), "dsh-ssh-ops-auth-"));
+  try {
+    execFileSync("ssh-keygen", ["-q", "-t", "ed25519", "-N", "secret123", "-f", join(dir, "enc"), "-C", "t"], { stdio: "pipe" });
+    const parsed = parseKey(readFileSync(join(dir, "enc")));
+    assert.ok(parsed instanceof Error, "parseKey returns (not throws) an Error without a passphrase");
+    // protocol.js wraps exactly this shape: "Cannot parse privateKey: <inner>".
+    const wrapped = new Error(`Cannot parse privateKey: ${parsed.message}`);
+    const diagnosis = classifyConnectFailure(wrapped, createAuthTracker(), {});
+    assert.equal(diagnosis.reason, "key-encrypted-without-passphrase", "a wording change in ssh2 must fail here loudly");
+    const wrongPass = parseKey(readFileSync(join(dir, "enc")), "not-the-passphrase");
+    assert.ok(wrongPass instanceof Error);
+    assert.equal(
+      classifyConnectFailure(new Error(`Cannot parse privateKey: ${wrongPass.message}`), createAuthTracker(), {}).reason,
+      "key-bad-passphrase"
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

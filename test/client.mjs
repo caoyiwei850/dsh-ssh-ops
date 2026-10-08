@@ -5,8 +5,12 @@
  */
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
+import { execFileSync, spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { SshApi } from "../src/client/api.js";
-import { privateKeyProblem } from "../src/client/pemkey.js";
+import { privateKeyProblem, isEncryptedPrivateKey } from "../src/client/pemkey.js";
 
 // ── SshApi: shared-credential RPC wrappers stay available to settings UI ───
 {
@@ -86,7 +90,7 @@ const TRAD_ENCRYPTED_KEY = ["-----BEGIN RSA PRIVATE KEY-----", "Proc-Type: 4,ENC
 assert.equal(privateKeyProblem(""), null, "empty is allowed (password auth / edit-keep-current)");
 assert.equal(privateKeyProblem(null), null, "null is allowed");
 assert.equal(privateKeyProblem(OPENSSH_KEY), null, "complete OpenSSH-format key passes");
-assert.equal(privateKeyProblem(TRAD_ENCRYPTED_KEY), null, "traditional encrypted PEM with Proc-Type headers passes");
+assert.ok(privateKeyProblem(TRAD_ENCRYPTED_KEY), "an encrypted PEM with Proc-Type headers is now flagged when no passphrase is given (it used to pass silently and fail at connect time)");
 assert.equal(privateKeyProblem(OPENSSH_KEY.replaceAll("\n", "\r\n")), null, "CRLF line endings pass");
 
 assert.ok(privateKeyProblem("b3BlbnNzaC1rZXk..."), "key without BEGIN/END headers is rejected");
@@ -97,5 +101,43 @@ assert.ok(
   "BEGIN/END type mismatch is rejected"
 );
 assert.ok(privateKeyProblem("-----BEGIN OPENSSH PRIVATE KEY-----\n不是base64!!!\n-----END OPENSSH PRIVATE KEY-----"), "non-base64 body is rejected");
+
+// ── isEncryptedPrivateKey + the save-time passphrase gate ───────────────────
+// The field report behind this gate: an encrypted key saved with its
+// passphrase typed into the password/second-factor field connects never, and
+// the failure used to surface as raw ssh2 English. Detect the encryption at
+// the form instead.
+assert.equal(isEncryptedPrivateKey(OPENSSH_KEY), false, "the OpenSSH fixture carries ciphername=none");
+assert.equal(isEncryptedPrivateKey(TRAD_ENCRYPTED_KEY), true, "Proc-Type: 4,ENCRYPTED marks a classic PEM as encrypted");
+assert.equal(isEncryptedPrivateKey("-----BEGIN ENCRYPTED PRIVATE KEY-----\nAAAA\n-----END ENCRYPTED PRIVATE KEY-----"), true, "PKCS#8 encrypted PEM is detected by its BEGIN line");
+assert.equal(isEncryptedPrivateKey("ssh-rsa AAAAB3 user@host"), false, "a public key is not a private key");
+assert.equal(isEncryptedPrivateKey(""), false, "empty is not encrypted (password auth / edit-keep-current)");
+assert.ok(privateKeyProblem(TRAD_ENCRYPTED_KEY), "an encrypted key without a passphrase is rejected at the form");
+assert.equal(privateKeyProblem(TRAD_ENCRYPTED_KEY, "the-passphrase"), null, "the same key passes once a passphrase is present");
+assert.equal(privateKeyProblem(OPENSSH_KEY, ""), null, "an unencrypted key needs no passphrase");
+
+// Real keys from ssh-keygen exercise the OpenSSH-format path (the cipher name
+// lives inside the base64 body), which the literals above cannot cover.
+// Skipped gracefully where ssh-keygen is unavailable.
+{
+  const probe = spawnSync("ssh-keygen", []);
+  if (probe.error) {
+    console.log("ssh-keygen unavailable — skipping generated-key encryption cases");
+  } else {
+    const dir = mkdtempSync(join(tmpdir(), "dsh-ssh-ops-key-"));
+    try {
+      execFileSync("ssh-keygen", ["-q", "-t", "ed25519", "-N", "secret123", "-f", join(dir, "enc"), "-C", "t"], { stdio: "pipe" });
+      execFileSync("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", join(dir, "plain"), "-C", "t"], { stdio: "pipe" });
+      const encrypted = readFileSync(join(dir, "enc"), "utf8");
+      const plain = readFileSync(join(dir, "plain"), "utf8");
+      assert.equal(isEncryptedPrivateKey(encrypted), true, "ssh-keygen -N <pass> produces an encrypted OpenSSH key");
+      assert.equal(isEncryptedPrivateKey(plain), false, "ssh-keygen -N '' produces an unencrypted key");
+      assert.ok(privateKeyProblem(encrypted), "generated encrypted key without a passphrase is rejected at the form");
+      assert.equal(privateKeyProblem(encrypted, "secret123"), null, "generated encrypted key with its passphrase passes");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+}
 
 console.log("client codec + pemkey: all cases passed");

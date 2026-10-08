@@ -499,7 +499,7 @@ function ConnectDialog({ api, credentials, onClose, onConnected }) {
     }
     if (!selectedProfileId && !form.credentialId) {
       for (const secret of [form.privateKey]) {
-        const problem = privateKeyProblem(secret);
+        const problem = privateKeyProblem(secret, form.passphrase);
         if (problem) {
           setError(problem);
           return;
@@ -565,7 +565,7 @@ function ConnectDialog({ api, credentials, onClose, onConnected }) {
       return;
     }
     if (form.authKind === "key") {
-      const problem = privateKeyProblem(form.privateKey);
+      const problem = privateKeyProblem(form.privateKey, form.passphrase);
       if (problem) {
         setError(problem);
         return;
