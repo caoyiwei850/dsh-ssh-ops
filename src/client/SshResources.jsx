@@ -580,6 +580,9 @@ export function SshResources({ api, credentials }) {
     if (!window.confirm(t(`删除 SSH 资源“${profile.name}”？这会删除该资源保存的凭据，但不会断开已经建立的连接。`))) return;
     try {
       await api.profileDelete(profile.profileId);
+      // Also drop the saved host-key trust record so the deleted server does
+      // not linger in the "trusted hosts (not saved as resources)" group.
+      try { await api.forgetHostKey(profile.host, profile.port); } catch {}
       await refresh();
     } catch (cause) {
       setError(cause?.message ?? String(cause));
