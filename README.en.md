@@ -8,10 +8,12 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.3.19-blue)
+![version](https://img.shields.io/badge/version-0.3.20-blue)
 [![dsh.so risk](https://www.dsh.so/badge/dsh-ssh-ops.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![dsh.so install · dsh 0.2.0-rc.1](https://www.dsh.so/badge/install/dsh-ssh-ops@0.2.0-rc.1.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/caoyiwei850/dsh-ssh-ops)
+
+> **v0.3.20**: adds a per-resource **login command** (an "Advanced options" field opening the terminal through exec+pty with `ssh -t` semantics — `bash -l` temporarily drops an incompatible default shell (e.g. zsh) into bash, and session-shaped actions like `tmux attach` or cd-then-shell can become the login session itself; the command IS the whole session, and an edit applies to the next terminal without a reconnect); the ssh_exec cwd resolver's **rejection semantics are split** (multiple-candidate ambiguity vs busy/non-interactive now get distinct messages, the latter with a comm/pgrp/tpgid summary of rejected candidates — field triage at a glance; discussion from [#31](https://github.com/caoyiwei850/dsh-ssh-ops/issues/31)); deleting an SSH resource now also forgets the host's key-trust record so it no longer lingers under "trusted hosts".
 
 > **v0.3.19**: adds **SSH agent forwarding** (an "Advanced options" toggle per resource — a terminal on the jump host can authenticate onward to deeper hosts with your local keys, no private key per hop; a missing local ssh-agent fails the connect outright instead of silently downgrading); **per-connection query-timeout override** (`query_timeout_ms` on `db_connect`, so big queries and exports on slow databases are no longer cut off by the 35s default ceiling; `0` means unlimited); **human-readable disconnect reasons** when a device sends `SSH_MSG_DISCONNECT` during authentication (reason code + device text + two layers of hints); the settings-page "Server groups / Shared SSH credentials" panels now share one **sliding segmented switch**; the plugin row gets a **display icon and bilingual title/description** (DSH 0.2.x plugin manager, brand-blue terminal mark); and **#29** is fixed — `github:` installs shipped no `lib/`, so the whole plugin failed to load; the `prepare` hook now builds it at install time. CI hardening: a Windows test leg, an npm-channel artifact smoke job, and the tarball file manifest under assertion.
 
@@ -63,6 +65,7 @@ The Files tab provides SFTP management and can `cd` the interactive terminal int
 - **Terminal follows DSH's theme**: xterm draws to its own canvas and cannot inherit the CSS text color, so the plugin ships complete light and dark palettes (cursor and selection included) and repaints open terminals as soon as the host theme changes.
 - Manage any number of servers and groups under **Settings → SSH Resources**. It is a first-class left-menu item beside General and Models, not a Plugins sub-tab. The top **SSH** button only opens or focuses the right-side terminal tab — it never disconnects.
 - **Saved remote project directory**: a server resource can hold one optional absolute default project path. **Enter project** connects, opens the terminal, changes directory only after the existing idle-shell/single-PTY guard succeeds, and starts SFTP at the same path. Relative paths and control characters are rejected; resources without a project path retain the normal login-directory and SFTP-root behavior.
+- **Login command (optional)**: a saved server can carry one login command under "Advanced options" that replaces the server's default shell for the terminal session (an exec+pty channel with `ssh -t` semantics) — for servers whose default shell is incompatible (e.g. `bash -l` on a zsh machine), or to make `tmux attach` / cd-then-shell the fixed login session. The command IS the whole login session: include `-l` (`bash -l`, not bare `bash`) for normal profile loading; single line, no control characters; leave empty — or use a temporary connection — for the server's own shell. Agent forwarding and terminal resize behave identically on this path.
 - **Command library**: the SSH panel has a dedicated Command Library tab with system inspection, service, Docker, logs, networking, storage, scheduler, and Ubuntu/RHEL/CentOS install/update templates. Search matches command names and contents. Custom commands are managed inside this tab; they are stored only in browser local storage and must never contain passwords, tokens, or other secrets.
 - Server name, address, port, username, auth type, and group are stored in DSH local storage; there is no count limit.
 - Passwords, PEM private keys, and passphrases are stored **only** in DSH's official local credentials store `~/.dsh/.credentials.yaml` (owner-only permissions). Browser storage, agent context, tool results, and resource lists never read or display secrets.
@@ -99,7 +102,7 @@ The same model covers `sftp_delete` (the agent no longer deletes directly; inste
 ### From GitHub (recommended)
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.19
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.20
 ```
 
 The git channel installs source; the `prepare` hook runs `npm run build` during install to produce the `lib/` entry files, so no manual build is needed. **Note: pnpm ≥ 10 blocks dependency build scripts by default** — if the SSH tab does not appear after restart, check `node_modules/dsh-ssh-ops/lib/` as described in [INSTALL.md](INSTALL.md) step 3: if it is missing, the build was blocked; run `npm install && npm run build` inside that package directory (or allowlist `dsh-ssh-ops` in the profile's pnpm `onlyBuiltDependencies`) and restart.
@@ -114,14 +117,14 @@ Open any session, click the top **SSH** tab, and use the right-side panel to con
 
 ### From a release archive
 
-Download `dsh-ssh-ops-0.3.19.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.19), then:
+Download `dsh-ssh-ops-0.3.20.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.20), then:
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.19.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.20.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.3.19.zip` is for offline review or further development; extract it and run `npm install` in the directory (the build runs automatically).
+`dsh-ssh-ops-0.3.20.zip` is for offline review or further development; extract it and run `npm install` in the directory (the build runs automatically).
 
 ## Usage
 
@@ -233,8 +236,8 @@ Pushing a `vX.Y.Z` tag that matches `package.json.version` runs tests, builds th
 
 Artifacts are written to `release/`:
 
-- `dsh-ssh-ops-0.3.19.tgz`: installable directly by DSH.
-- `dsh-ssh-ops-0.3.19.zip`: full offline source archive.
+- `dsh-ssh-ops-0.3.20.tgz`: installable directly by DSH.
+- `dsh-ssh-ops-0.3.20.zip`: full offline source archive.
 
 ## Contributors
 

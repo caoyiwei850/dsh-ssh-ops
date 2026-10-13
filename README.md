@@ -8,10 +8,12 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.3.19-blue)
+![version](https://img.shields.io/badge/version-0.3.20-blue)
 [![dsh.so risk](https://www.dsh.so/badge/dsh-ssh-ops.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![dsh.so install · dsh 0.2.0-rc.1](https://www.dsh.so/badge/install/dsh-ssh-ops@0.2.0-rc.1.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/caoyiwei850/dsh-ssh-ops)
+
+> **v0.3.20**：新增 SSH 资源「**登录命令**」（高级选项，`ssh -t` 语义的 exec+伪终端——默认 shell 不兼容的服务器填 `bash -l` 即可临时改用 bash，`tmux attach`、进目录后进 shell 一类动作也可固化为登录即得；命令即整个登录会话，改完保存后下一个终端即生效、无需重连）；ssh_exec 的 cwd 解析器**拒绝语义拆分**（多候选歧义与忙/非交互各占独立消息，后者带候选进程的 comm/pgrp/tpgid 摘要，现场排障一眼定性；讨论自 [#31](https://github.com/caoyiwei850/dsh-ssh-ops/issues/31)）；删除 SSH 资源时同步清除该主机的指纹信任记录，不再残留于「已信任主机」列表。
 
 > **v0.3.19**：新增 **SSH Agent 转发**（资源「高级选项」开关——跳板机上可用本机密钥继续登录更深层的机器，无需把私钥铺到每一跳；本机未运行 ssh-agent 时连接直接报错，不做静默降级）；数据库连接新增**查询超时覆盖**（`db_connect` 的 `query_timeout_ms`，慢库上的大查询/大导出不再被 35s 默认死线掐死，`0` 为不限）；认证阶段设备主动 `SSH_MSG_DISCONNECT` 时给出**人话化断开原因**（原因码 + 设备原文 + 两层排查提示）；设置页「服务器分组 / 共享 SSH 凭据」改为**滑动分段切换**；**插件页换上展示图标与双语标题/描述**（DSH 0.2.x 插件管理行，品牌蓝终端标记）；修复 **#29**——`github:` 渠道装出来没有 `lib/` 导致插件整体加载失败，现由 `prepare` 钩子在安装期自动构建。CI 同步加固：测试矩阵加 Windows 腿、npm 渠道产物冒烟作业、tarball 文件清单进断言。
 
@@ -61,6 +63,7 @@
 - **终端跟随 DSH 明暗主题**：xterm 渲染在自己的 canvas 上、继承不了 CSS 文字色，因此内置完整的明／暗两套对比色板（含光标与选区），随宿主主题切换立即重绘已经打开的终端。
 - 在 **设置 → SSH 资源** 中管理任意数量的服务器和分组；它作为左侧菜单的一等项，与通用设置、模型并列，不再藏在“插件”下。顶部的 **SSH** 仅打开或聚焦右侧终端标签，不断开连接。
 - **固定远程项目目录**：每台保存的服务器可选填一个绝对路径作为默认项目目录。资源卡片上的“进入项目”会建立连接、在经过空闲 shell 与单 PTY 校验后切换终端目录，并让 SFTP 从同一路径载入；目录不接受相对路径或控制字符。未设置的资源仍从登录目录和 SFTP 根目录开始。
+- **登录命令（可选）**：每台保存的服务器可在「高级选项」里填一条登录命令，替代服务器默认 shell 作为终端会话打开（`ssh -t` 语义的 exec+伪终端）——默认 shell 不兼容的服务器（如 zsh 机器临时用 `bash -l`）、或想把 `tmux attach`、进目录后进 shell 一类动作固化为登录会话时使用。命令即整个登录会话：想要正常 profile 加载请写 `bash -l` 而非裸 `bash`；须为单行、无控制字符；留空或临时连接按服务器默认 shell。Agent 转发与终端缩放在该路径下与普通终端行为一致。
 - 服务器名称、地址、端口、用户名、认证类型和分组保存到 DSH 本地存储；数量不设上限。
 - 密码、PEM 私钥和私钥口令仅保存到 DSH 官方本机凭据库 `~/.dsh/.credentials.yaml`（owner-only 权限）；浏览器存储、Agent 上下文、工具结果和资源列表均不会读取或显示秘密内容。
 - **共享凭据**：一份密码或私钥可保存为共享凭据，供多台服务器与跳板机共同引用（例如全组共用同一把运维私钥，改一处即全部生效）。仍被服务器或跳板链引用时拒绝删除；密文只在宿主端解析后交给 SSH 客户端，不进入浏览器存储、不进入 Agent 上下文。在 **设置 → SSH 资源** 中新增／编辑／删除，支持选择或直接把 PEM 文件拖入窗口。每台服务器既可绑定共享凭据，也可保留自己的专属凭据。
@@ -102,7 +105,7 @@ Agent 命中上述黑名单时不会被静默拒绝：插件会创建一条一�
 ### 从 GitHub 安装（推荐）
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.19
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.20
 ```
 
 git 渠道装的是源码，安装期由 `prepare` 钩子自动执行 `npm run build` 生成入口 `lib/`，无需手动构建。**注意：pnpm ≥ 10 默认拦截依赖包的构建脚本**——若重启后 SSH 标签未出现，按 [INSTALL.md](INSTALL.md) 第 3 步检查 `node_modules/dsh-ssh-ops/lib/`：缺失说明构建被拦，进入该包目录执行 `npm install && npm run build`（或在该 profile 的 pnpm 配置 `onlyBuiltDependencies` 中放行 `dsh-ssh-ops`）后重启即可。
@@ -117,14 +120,14 @@ dsh web
 
 ### 从发布压缩包安装
 
-从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.19) 下载 `dsh-ssh-ops-0.3.19.tgz` 后：
+从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.20) 下载 `dsh-ssh-ops-0.3.20.tgz` 后：
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.19.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.20.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.3.19.zip` 适用于离线审阅或二次开发；解压后在目录中执行 `npm install`（构建自动完成）。
+`dsh-ssh-ops-0.3.20.zip` 适用于离线审阅或二次开发；解压后在目录中执行 `npm install`（构建自动完成）。
 
 ## 使用方式
 
@@ -238,8 +241,8 @@ npm run pack:release
 
 生成物位于 `release/`：
 
-- `dsh-ssh-ops-0.3.19.tgz`：可直接被 DSH 安装。
-- `dsh-ssh-ops-0.3.19.zip`：完整离线源码包。
+- `dsh-ssh-ops-0.3.20.tgz`：可直接被 DSH 安装。
+- `dsh-ssh-ops-0.3.20.zip`：完整离线源码包。
 
 ## 贡献者
 
