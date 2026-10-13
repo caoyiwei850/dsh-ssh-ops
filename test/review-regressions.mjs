@@ -77,7 +77,7 @@ execService.ensureAlive=async()=>true;
 execService.collectExecOutput=async()=>({
   exitCode:125,
   stdout:EXEC_CWD_MARKER+'\n',
-  stderr:'ssh_exec: interactive shell is busy or ambiguous; command was not executed\n',
+  stderr:'ssh_exec: interactive shell is busy or non-interactive; command was not executed candidates: bash(999 pgrp=999 tpgid=998)\n',
   truncated:false,
   timedOut:false
 });

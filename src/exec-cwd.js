@@ -12,7 +12,7 @@ function quote(text) { return `'${text.replace(/'/g, `'\\''`)}'`; }
 export function buildCwdResolverPrefix({ procRoot = '/proc' } = {}) {
   return `
 __dsh_find_shell() {
-  __dsh_count=0; __dsh_seen=0; __dsh_pid=''
+  __dsh_count=0; __dsh_seen=0; __dsh_busy=0; __dsh_nonint=0; __dsh_pid=''; __dsh_detail=''
   [ -n "$SSH_CONNECTION" ] || return 1
   for __dsh_p in ${quote(procRoot)}/[0-9]*; do
     __dsh_n=\${__dsh_p##*/}
@@ -26,7 +26,13 @@ __dsh_find_shell() {
     __dsh_stat=$(cat "$__dsh_p/stat" 2>/dev/null) || continue
     __dsh_stat=\${__dsh_stat##*) }
     set -- $__dsh_stat
-    [ "$#" -ge 6 ] && [ "$3" = "$6" ] && [ "$5" != 0 ] || continue
+    [ "$#" -ge 6 ] && [ "$3" = "$6" ] && [ "$5" != 0 ] || {
+      __dsh_busy=$((__dsh_busy + 1))
+      # Status 3 names up to three rejected candidates, so a "terminal busy"
+      # report can be told apart from a resolver-side mismatch in the field.
+      [ "$__dsh_busy" -le 3 ] && __dsh_detail="$__dsh_detail $__dsh_c($__dsh_n pgrp=$3 tpgid=$6)"
+      continue
+    }
     # Foreground is necessary but not sufficient: bash -c/script jobs are
     # noninteractive, even when they inherit the terminal and SSH environment.
     __dsh_args=$(tr '\\0' '\\n' < "$__dsh_p/cmdline" 2>/dev/null | sed '1d')
@@ -36,16 +42,25 @@ __dsh_find_shell() {
     done <<EOF
 $__dsh_args
 EOF
-    [ "$__dsh_valid" = yes ] || continue
+    [ "$__dsh_valid" = yes ] || {
+      __dsh_nonint=$((__dsh_nonint + 1))
+      [ "$__dsh_nonint" -le 3 ] && __dsh_detail="$__dsh_detail $__dsh_c($__dsh_n non-interactive)"
+      continue
+    }
     __dsh_count=$((__dsh_count + 1)); __dsh_pid=$__dsh_n
   done
   if [ "$__dsh_count" -eq 1 ]; then printf '%s' "$__dsh_pid"; return 0; fi
+  [ "$__dsh_count" -gt 1 ] && return 2
   [ "$__dsh_seen" -eq 0 ] && return 1
-  return 2
+  # Status 3 carries the rejected-candidate summary on stdout: the function
+  # runs inside command substitution, so plain variables cannot cross back.
+  printf '%s' "$__dsh_detail"
+  return 3
 }
-__dsh_pid=$(__dsh_find_shell); __dsh_status=$?
-__dsh_encoded=''
+__dsh_out=$(__dsh_find_shell); __dsh_status=$?
+__dsh_pid=''; __dsh_encoded=''
 if [ "$__dsh_status" -eq 0 ]; then
+  __dsh_pid=$__dsh_out
   if ! cd -- ${quote(procRoot)}/"$__dsh_pid"/cwd 2>/dev/null || ! pwd -P >/dev/null 2>&1; then
     printf '${EXEC_CWD_MARKER}\\n'
     printf '%s\\n' '${EXEC_CWD_ERROR_PREFIX} interactive directory is unavailable; command was not executed' >&2
@@ -54,7 +69,12 @@ if [ "$__dsh_status" -eq 0 ]; then
   __dsh_encoded=$(pwd -P | base64 | tr -d '\\r\\n')
 elif [ "$__dsh_status" -eq 2 ]; then
   printf '${EXEC_CWD_MARKER}\\n'
-  printf '%s\\n' '${EXEC_CWD_ERROR_PREFIX} interactive shell is busy or ambiguous; command was not executed' >&2
+  printf '%s\\n' '${EXEC_CWD_ERROR_PREFIX} multiple interactive shells match this connection; command was not executed' >&2
+  exit 125
+elif [ "$__dsh_status" -eq 3 ]; then
+  printf '${EXEC_CWD_MARKER}\\n'
+  __dsh_msg='${EXEC_CWD_ERROR_PREFIX} interactive shell is busy or non-interactive; command was not executed'\${__dsh_out:+ candidates:$__dsh_out}
+  printf '%s\\n' "$__dsh_msg" >&2
   exit 125
 fi
 printf '${EXEC_CWD_MARKER}%s\\n' "$__dsh_encoded"

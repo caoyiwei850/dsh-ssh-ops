@@ -42,6 +42,8 @@ try {
   result=run('echo MUST_NOT_RUN');
   assert.equal(result.status,125,'background shell cannot become the selected directory');
   assert.ok(!result.stdout.includes('MUST_NOT_RUN'));
+  assert.match(result.stderr,/busy or non-interactive/,'busy is its own status, not "ambiguous"');
+  assert.match(result.stderr,/bash\(202 pgrp=202 tpgid=101\)/,'busy candidate carries comm/pid/pgrp/tpgid detail');
   shell(101,{directory:join(root,'deleted')});
   result=run('echo MUST_NOT_RUN');
   assert.equal(result.status,125,'inaccessible directory fails closed');
@@ -50,9 +52,11 @@ try {
   rmSync(join(procRoot,'101'),{recursive:true});
   shell(101); shell(303);
   result=run('echo MUST_NOT_RUN'); assert.equal(result.status,125,'multiple foreground shells are ambiguous');
+  assert.match(result.stderr,/multiple interactive shells/,'ambiguity is its own status, not "busy"');
   rmSync(join(procRoot,'101'),{recursive:true}); rmSync(join(procRoot,'303'),{recursive:true});
   shell(101,{args:['bash','-c','echo script']});
   result=run('echo MUST_NOT_RUN'); assert.equal(result.status,125,'foreground bash -c is not an interactive prompt');
+  assert.match(result.stderr,/bash\(101 non-interactive\)/,'argv-rejected candidate is reported as non-interactive');
   assert.deepEqual(extractExecCwd('plain output'),{cwd:null,stdout:'plain output'});
   assert.equal(extractExecCwd(EXEC_CWD_MARKER+'\n').cwd,null);
 } finally { rmSync(root,{recursive:true,force:true}); }
