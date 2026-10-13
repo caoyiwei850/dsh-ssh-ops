@@ -40,7 +40,7 @@ test("info result schemas accept the secondaryConfigured field", () => {
         profileId: "22222222-2222-4222-8222-222222222222", groupId: null, groupName: null,
         name: "n", host: "h", port: 22, username: "u", authKind: "key",
         credentialConfigured: true, passphraseConfigured: false, secondaryConfigured: false,
-        connected: false, credentialId: null, credentialName: null, proxyJump: [], defaultProjectPath: null
+        connected: false, credentialId: null, credentialName: null, proxyJump: [], defaultProjectPath: null, loginCommand: null
       },
       credentialRefs: { password: "a", privateKey: "b", passphrase: "c" }
     }

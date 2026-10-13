@@ -43,7 +43,8 @@ assert.equal(profileInfoSchema.parse({
   profileId: "00000000-0000-4000-8000-000000000001",
   groupId: null, groupName: null, credentialConfigured: true, passphraseConfigured: false, secondaryConfigured: false,
   connected: false, credentialId: null, credentialName: null, proxyJump: [],
-  defaultProjectPath: "/srv/apps/api"
+  defaultProjectPath: "/srv/apps/api",
+  loginCommand: null
 }).defaultProjectPath, "/srv/apps/api");
 
 // ── every stored record must survive the boot-time schema check ──

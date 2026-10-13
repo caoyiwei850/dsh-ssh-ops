@@ -59,6 +59,7 @@ function emptyForm() {
     groupId: "",
     credentialId: "",
     defaultProjectPath: "",
+    loginCommand: "",
     proxyJump: [],
     secret: "",
     passphrase: "",
@@ -83,6 +84,7 @@ function profileToForm(profile) {
     groupId: profile.groupId ?? "",
     credentialId: profile.credentialId ?? "",
     defaultProjectPath: profile.defaultProjectPath ?? "",
+    loginCommand: profile.loginCommand ?? "",
     proxyJump: (profile.proxyJump ?? []).map((hop) => ({ ...hop, authKind: hop.authKind ?? "credential", password: "", privateKey: "", passphrase: "" }))
   };
 }
@@ -142,6 +144,7 @@ function ResourceEditor({ initial, groups, profiles, sharedCredentials = [], cre
   const [advancedOpen, setAdvancedOpen] = useState(() => Boolean(
     initial
     && ((initial.defaultProjectPath ?? "") !== ""
+      || (initial.loginCommand ?? "") !== ""
       || (initial.hostKeyMode ?? "accept-new") !== "accept-new"
       || initial.secondaryConfigured
       || initial.agentForward === true)
@@ -204,6 +207,7 @@ function ResourceEditor({ initial, groups, profiles, sharedCredentials = [], cre
         groupId: form.groupId || null,
         credentialId: form.credentialId || null,
         defaultProjectPath: form.defaultProjectPath.trim() || null,
+        loginCommand: form.loginCommand.trim() || null,
         proxyJump: form.proxyJump.map((hop) => ({ profileId: hop.profileId }))
       });
       const primaryRef = form.authKind === "password" ? saved.credentialRefs.password : saved.credentialRefs.privateKey;
@@ -277,11 +281,14 @@ function ResourceEditor({ initial, groups, profiles, sharedCredentials = [], cre
           {form.proxyJump.map((hop, index) => <div key={index} style={styles.jumpRow}><select value={hop.profileId ?? ""} onChange={(event) => updateJump(index, "profileId", event.target.value)} style={styles.input}><option value="">{t("选择已保存服务器")}</option>{profiles.filter((profile) => profile.profileId !== form.profileId).map((profile) => <option key={profile.profileId} value={profile.profileId}>{profile.name} · {profile.username}@{profile.host}:{profile.port}</option>)}</select><button type="button" onClick={() => removeJump(index)} style={styles.danger}>{t("移除")}</button></div>)}
           <button type="button" onClick={addJump} style={styles.secondary}>{t("＋ 添加跳板机")}</button>
         </Field>
-        <button type="button" onClick={() => setAdvancedOpen((open) => !open)} style={styles.advToggle} aria-expanded={advancedOpen}>{t(`${advancedOpen ? "▾" : "▸"} 高级选项${advancedOpen ? "" : t("（项目目录 · 指纹 · 第二因素 · Agent 转发）")}`)}</button>
+        <button type="button" onClick={() => setAdvancedOpen((open) => !open)} style={styles.advToggle} aria-expanded={advancedOpen}>{t(`${advancedOpen ? "▾" : "▸"} 高级选项${advancedOpen ? "" : t("（项目目录 · 指纹 · 第二因素 · Agent 转发 · 登录命令）")}`)}</button>
         {advancedOpen && (
           <div style={styles.credentialColumns}>
             <Field label={t("默认项目目录")}>
               <input value={form.defaultProjectPath} onChange={set("defaultProjectPath")} placeholder={t("例如 /srv/apps/my-service")} style={styles.input} />
+            </Field>
+            <Field label={t("登录命令（可选）")} hint={t("设置后终端以该命令作为登录会话打开，替代服务器默认 shell")}>
+              <input value={form.loginCommand} onChange={set("loginCommand")} placeholder={t("例如 bash -l")} style={styles.input} title={t("在默认 shell 不兼容的服务器（如 zsh）上填 bash -l 可临时改用 bash；命令即整个登录会话，想要正常 profile 加载请带 -l；留空按服务器默认。")} />
             </Field>
             <Field label={t("主机指纹校验")}>
               <select value={form.hostKeyMode} onChange={set("hostKeyMode")} style={styles.input}>

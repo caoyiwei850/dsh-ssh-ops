@@ -181,6 +181,14 @@ const projectDirectorySchema = z.string().min(1).max(1024).refine(
   (path) => path.startsWith("/") && !/[\x00-\x1f\x7f]/.test(path),
   "项目目录必须是绝对路径，且不能包含控制字符" // i18n-ignore: schema-time message, frozen by design
 );
+// A saved login command replaces the resource's login shell for terminal
+// sessions (exec + pty): `bash -l` drops into bash on a zsh-default server.
+// Single line only — a saved value containing a newline would make it
+// ambiguous what actually runs in the exec request.
+const loginCommandSchema = z.string().min(1).max(1024).refine(
+  (command) => !/[\x00-\x1f\x7f]/.test(command),
+  "登录命令必须是单行命令，不能包含控制字符" // i18n-ignore: schema-time message, frozen by design
+);
 const legacySavedJumpSchema = z.object({
   host: z.string().min(1).max(255), port: z.number().int().min(1).max(65535).default(22),
   username: z.string().min(1).max(128), authKind: z.enum(["credential", "password", "key"]).default("credential"), credentialId: credentialIdSchema.optional(),
@@ -206,7 +214,8 @@ export const profileSaveRequestSchema = profileMetadataSchema.extend({
   groupId: groupIdSchema.nullable().optional(),
   credentialId: credentialIdSchema.nullable().optional(),
   proxyJump: z.array(savedJumpSchema).max(8).optional(),
-  defaultProjectPath: projectDirectorySchema.nullable().optional()
+  defaultProjectPath: projectDirectorySchema.nullable().optional(),
+  loginCommand: loginCommandSchema.nullable().optional()
 });
 
 export const profileCredentialRefsSchema = z.object({
@@ -232,7 +241,8 @@ export const profileInfoSchema = profileMetadataSchema.extend({
   ,credentialId: credentialIdSchema.nullable(),
   credentialName: z.string().nullable(),
   proxyJump: z.array(savedJumpSchema),
-  defaultProjectPath: projectDirectorySchema.nullable()
+  defaultProjectPath: projectDirectorySchema.nullable(),
+  loginCommand: loginCommandSchema.nullable()
 });
 
 const credentialInfoSchema = z.object({ credentialId: credentialIdSchema, name: z.string(), authKind: profileAuthKindSchema, credentialConfigured: z.boolean(), passphraseConfigured: z.boolean(), secondaryConfigured: z.boolean() });

@@ -157,6 +157,11 @@ const profileRecordSchema = z.object({
   // re-validates every stored record when it reopens the domain at boot.
   // This is metadata only; it never contains credentials or shell syntax.
   defaultProjectPath: z.string().nullable().optional(),
+  // Optional so pre-0.3.x resources load without a migration. Unlike
+  // defaultProjectPath this IS shell syntax: it replaces the login shell of
+  // terminal sessions (exec + pty) and runs with the resource's own authority,
+  // so it is operator-authored config, never agent-writable mid-session.
+  loginCommand: z.string().nullable().optional(),
   proxyJump: z.array(z.union([z.object({ profileId: z.string().uuid() }), z.object({
     host: z.string(), port: z.number().int(), username: z.string(),
     authKind: z.enum(["credential", "password", "key"]).optional(), credentialId: z.string().uuid().optional(), hostKeyMode: z.string().optional()
@@ -1348,6 +1353,7 @@ export default class SshOpsService extends TypertRemoteService {
       credentialName: shared?.name ?? null,
       proxyJump: record.proxyJump ?? [],
       defaultProjectPath: record.defaultProjectPath ?? null,
+      loginCommand: record.loginCommand ?? null,
       groupId: group === undefined ? null : record.groupId,
       groupName: group?.name ?? null,
       credentialConfigured: primary.configured,
@@ -1391,6 +1397,9 @@ export default class SshOpsService extends TypertRemoteService {
       const defaultProjectPath = Object.hasOwn(request, "defaultProjectPath")
         ? request.defaultProjectPath
         : (previous?.defaultProjectPath ?? null);
+      const loginCommand = Object.hasOwn(request, "loginCommand")
+        ? request.loginCommand
+        : (previous?.loginCommand ?? null);
       const seenJumpProfiles = new Set();
       for (const hop of proxyJump) {
         if (hop.profileId) {
@@ -1415,6 +1424,7 @@ export default class SshOpsService extends TypertRemoteService {
         // preserves old records for backwards-compatible callers.
         credentialId: Object.hasOwn(request, "credentialId") ? request.credentialId : (previous?.credentialId ?? null),
         defaultProjectPath,
+        loginCommand,
         proxyJump,
         groupId,
         createdAt: previous?.createdAt ?? now,
@@ -1786,6 +1796,19 @@ export default class SshOpsService extends TypertRemoteService {
     const sessionId = randomUUID();
     const cols = request.cols ?? 80;
     const rows = request.rows ?? 24;
+    // A saved login command replaces the resource's login shell for this
+    // terminal (exec + pty, `ssh -t host bash -l` semantics): the command IS
+    // the session. Resolved live from the profile table so an edit applies to
+    // the next terminal without a reconnect; a lookup hiccup must not block
+    // opening a plain shell, so it degrades to null. Connections without a
+    // saved resource (temporary panel connects, agent connects) keep the
+    // server's own login shell.
+    let loginCommand = null;
+    if (conn.profileId) {
+      try {
+        loginCommand = this.requireProfileTable().get(conn.profileId)?.loginCommand ?? null;
+      } catch {}
+    }
     const session = {
       id: sessionId,
       connectionId: request.connectionId,
@@ -1814,10 +1837,15 @@ export default class SshOpsService extends TypertRemoteService {
     conn.sessions.add(sessionId);
     try {
       const stream = await new Promise((resolve, reject) => {
-        conn.client.shell({ term: "xterm-256color", cols, rows }, (error, s) => {
+        const opened = (error, s) => {
           if (error) reject(error);
           else resolve(s);
-        });
+        };
+        // ssh2 carries agent forwarding and window resize on the exec+pty
+        // channel exactly as on a shell channel (global connectConfig flag;
+        // session.stream.setWindow), so the two paths converge below.
+        if (loginCommand) conn.client.exec(loginCommand, { pty: { term: "xterm-256color", cols, rows } }, opened);
+        else conn.client.shell({ term: "xterm-256color", cols, rows }, opened);
       });
       session.stream = stream;
       stream.on("data", (chunk) => {
@@ -1848,7 +1876,7 @@ export default class SshOpsService extends TypertRemoteService {
     } catch (error) {
       this.sessions.delete(sessionId);
       conn.sessions.delete(sessionId);
-      return { ok: false, error: fail("shell-failed", `could not open shell on connection "${request.connectionId}": ${error.message}`) };
+      return { ok: false, error: fail("shell-failed", `could not open shell on connection "${request.connectionId}"${loginCommand ? ` (login command: ${loginCommand})` : ""}: ${error.message}`) };
     }
     return {
       ok: true,
