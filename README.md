@@ -8,10 +8,12 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.3.20-blue)
+![version](https://img.shields.io/badge/version-0.3.21-blue)
 [![dsh.so risk](https://www.dsh.so/badge/dsh-ssh-ops.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![dsh.so install · dsh 0.2.0-rc.1](https://www.dsh.so/badge/install/dsh-ssh-ops@0.2.0-rc.1.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/caoyiwei850/dsh-ssh-ops)
+
+> **v0.3.21**：修复 [#32](https://github.com/caoyiwei850/dsh-ssh-ops/issues/32) 报告的**宿主闪退**（Windows 真机，未捕获异常直接击穿 DSH 进程）——① ssh2 的 `forwardOut` 在传输断开时**同步 throw 而不走 callback**（`Not connected`），断线后隧道 listener 仍监听、迟到接入即崩宿主：三处调用点（本地隧道 / SOCKS5 / DB 隧道）全部捕获，失败只牺牲该连接；② 隧道 socket/channel 无 `error` 监听，本地 RST（`ECONNRESET`）零监听即崩：双向互相拆链 + 迟到 channel 丢弃 + 竞态接入拒绝；③ 传输丢失、显式断开、插件卸载三条路径统一关闭隧道 listener 并**同步退役依附该 SSH 连接的 DB 隧道**（事务回退、redis 断连一并处理），不再留幽灵监听；④ 顺手修复隧道面板列表渲染的 `TypeError: t2 is not a function`（渲染回调参数遮蔽了 i18n 翻译函数 `t`，0.3.10 起潜伏，隧道列表非空即崩 tab）。
 
 > **v0.3.20**：新增 SSH 资源「**登录命令**」（高级选项，`ssh -t` 语义的 exec+伪终端——默认 shell 不兼容的服务器填 `bash -l` 即可临时改用 bash，`tmux attach`、进目录后进 shell 一类动作也可固化为登录即得；命令即整个登录会话，改完保存后下一个终端即生效、无需重连）；ssh_exec 的 cwd 解析器**拒绝语义拆分**（多候选歧义与忙/非交互各占独立消息，后者带候选进程的 comm/pgrp/tpgid 摘要，现场排障一眼定性；讨论自 [#31](https://github.com/caoyiwei850/dsh-ssh-ops/issues/31)）；删除 SSH 资源时同步清除该主机的指纹信任记录，不再残留于「已信任主机」列表。
 
@@ -105,7 +107,7 @@ Agent 命中上述黑名单时不会被静默拒绝：插件会创建一条一�
 ### 从 GitHub 安装（推荐）
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.20
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.21
 ```
 
 git 渠道装的是源码，安装期由 `prepare` 钩子自动执行 `npm run build` 生成入口 `lib/`，无需手动构建。**注意：pnpm ≥ 10 默认拦截依赖包的构建脚本**——若重启后 SSH 标签未出现，按 [INSTALL.md](INSTALL.md) 第 3 步检查 `node_modules/dsh-ssh-ops/lib/`：缺失说明构建被拦，进入该包目录执行 `npm install && npm run build`（或在该 profile 的 pnpm 配置 `onlyBuiltDependencies` 中放行 `dsh-ssh-ops`）后重启即可。
@@ -120,14 +122,14 @@ dsh web
 
 ### 从发布压缩包安装
 
-从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.20) 下载 `dsh-ssh-ops-0.3.20.tgz` 后：
+从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.21) 下载 `dsh-ssh-ops-0.3.21.tgz` 后：
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.20.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.21.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.3.20.zip` 适用于离线审阅或二次开发；解压后在目录中执行 `npm install`（构建自动完成）。
+`dsh-ssh-ops-0.3.21.zip` 适用于离线审阅或二次开发；解压后在目录中执行 `npm install`（构建自动完成）。
 
 ## 使用方式
 
@@ -241,8 +243,8 @@ npm run pack:release
 
 生成物位于 `release/`：
 
-- `dsh-ssh-ops-0.3.20.tgz`：可直接被 DSH 安装。
-- `dsh-ssh-ops-0.3.20.zip`：完整离线源码包。
+- `dsh-ssh-ops-0.3.21.tgz`：可直接被 DSH 安装。
+- `dsh-ssh-ops-0.3.21.zip`：完整离线源码包。
 
 ## 贡献者
 

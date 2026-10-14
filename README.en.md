@@ -8,10 +8,12 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.3.20-blue)
+![version](https://img.shields.io/badge/version-0.3.21-blue)
 [![dsh.so risk](https://www.dsh.so/badge/dsh-ssh-ops.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![dsh.so install · dsh 0.2.0-rc.1](https://www.dsh.so/badge/install/dsh-ssh-ops@0.2.0-rc.1.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/caoyiwei850/dsh-ssh-ops)
+
+> **v0.3.21**: fixes the **host-process crashes** reported in [#32](https://github.com/caoyiwei850/dsh-ssh-ops/issues/32) (Windows, uncaught exceptions killing the whole DSH process) — ① ssh2's `forwardOut` **throws synchronously instead of reporting through the callback** (`Not connected`) once the transport is gone, and tunnel listeners kept accepting after a drop: all three call sites (local / SOCKS5 / DB tunnels) now contain it, sacrificing only that connection; ② tunnel socket/channel had no `error` handlers, so a local RST (`ECONNRESET`) — an 'error' with zero listeners — crashed the host: both sides now tear each other down, late channels are discarded, and racing accepts are refused; ③ transport loss, explicit disconnect and plugin unload now close tunnel listeners uniformly and **retire DB tunnels attached to that SSH connection** (transaction rollback, redis reconnect loop included) — no ghost listeners; ④ also fixes the tunnel panel's `TypeError: t2 is not a function` (a render callback parameter shadowed the i18n `t` function; latent since 0.3.10, crashes the tab whenever the tunnel list is non-empty).
 
 > **v0.3.20**: adds a per-resource **login command** (an "Advanced options" field opening the terminal through exec+pty with `ssh -t` semantics — `bash -l` temporarily drops an incompatible default shell (e.g. zsh) into bash, and session-shaped actions like `tmux attach` or cd-then-shell can become the login session itself; the command IS the whole session, and an edit applies to the next terminal without a reconnect); the ssh_exec cwd resolver's **rejection semantics are split** (multiple-candidate ambiguity vs busy/non-interactive now get distinct messages, the latter with a comm/pgrp/tpgid summary of rejected candidates — field triage at a glance; discussion from [#31](https://github.com/caoyiwei850/dsh-ssh-ops/issues/31)); deleting an SSH resource now also forgets the host's key-trust record so it no longer lingers under "trusted hosts".
 
@@ -102,7 +104,7 @@ The same model covers `sftp_delete` (the agent no longer deletes directly; inste
 ### From GitHub (recommended)
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.20
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.21
 ```
 
 The git channel installs source; the `prepare` hook runs `npm run build` during install to produce the `lib/` entry files, so no manual build is needed. **Note: pnpm ≥ 10 blocks dependency build scripts by default** — if the SSH tab does not appear after restart, check `node_modules/dsh-ssh-ops/lib/` as described in [INSTALL.md](INSTALL.md) step 3: if it is missing, the build was blocked; run `npm install && npm run build` inside that package directory (or allowlist `dsh-ssh-ops` in the profile's pnpm `onlyBuiltDependencies`) and restart.
@@ -117,14 +119,14 @@ Open any session, click the top **SSH** tab, and use the right-side panel to con
 
 ### From a release archive
 
-Download `dsh-ssh-ops-0.3.20.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.20), then:
+Download `dsh-ssh-ops-0.3.21.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.21), then:
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.20.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.21.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.3.20.zip` is for offline review or further development; extract it and run `npm install` in the directory (the build runs automatically).
+`dsh-ssh-ops-0.3.21.zip` is for offline review or further development; extract it and run `npm install` in the directory (the build runs automatically).
 
 ## Usage
 
@@ -236,8 +238,8 @@ Pushing a `vX.Y.Z` tag that matches `package.json.version` runs tests, builds th
 
 Artifacts are written to `release/`:
 
-- `dsh-ssh-ops-0.3.20.tgz`: installable directly by DSH.
-- `dsh-ssh-ops-0.3.20.zip`: full offline source archive.
+- `dsh-ssh-ops-0.3.21.tgz`: installable directly by DSH.
+- `dsh-ssh-ops-0.3.21.zip`: full offline source archive.
 
 ## Contributors
 
