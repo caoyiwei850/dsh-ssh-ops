@@ -453,6 +453,9 @@ export default class SshOpsService extends TypertRemoteService {
       for (const conn of this.connections.values()) {
         conn.closing = true;
         if (conn.reconnectTimer !== null) clearTimeout(conn.reconnectTimer);
+        // Unload closes tunnel listeners too: a surviving listener's late
+        // accept would call forwardOut on an ended client (#32).
+        this.closeConnectionTunnels(conn);
         try { conn.client?.end(); } catch {}
         for (const hop of conn.hops ?? []) { try { hop.end(); } catch {} }
       }
@@ -1188,6 +1191,29 @@ export default class SshOpsService extends TypertRemoteService {
    * schedule a transparent reconnect so later operations self-heal instead of
    * forcing a brand-new session every time.
    */
+  /**
+   * Stop every listener routed through this SSH connection. Closing a
+   * net.Server stops accepting new connections without touching sockets
+   * already piped to channels (those die with the SSH client); remote-forward
+   * tunnels have no listener — the server side dies with the transport — so
+   * only the tcp-connection bridge is detached.
+   */
+  closeConnectionTunnels(conn) {
+    for (const tunnel of conn.tunnels.values()) {
+      tunnel.active = false;
+      if (tunnel.bridgeInfo?.bridge) {
+        try { conn.client?.removeListener("tcp connection", tunnel.bridgeInfo.bridge); } catch {}
+      }
+      if (tunnel.server) {
+        try { tunnel.server.close(() => {}); } catch {}
+        // A server-level error during/after close must not find zero
+        // listeners — that throws and kills the host (#32).
+        try { tunnel.server.on("error", () => {}); } catch {}
+      }
+    }
+    conn.tunnels.clear();
+  }
+
   handleTransportLoss(record, client, _error) {
     if (record.closing || record.client !== client || record.dead) return;
     record.dead = true;
@@ -1202,7 +1228,7 @@ export default class SshOpsService extends TypertRemoteService {
       this.sessions.delete(sessionId);
     }
     record.sessions.clear();
-    for (const tunnel of record.tunnels.values()) tunnel.active = false;
+    this.closeConnectionTunnels(record);
     this.scheduleReconnect(record);
   }
 
@@ -2370,6 +2396,7 @@ export default class SshOpsService extends TypertRemoteService {
       }
     }
     conn.sessions.clear();
+    this.closeConnectionTunnels(conn);
     this.connections.delete(request.connectionId);
     if (this.activeConnectionId === request.connectionId) {
       this.activeConnectionId = null;
@@ -3886,18 +3913,45 @@ export default class SshOpsService extends TypertRemoteService {
     const net = await import("node:net");
     try {
       const server = net.createServer((socket) => {
-        conn.client.forwardOut(bindAddr, bindPort, request.remoteHost, request.remotePort, (error, stream) => {
-          if (error) {
-            socket.destroy();
-            return;
-          }
-          socket.pipe(stream).pipe(socket);
-        });
+        // A late accept after the transport died must only cost this socket,
+        // never the host process. Two guards:
+        // 1. ssh2's forwardOut THROWS synchronously ('Not connected') when the
+        //    underlying socket is gone instead of reporting through the
+        //    callback — uncaught, that throw escapes this event callback and
+        //    crashes DSH (#32). The lifecycle paths now close the listener,
+        //    but accepts already in flight when a connection drops can still
+        //    race in here, so every call site catches.
+        // 2. pipe() installs no error handlers: an 'error' event with zero
+        //    listeners throws (ECONNRESET from a reset local client is the
+        //    classic Windows case, #32). Each side tears the other down.
+        if (conn.dead || conn.closing) {
+          socket.destroy();
+          return;
+        }
+        try {
+          conn.client.forwardOut(bindAddr, bindPort, request.remoteHost, request.remotePort, (error, channel) => {
+            // A channel arriving for a socket that is already gone is
+            // discarded instead of piped into a dead object.
+            if (error || socket.destroyed) {
+              socket.destroy();
+              channel?.destroy?.();
+              return;
+            }
+            channel.on("error", () => socket.destroy());
+            socket.on("error", () => channel.destroy());
+            socket.pipe(channel).pipe(socket);
+          });
+        } catch {
+          socket.destroy();
+        }
       });
       await new Promise((resolve, reject) => {
         server.once("error", reject);
         server.listen(bindPort, bindAddr, () => resolve());
       });
+      // Post-listen errors (EMFILE on accept storms etc.) must still land on
+      // a listener: an 'error' with zero listeners crashes the DSH process.
+      server.on("error", () => {});
       const address = server.address();
       const actualPort = typeof address === "object" && address !== null ? address.port : bindPort;
       conn.tunnels.set(tunnelId, {
@@ -4014,7 +4068,16 @@ export default class SshOpsService extends TypertRemoteService {
       const server = net.createServer((socket) => {
         record.connections += 1;
         attachSocks5(socket, {
-          forwardOut: (host, port, callback) => conn.client.forwardOut("127.0.0.1", 0, host, port, callback),
+          // forwardOut throws synchronously ('Not connected') once the
+          // transport is gone (#32); routed through the callback it becomes
+          // an ordinary SOCKS failure reply instead of a host crash.
+          forwardOut: (host, port, callback) => {
+            try {
+              conn.client.forwardOut("127.0.0.1", 0, host, port, callback);
+            } catch (error) {
+              callback(error);
+            }
+          },
           onClose: () => { record.connections = Math.max(0, record.connections - 1); }
         });
       });
@@ -4022,6 +4085,8 @@ export default class SshOpsService extends TypertRemoteService {
         server.once("error", reject);
         server.listen(bindPort, bindAddr, () => resolve());
       });
+      // Post-listen errors must not crash the host (see tunnelStartLocal).
+      server.on("error", () => {});
       const address = server.address();
       record.bindPort = typeof address === "object" && address !== null ? address.port : bindPort;
       record.server = server;

@@ -334,13 +334,24 @@ export class DbOpsManager {
     if (conn.dead) throw new Error(`SSH connection ${sshConnectionId} is dead`);
     return new Promise((resolve, reject) => {
       const server = net.createServer((socket) => {
-        conn.client.forwardOut("127.0.0.1", 0, dbHost, dbPort, (error, stream) => {
-          if (error) { socket.destroy(); return; }
-          stream.on("error", () => socket.destroy());
-          socket.on("error", () => stream.destroy());
-          socket.pipe(stream);
-          stream.pipe(socket);
-        });
+        // forwardOut throws synchronously ('Not connected') once the SSH
+        // transport is gone instead of reporting through the callback; that
+        // throw would escape this event callback and crash the host (#32).
+        try {
+          conn.client.forwardOut("127.0.0.1", 0, dbHost, dbPort, (error, stream) => {
+            if (error || socket.destroyed) {
+              socket.destroy();
+              stream?.destroy?.();
+              return;
+            }
+            stream.on("error", () => socket.destroy());
+            socket.on("error", () => stream.destroy());
+            socket.pipe(stream);
+            stream.pipe(socket);
+          });
+        } catch {
+          socket.destroy();
+        }
       });
       server.once("error", reject);
       server.listen(0, "127.0.0.1", () => {

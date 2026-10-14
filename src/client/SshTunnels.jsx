@@ -145,27 +145,27 @@ export function SshTunnels({ api, connectionId }) {
         ) : tunnels.length === 0 ? (
           <div style={tunnelStyles.empty}>{t("暂无转发。点「＋」新建，或在对话里让我用 tunnel_start 建立。")}</div>
         ) : (
-          tunnels.map((t) => (
-            <div key={t.tunnelId} style={tunnelStyles.row}>
+          tunnels.map((tunnel) => (
+            <div key={tunnel.tunnelId} style={tunnelStyles.row}>
               <div style={tunnelStyles.rowBody}>
                 <div style={tunnelStyles.rowTitle}>
-                  <span style={{ ...tunnelStyles.dot, background: t.active ? "#3fb950" : "#8b93a1" }} />
-                  <span>{t.kind === "dynamic" ? t("动态 SOCKS5") : t.kind === "local" ? t("本地") : t("远程")}</span>
-                  <span style={tunnelStyles.rowAddr}>{t.bindAddr}:{t.bindPort}</span>
-                  {t.kind === "dynamic" ? (
+                  <span style={{ ...tunnelStyles.dot, background: tunnel.active ? "#3fb950" : "#8b93a1" }} />
+                  <span>{tunnel.kind === "dynamic" ? t("动态 SOCKS5") : tunnel.kind === "local" ? t("本地") : t("远程")}</span>
+                  <span style={tunnelStyles.rowAddr}>{tunnel.bindAddr}:{tunnel.bindPort}</span>
+                  {tunnel.kind === "dynamic" ? (
                     <span style={tunnelStyles.rowAddr}>
-                      {t.connections > 0 ? t(`活动连接 ${t.connections}`) : t("等待连接")}
+                      {tunnel.connections > 0 ? t(`活动连接 ${tunnel.connections}`) : t("等待连接")}
                     </span>
                   ) : (
                     <>
                       <span style={tunnelStyles.arrow}>→</span>
-                      <span style={tunnelStyles.rowAddr}>{t.remoteHost}:{t.remotePort}</span>
+                      <span style={tunnelStyles.rowAddr}>{tunnel.remoteHost}:{tunnel.remotePort}</span>
                     </>
                   )}
                 </div>
-                <div style={tunnelStyles.rowId}>{t.tunnelId}</div>
+                <div style={tunnelStyles.rowId}>{tunnel.tunnelId}</div>
               </div>
-              <button onClick={() => stop(t.tunnelId)} disabled={busy} style={tunnelStyles.btnDanger}>{t("停止")}</button>
+              <button onClick={() => stop(tunnel.tunnelId)} disabled={busy} style={tunnelStyles.btnDanger}>{t("停止")}</button>
             </div>
           ))
         )}

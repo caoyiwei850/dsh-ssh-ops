@@ -1027,7 +1027,7 @@ export function SshPanel({ api, credentials, viewId = DEFAULT_VIEW_ID, viewSigna
       const { tasks } = await api.batchTaskList();
       setPendingBatchCount(tasks.length);
       if (tasks.length > 0) {
-        const unseen = tasks.find((t) => !seenBatchIdsRef.current.has(t.batchId));
+        const unseen = tasks.find((task) => !seenBatchIdsRef.current.has(task.batchId));
         if (unseen) {
           seenBatchIdsRef.current.add(unseen.batchId);
           setBatchTask((current) => current ?? unseen);

@@ -35,7 +35,7 @@ function isReadSql(sql) {
 }
 
 function typeMeta(type) {
-  return DB_TYPES.find((t) => t.value === type) ?? DB_TYPES[0];
+  return DB_TYPES.find((entry) => entry.value === type) ?? DB_TYPES[0];
 }
 
 function typeColor(type) {
@@ -479,7 +479,7 @@ function ConnectForm({ sshProfiles, onSubmit, onCancel }) {
       <div style={dbStyles.formRow}>
         <label style={dbStyles.formLabel}>{t("类型")}</label>
         <select value={type} onChange={(e) => onTypeChange(e.target.value)} style={inputStyle}>
-          {DB_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+          {DB_TYPES.map((type) => <option key={type.value} value={type.value}>{type.label}</option>)}
         </select>
       </div>
 
