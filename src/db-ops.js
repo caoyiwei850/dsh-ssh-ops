@@ -534,6 +534,19 @@ export class DbOpsManager {
     this.warn(`database connection ${id} (${record.type} ${target}) dropped: ${error?.message ?? error}`);
   }
 
+  /**
+   * Retire every database connection routed through an SSH connection that is
+   * going away. Their local listeners are independent of `conn.tunnels`, so
+   * leaving them behind would let a stale DB tunnel accept after its SSH
+   * transport has disappeared (or reconnected as a different client).
+   */
+  closeForSshConnection(sshConnectionId) {
+    for (const [id, record] of [...this.dbConnections.entries()]) {
+      if (record.config?.sshConnectionId !== sshConnectionId) continue;
+      this.handleDbTransportLoss(id, record.client, new Error(`SSH connection ${sshConnectionId} closed`));
+    }
+  }
+
   warn(...args) {
     try { this.sshOpsService?.ctx?.logger?.warn?.(...args); } catch {}
     // ctx.logger is not wired in the DSH host; console output is what reaches

@@ -1196,7 +1196,8 @@ export default class SshOpsService extends TypertRemoteService {
    * net.Server stops accepting new connections without touching sockets
    * already piped to channels (those die with the SSH client); remote-forward
    * tunnels have no listener — the server side dies with the transport — so
-   * only the tcp-connection bridge is detached.
+   * only the tcp-connection bridge is detached. DB tunnel listeners live in
+   * DbOpsManager rather than conn.tunnels and need the same lifecycle.
    */
   closeConnectionTunnels(conn) {
     for (const tunnel of conn.tunnels.values()) {
@@ -1212,6 +1213,7 @@ export default class SshOpsService extends TypertRemoteService {
       }
     }
     conn.tunnels.clear();
+    try { this.dbOps?.closeForSshConnection?.(conn.id); } catch {}
   }
 
   handleTransportLoss(record, client, _error) {

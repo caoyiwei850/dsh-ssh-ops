@@ -128,6 +128,8 @@ import { DbOpsManager } from "../src/db-ops.js";
 
 console.log("db-ops transport-loss handling: all cases passed");
 
+console.log("db-ops SSH tunnel lifecycle: dependent listeners close with SSH: passed");
+
 // ── DB list exposes a non-secret account discriminator for client history ──
 
 {
@@ -452,5 +454,33 @@ function makeTimeoutManager(errorProps, suffix) {
   assert.equal(conn.released, 1, "clean server errors keep the pooled connection");
   assert.equal(conn.destroyed, 0);
 }
+
+// ── SSH transport loss retires dependent DB tunnels ────────────────────────
+
+{
+  const manager = Object.create(DbOpsManager.prototype);
+  manager.dbConnections = new Map();
+  manager.sshOpsService = { ctx: { logger: { warn() {} } } };
+  const closed = [];
+  const dependent = {
+    id: "db-over-ssh", type: "postgresql", client: {},
+    config: { host: "db.internal", port: 5432, sshConnectionId: "ssh-1" },
+    tunnel: { server: { close: () => closed.push("dependent") } }
+  };
+  const direct = {
+    id: "db-direct", type: "postgresql", client: {},
+    config: { host: "db.example", port: 5432, sshConnectionId: null },
+    tunnel: { server: { close: () => closed.push("direct") } }
+  };
+  manager.dbConnections.set(dependent.id, dependent);
+  manager.dbConnections.set(direct.id, direct);
+
+  manager.closeForSshConnection("ssh-1");
+
+  assert.equal(manager.dbConnections.has(dependent.id), false, "the DB record routed through the lost SSH connection is removed");
+  assert.equal(manager.dbConnections.has(direct.id), true, "a direct DB connection is unaffected");
+  assert.deepEqual(closed, ["dependent"], "the dependent DB tunnel listener is closed");
+}
+
 
 console.log("db-ops mysql query paged connection lifecycle: all cases passed");

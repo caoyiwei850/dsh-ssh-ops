@@ -153,6 +153,8 @@ try {
 {
   const service = makeService();
   const closed = [];
+  const dbClosed = [];
+  service.dbOps = { closeForSshConnection: (connectionId) => dbClosed.push(connectionId) };
   const fakeServer = (kind) => ({
     kind,
     close(cb) { closed.push(kind); cb?.(); },
@@ -166,11 +168,13 @@ try {
   service.handleTransportLoss(conn, client, null);
   assert.deepEqual(closed.sort(), ["dynamic", "local"], "transport loss closes every tunnel listener");
   assert.equal(conn.tunnels.size, 0, "tunnel records are cleared");
+  assert.deepEqual(dbClosed, ["c1"], "transport loss also retires DB tunnels routed through this SSH connection");
 
   conn.tunnels.set("t3", { id: "t3", kind: "local", active: true, server: fakeServer("local-2") });
   const gone = await service.disconnect({ connectionId: "c1" });
   assert.equal(gone.ok, true);
   assert.deepEqual(closed, ["dynamic", "local", "local-2"], "explicit disconnect closes remaining listeners");
+  assert.deepEqual(dbClosed, ["c1", "c1"], "explicit disconnect also retires DB tunnels routed through this SSH connection");
   assert.equal(service.connections.has("c1"), false);
 }
 
