@@ -8,11 +8,12 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.3.21-blue)
+![version](https://img.shields.io/badge/version-0.3.22-blue)
 [![dsh.so risk](https://www.dsh.so/badge/dsh-ssh-ops.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![dsh.so install · dsh 0.2.0-rc.1](https://www.dsh.so/badge/install/dsh-ssh-ops@0.2.0-rc.1.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/caoyiwei850/dsh-ssh-ops)
 
+> **v0.3.22**: adds **three execution-policy tiers** for agent-issued commands — a tier chip in the terminal's bottom-left corner (**Standard / Custom release / Allow all**; collapsed to a corner dot by default, expands on hover; loosening asks for confirmation and a switch applies to the current session only), a per-resource override under "Advanced options", and a third settings tab for the global default and the released categories. **The agent can never widen the gate itself** — switching is an operator-only RPC, and rejections carry the effective tier with guidance; the multi-server confirmation checkbox stays tier-independent. Released commands run as written (deletions no longer go through the trash — the warning says so). Fixes **#33** — `ssh_exec` on network devices (Huawei VRP / H3C Comware) stalled 15s and returned empty output: exec timeouts now **settle locally before closing** (a peer that never answers CHANNEL_CLOSE no longer hangs the caller), a probe timeout with zero bytes back marks the connection as a network-CLI device and **reroutes into the interactive terminal** with prompt-return as completion (first call downgrades in place; VRP/Comware/Cisco prompt recognition, paged output, human-readable errors instead of empty timeouts). Fixes **three SOCKS5 dynamic-forwarding defects** (externally triaged): the handshake parser retires after CONNECT — forwarded traffic no longer accumulates without bound (48 MiB forwarded used to add ~204 MiB resident), pipelined payloads are no longer dropped (buffered residue is flushed before the pipe), and the connection counter no longer decrements twice; also fixes `git clean -fd` — the most common spelling — never having been caught due to a regex slip.
 > **v0.3.21**: fixes the **host-process crashes** reported in [#32](https://github.com/caoyiwei850/dsh-ssh-ops/issues/32) (Windows, uncaught exceptions killing the whole DSH process) — ① ssh2's `forwardOut` **throws synchronously instead of reporting through the callback** (`Not connected`) once the transport is gone, and tunnel listeners kept accepting after a drop: all three call sites (local / SOCKS5 / DB tunnels) now contain it, sacrificing only that connection; ② tunnel socket/channel had no `error` handlers, so a local RST (`ECONNRESET`) — an 'error' with zero listeners — crashed the host: both sides now tear each other down, late channels are discarded, and racing accepts are refused; ③ transport loss, explicit disconnect and plugin unload now close tunnel listeners uniformly and **retire DB tunnels attached to that SSH connection** (transaction rollback, redis reconnect loop included) — no ghost listeners; ④ also fixes the tunnel panel's `TypeError: t2 is not a function` (a render callback parameter shadowed the i18n `t` function; latent since 0.3.10, crashes the tab whenever the tunnel list is non-empty).
 
 > **v0.3.20**: adds a per-resource **login command** (an "Advanced options" field opening the terminal through exec+pty with `ssh -t` semantics — `bash -l` temporarily drops an incompatible default shell (e.g. zsh) into bash, and session-shaped actions like `tmux attach` or cd-then-shell can become the login session itself; the command IS the whole session, and an edit applies to the next terminal without a reconnect); the ssh_exec cwd resolver's **rejection semantics are split** (multiple-candidate ambiguity vs busy/non-interactive now get distinct messages, the latter with a comm/pgrp/tpgid summary of rejected candidates — field triage at a glance; discussion from [#31](https://github.com/caoyiwei850/dsh-ssh-ops/issues/31)); deleting an SSH resource now also forgets the host's key-trust record so it no longer lingers under "trusted hosts".
@@ -31,11 +32,8 @@
 
 > **v0.3.12**: fixes `db_list_connections` being rejected whenever a database connection exists because its strict output schema omitted `username` (#23). Connection listings now identify the database, non-secret username, TLS mode and SSH route; SQLite shows its file path instead of `:0`. A regression test exercises the real DSH output validator.
 
-> **v0.3.11**: fixes shell-family detection for shell integration (cwd markers previously polluted the probe, making it always inject the zsh variant and fail on bash), and adds the `shell` state to the terminal-context result contract.
 
-> **v0.3.10**: database coverage grows with **SQLite** (the host's built-in `node:sqlite`, no new dependency), **ClickHouse** (HTTP interface) and **openGauss** (PostgreSQL protocol), and query results **export to CSV/JSON** (a database reached through SSH writes the file onto that server for the SFTP panel to pull); a **dynamic SOCKS5 tunnel** (`ssh -D`); **session recording** with a searchable, downloadable log panel (agent reads are approval-gated and redacted); **OSC 133 shell integration** so terminal context carries the cwd, exit code and prompt state; and the SFTP panel gains a **text editor, name filter, per-server favorites and drag-and-drop upload**.
 
-> **v0.3.9**: compatible with DSH `0.1.6-alpha.2` — adapts to the host's new typert validation (schemas and strict codecs must carry `create()` factories, enforced on the browser side too) and the new slot rule that rejects a duplicate entry id, which previously made the SSH tab vanish from the official sidebar; fixes stored records with a `null` default project directory failing to load (#20); database drivers are now lazily imported on first connect.
 
 > **New in v0.3.4**: **each split pane now gets its own connection** — opening the same server in two panes creates two independent transports, terminals and working directories instead of mirroring one terminal; tick "reuse the open connection" in the connect dialog to share one on purpose. The **pane the agent is acting on is now visible and switchable**, marked with a blue robot badge — click another pane to re-target it. **Peers whose SSH identification string does not follow RFC 4253 can now connect**: when a device writes it malformed (a stray space in `SSH-2.0- OpenSSH`, or `SSH-2.1-`), ssh2 previously failed with a bare `Invalid identification string` that named neither the device nor the reason; the plugin now retries once and normalizes that single line (the peer's software version is preserved and no crypto is weakened), while a genuinely unusable banner reports the peer's own bytes. Also fixes connecting from the settings page not opening or loading the SSH pane. Shared credentials, jump hosts, connection reuse and the terminal theme from 0.3.3 remain. See **[INSTALL.md](./INSTALL.md)** for desktop install instructions.
 
@@ -104,7 +102,7 @@ The same model covers `sftp_delete` (the agent no longer deletes directly; inste
 ### From GitHub (recommended)
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.21
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.22
 ```
 
 The git channel installs source; the `prepare` hook runs `npm run build` during install to produce the `lib/` entry files, so no manual build is needed. **Note: pnpm ≥ 10 blocks dependency build scripts by default** — if the SSH tab does not appear after restart, check `node_modules/dsh-ssh-ops/lib/` as described in [INSTALL.md](INSTALL.md) step 3: if it is missing, the build was blocked; run `npm install && npm run build` inside that package directory (or allowlist `dsh-ssh-ops` in the profile's pnpm `onlyBuiltDependencies`) and restart.
@@ -119,14 +117,14 @@ Open any session, click the top **SSH** tab, and use the right-side panel to con
 
 ### From a release archive
 
-Download `dsh-ssh-ops-0.3.21.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.21), then:
+Download `dsh-ssh-ops-0.3.22.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.22), then:
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.21.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.22.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.3.21.zip` is for offline review or further development; extract it and run `npm install` in the directory (the build runs automatically).
+`dsh-ssh-ops-0.3.22.zip` is for offline review or further development; extract it and run `npm install` in the directory (the build runs automatically).
 
 ## Usage
 
@@ -238,8 +236,8 @@ Pushing a `vX.Y.Z` tag that matches `package.json.version` runs tests, builds th
 
 Artifacts are written to `release/`:
 
-- `dsh-ssh-ops-0.3.21.tgz`: installable directly by DSH.
-- `dsh-ssh-ops-0.3.21.zip`: full offline source archive.
+- `dsh-ssh-ops-0.3.22.tgz`: installable directly by DSH.
+- `dsh-ssh-ops-0.3.22.zip`: full offline source archive.
 
 ## Contributors
 

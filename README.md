@@ -8,11 +8,12 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.3.21-blue)
+![version](https://img.shields.io/badge/version-0.3.22-blue)
 [![dsh.so risk](https://www.dsh.so/badge/dsh-ssh-ops.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![dsh.so install · dsh 0.2.0-rc.1](https://www.dsh.so/badge/install/dsh-ssh-ops@0.2.0-rc.1.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/caoyiwei850/dsh-ssh-ops)
 
+> **v0.3.22**：新增 **AI 命令执行策略三档**——右侧终端左下角新增档位贴片（**标准 / 自定义放行 / 全部放行**，默认收缩为贴边色点、悬停展开；往松切需确认、切换只对本次会话生效，资源「高级选项」可按服务器覆盖，设置页第三页签管全局默认与放行类目）；**Agent 永远无法自行放宽**——档位切换是操作者专属 RPC，被拦时 Agent 只会拿到结构化拒绝与指引，多机批量的操作者勾选闸门也不受档位影响；被放行的命令按原样执行（删除不再进回收站，警示文案明示）。修复 **#33**——网络设备（华为 VRP / 华三 Comware）上 `ssh_exec` 15 秒静默卡顿后返回空输出：exec 通道超时改为**先本地结算再关闭**（对端不响应 CHANNEL_CLOSE 也不再挂死调用方），探测超时且零字节返回即判定为网络 CLI 设备、**自动改走交互终端路径**并以提示符回归为完成信号（首次调用当场降级；提示符识别覆盖 VRP/Comware/Cisco，分页自动推进，识别失败给人话错误而非空超时）。修复 **SOCKS5 动态转发（`ssh -D`）三缺陷**（外部排查报告核实后修复）：握手解析器在 CONNECT 应答后退役——转发流量不再无界累积（实测 48 MiB 转发常驻 +204 MiB 降回零）、管线化载荷不再丢失（握手窗口内残余先 flush 再 pipe）、连接计数不再双减；顺带修复 `git clean -fd`（最常见写法）因正则尾部写错**从未被拦截**的既有漏洞。
 > **v0.3.21**：修复 [#32](https://github.com/caoyiwei850/dsh-ssh-ops/issues/32) 报告的**宿主闪退**（Windows 真机，未捕获异常直接击穿 DSH 进程）——① ssh2 的 `forwardOut` 在传输断开时**同步 throw 而不走 callback**（`Not connected`），断线后隧道 listener 仍监听、迟到接入即崩宿主：三处调用点（本地隧道 / SOCKS5 / DB 隧道）全部捕获，失败只牺牲该连接；② 隧道 socket/channel 无 `error` 监听，本地 RST（`ECONNRESET`）零监听即崩：双向互相拆链 + 迟到 channel 丢弃 + 竞态接入拒绝；③ 传输丢失、显式断开、插件卸载三条路径统一关闭隧道 listener 并**同步退役依附该 SSH 连接的 DB 隧道**（事务回退、redis 断连一并处理），不再留幽灵监听；④ 顺手修复隧道面板列表渲染的 `TypeError: t2 is not a function`（渲染回调参数遮蔽了 i18n 翻译函数 `t`，0.3.10 起潜伏，隧道列表非空即崩 tab）。
 
 > **v0.3.20**：新增 SSH 资源「**登录命令**」（高级选项，`ssh -t` 语义的 exec+伪终端——默认 shell 不兼容的服务器填 `bash -l` 即可临时改用 bash，`tmux attach`、进目录后进 shell 一类动作也可固化为登录即得；命令即整个登录会话，改完保存后下一个终端即生效、无需重连）；ssh_exec 的 cwd 解析器**拒绝语义拆分**（多候选歧义与忙/非交互各占独立消息，后者带候选进程的 comm/pgrp/tpgid 摘要，现场排障一眼定性；讨论自 [#31](https://github.com/caoyiwei850/dsh-ssh-ops/issues/31)）；删除 SSH 资源时同步清除该主机的指纹信任记录，不再残留于「已信任主机」列表。
@@ -31,11 +32,8 @@
 
 > **v0.3.13**：整轮更新——**SFTP 目录批量上传/下载**（新工具 `sftp_upload_dir` / `sftp_download_dir`：小文件并发、大文件独占、单文件失败不中断整批）；**SSH 认证失败结构化诊断**（试过哪些方法、服务器还接受什么、下一步怎么走），并新增 **keyboard-interactive 认证**（保存的密码应答交互提示/MFA 门禁，设备掐断时自动降级纯密码重试）；**数据库连接健壮性三件套**（TCP keepalive、空闲复用前活性 ping + 透明重连、断连时手工事务有界收尾）；**修复** MySQL 未知字符集文本列显示为字节对象的问题；上一版的破坏性操作可逆化（rm 回收站、危险 SQL 自动备份、DROP 隔离改名、绕过向量封堵）一并随本版发布。
 
-> **v0.3.11**：修复 shell integration 的 shell 家族探测（此前探测输出被 cwd 标记污染，导致总是按 zsh 变体注入、bash 上整行脚本失效），并把 `shell` 状态补进终端上下文的结果契约。
 
-> **v0.3.10**：数据库面扩展——新增 **SQLite**（宿主内置 `node:sqlite`，零新依赖）、**ClickHouse**（HTTP 接口）、**openGauss**（复用 PostgreSQL 协议）三种驱动，查询结果可**导出 CSV/JSON**（经 SSH 的库直接把文件写到服务器，用 SFTP 面板下载）；新增**动态 SOCKS5 隧道**（`ssh -D`）；新增**会话录制与日志**（面板可预览/搜索/下载，agent 读取需批准并自动脱敏）；新增 **OSC 133 shell integration**，终端上下文能给出 cwd、退出码与提示符状态；SFTP 面板获得**文本编辑器、目录过滤、路径收藏与拖拽上传**。
 
-> **v0.3.9**：兼容 DSH `0.1.6-alpha.2`——适配新宿主 typert 校验（schema 与 strict codec 必须携带 `create()` 工厂，浏览器端 web boot 同样校验）与槽位注册新规则（拒绝同 id 重复注册，此前会导致 SSH 标签从官方侧边栏消失）；修复含 `null` 默认远程项目目录的资源记录导致配置无法读取的问题（#20）；数据库驱动改为首次连接时懒加载。
 
 ## 兼容性
 
@@ -107,7 +105,7 @@ Agent 命中上述黑名单时不会被静默拒绝：插件会创建一条一�
 ### 从 GitHub 安装（推荐）
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.21
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.22
 ```
 
 git 渠道装的是源码，安装期由 `prepare` 钩子自动执行 `npm run build` 生成入口 `lib/`，无需手动构建。**注意：pnpm ≥ 10 默认拦截依赖包的构建脚本**——若重启后 SSH 标签未出现，按 [INSTALL.md](INSTALL.md) 第 3 步检查 `node_modules/dsh-ssh-ops/lib/`：缺失说明构建被拦，进入该包目录执行 `npm install && npm run build`（或在该 profile 的 pnpm 配置 `onlyBuiltDependencies` 中放行 `dsh-ssh-ops`）后重启即可。
@@ -122,14 +120,14 @@ dsh web
 
 ### 从发布压缩包安装
 
-从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.21) 下载 `dsh-ssh-ops-0.3.21.tgz` 后：
+从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.3.22) 下载 `dsh-ssh-ops-0.3.22.tgz` 后：
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.21.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.3.22.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.3.21.zip` 适用于离线审阅或二次开发；解压后在目录中执行 `npm install`（构建自动完成）。
+`dsh-ssh-ops-0.3.22.zip` 适用于离线审阅或二次开发；解压后在目录中执行 `npm install`（构建自动完成）。
 
 ## 使用方式
 
@@ -243,8 +241,8 @@ npm run pack:release
 
 生成物位于 `release/`：
 
-- `dsh-ssh-ops-0.3.21.tgz`：可直接被 DSH 安装。
-- `dsh-ssh-ops-0.3.21.zip`：完整离线源码包。
+- `dsh-ssh-ops-0.3.22.tgz`：可直接被 DSH 安装。
+- `dsh-ssh-ops-0.3.22.zip`：完整离线源码包。
 
 ## 贡献者
 
