@@ -44,6 +44,7 @@ assert.equal(profileInfoSchema.parse({
   groupId: null, groupName: null, credentialConfigured: true, passphraseConfigured: false, secondaryConfigured: false,
   connected: false, credentialId: null, credentialName: null, proxyJump: [],
   defaultProjectPath: "/srv/apps/api",
+  execPolicy: null,
   loginCommand: null
 }).defaultProjectPath, "/srv/apps/api");
 

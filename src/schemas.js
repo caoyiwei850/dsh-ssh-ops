@@ -150,9 +150,43 @@ export const listResultSchema = resultSchema(
 
 // ── agent auto-connect settings (operator switch, issue #25) ────────────────
 
+// The operator-level settings RPC now carries every global switch. The
+// execution-policy fields are optional so an older panel build (which only
+// knows agentAutoConnect) still round-trips through these schemas.
+export const execPolicyModeSchema = z.enum(["standard", "custom", "allowAll"]);
+export const execPolicyAllowSchema = z.array(z.string()).max(32);
+
 export const agentSettingsGetRequestSchema = z.object({});
-export const agentSettingsResultSchema = resultSchema(z.object({ agentAutoConnect: z.boolean() }));
-export const agentSettingsSaveRequestSchema = z.object({ agentAutoConnect: z.boolean() });
+export const agentSettingsResultSchema = resultSchema(z.object({
+  agentAutoConnect: z.boolean(),
+  execPolicy: execPolicyModeSchema.optional(),
+  execPolicyAllow: execPolicyAllowSchema.optional(),
+  // The custom tier's checklist as served by the host (single source of truth).
+  categories: z.array(z.object({ key: z.string(), label: z.string() })).optional()
+}));
+export const agentSettingsSaveRequestSchema = z.object({
+  agentAutoConnect: z.boolean(),
+  execPolicy: execPolicyModeSchema.optional(),
+  execPolicyAllow: execPolicyAllowSchema.optional()
+});
+
+// ── execution policy (session-scoped switching; operator-only RPC) ──────────
+
+export const execPolicyGetRequestSchema = z.object({ connectionId: z.string().optional() });
+export const execPolicyGetResultSchema = resultSchema(z.object({
+  // The tier in force for this connection right now.
+  effective: execPolicyModeSchema,
+  // Where it came from: an operator session switch, the resource field, the
+  // global setting, or the built-in default (no storage / nothing stored).
+  source: z.enum(["session", "profile", "global", "default"]),
+  // The custom tier's released-category keys (from the global setting).
+  allow: z.array(z.string()),
+  // Raw settings so the panel can render where each layer points.
+  global: z.object({ policy: execPolicyModeSchema, allow: z.array(z.string()) }),
+  profileOverride: execPolicyModeSchema.nullable()
+}));
+export const execPolicySetRequestSchema = z.object({ connectionId: z.string(), policy: execPolicyModeSchema });
+export const execPolicySetResultSchema = execPolicyGetResultSchema;
 
 // ── interface language (operator choice; null = follow DSH's own language) ──
 
@@ -215,7 +249,11 @@ export const profileSaveRequestSchema = profileMetadataSchema.extend({
   credentialId: credentialIdSchema.nullable().optional(),
   proxyJump: z.array(savedJumpSchema).max(8).optional(),
   defaultProjectPath: projectDirectorySchema.nullable().optional(),
-  loginCommand: loginCommandSchema.nullable().optional()
+  loginCommand: loginCommandSchema.nullable().optional(),
+  // Execution policy override for this resource (null = follow the global
+  // setting). Only the tier travels here; the custom tier's released-category
+  // set stays a single global list in ssh_ops_settings.
+  execPolicy: execPolicyModeSchema.nullable().optional()
 });
 
 export const profileCredentialRefsSchema = z.object({
@@ -242,7 +280,8 @@ export const profileInfoSchema = profileMetadataSchema.extend({
   credentialName: z.string().nullable(),
   proxyJump: z.array(savedJumpSchema),
   defaultProjectPath: projectDirectorySchema.nullable(),
-  loginCommand: loginCommandSchema.nullable()
+  loginCommand: loginCommandSchema.nullable(),
+  execPolicy: execPolicyModeSchema.nullable()
 });
 
 const credentialInfoSchema = z.object({ credentialId: credentialIdSchema, name: z.string(), authKind: profileAuthKindSchema, credentialConfigured: z.boolean(), passphraseConfigured: z.boolean(), secondaryConfigured: z.boolean() });

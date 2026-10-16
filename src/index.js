@@ -5,6 +5,7 @@
  * ...) so the main conversation can drive the same sessions the panel shows.
  */
 import { createTerminalOutput } from "./terminal-output.js";
+import { extractCliPrompt, promptReturned, cliPageRequested, stripCliOutput, sanitizeCliCommand } from "./network-cli.js";
 import { randomUUID } from "node:crypto";
 import { findReusableProfileConnection } from "./profile-connection.js";
 import { resolveProfileRef, noConnectionGuidance, AUTO_CONNECT_DISABLED_MESSAGE } from "./agent-connect.js";
@@ -15,7 +16,7 @@ import { credentialRef } from "@deepseek-ai/dsh-credentials";
 import { defineDomain, domainTable } from "@deepseek-ai/dsh-storage-domain";
 import { TypertRemoteService } from "@deepseek-ai/dsh-typert-protocol";
 import { z } from "zod";
-import { CATEGORY_DELETE_FILES, assessShellCommand, isPrefillable, shellQuote } from "./safety.js";
+import { assessShellCommand, isPrefillable, normalizeAllowList, normalizePolicy, shellQuote, CATEGORY_DELETE_FILES, ALL_CATEGORY_KEYS, CATEGORY_LABELS } from "./safety.js";
 import { EXEC_CWD_ERROR_PREFIX, buildCwdAwareCommand, execEchoWarning, extractExecCwd, posixLoginShell } from "./exec-cwd.js";
 import { buildTrashCommand, parseSimpleDeleteCommand, parseTrashOutput } from "./trash.js";
 import { scpCommand, scpDownload, scpUpload } from "./scp.js";
@@ -162,6 +163,10 @@ const profileRecordSchema = z.object({
   // terminal sessions (exec + pty) and runs with the resource's own authority,
   // so it is operator-authored config, never agent-writable mid-session.
   loginCommand: z.string().nullable().optional(),
+  // Resource-level execution policy tier; null/absent follows the global
+  // setting. Only the tier lives here — the custom tier's released-category
+  // set is one operator-maintained global list.
+  execPolicy: z.string().nullable().optional(),
   proxyJump: z.array(z.union([z.object({ profileId: z.string().uuid() }), z.object({
     host: z.string(), port: z.number().int(), username: z.string(),
     authKind: z.enum(["credential", "password", "key"]).optional(), credentialId: z.string().uuid().optional(), hostKeyMode: z.string().optional()
@@ -258,6 +263,12 @@ const settingsRecordSchema = z.object({
   // stored `language` value is authoritative. Absent means "true" so first
   // installs behave exactly as before this flag existed.
   autoApplySystemLanguage: z.boolean().optional(),
+  // Global default execution policy (standard | custom | allowAll) and, for
+  // the custom tier, the released deny-list category keys. Optional so records
+  // written by older builds keep loading; invalid values fall back to the
+  // standard tier at read time, never widen it.
+  execPolicy: z.string().optional(),
+  execPolicyAllow: z.array(z.string()).optional(),
   updatedAt: z.string().optional()
 });
 
@@ -281,7 +292,14 @@ export function loadSettingsRecord(record = {}) {
   return {
     agentAutoConnect: record.agentAutoConnect === true,
     language: record.language === "zh" || record.language === "en" ? record.language : null,
-    autoApplySystemLanguage: record.autoApplySystemLanguage !== false
+    autoApplySystemLanguage: record.autoApplySystemLanguage !== false,
+    // normalizePolicy hardens the tier (unknown values land on standard) and
+    // normalizeAllowList hardens the checklist (unknown keys dropped). The two
+    // are read independently on purpose: a record whose tier is not "custom"
+    // still carries the operator's ticks, so switching tiers back and forth
+    // never empties the checklist.
+    execPolicy: normalizePolicy({ mode: record.execPolicy }).mode,
+    execPolicyAllow: normalizeAllowList(record.execPolicyAllow)
   };
 }
 
@@ -408,6 +426,16 @@ export default class SshOpsService extends TypertRemoteService {
    */
   agentAutoConnect = false;
   /**
+   * Global default execution policy ("standard" | "custom" | "allowAll") and
+   * the custom tier's released deny-list category keys. Persisted in
+   * ssh_ops_settings; the default keeps the historical behavior where every
+   * destructive pattern is held for the operator. Resource records may
+   * override the tier per server; a session switch (execPolicySet) overrides
+   * both in memory for one connection and never persists.
+   */
+  execPolicy = "standard";
+  execPolicyAllow = [];
+  /**
    * Interface language last resolved from DSH's own Settings → Language by
    * the browser half ("zh" | "en"), or null before the first write-back.
    * There is no manual language switch: the plugin always follows the host,
@@ -514,6 +542,8 @@ export default class SshOpsService extends TypertRemoteService {
       const settingsRecord = this.settingsTable.get(SETTINGS_ROW_ID) ?? {};
       const loaded = loadSettingsRecord(settingsRecord);
       this.agentAutoConnect = loaded.agentAutoConnect;
+      this.execPolicy = loaded.execPolicy;
+      this.execPolicyAllow = loaded.execPolicyAllow;
       // An explicit choice drives the host half from the first message it
       // builds. With no choice stored, the host keeps its default (zh) and
       // the browser half adopts DSH's language and writes it back.
@@ -1219,6 +1249,12 @@ export default class SshOpsService extends TypertRemoteService {
   handleTransportLoss(record, client, _error) {
     if (record.closing || record.client !== client || record.dead) return;
     record.dead = true;
+    // A session-scoped tier switch is memory-only by design and must not
+    // outlive the transport it was made on. The self-healing reconnect below
+    // reuses this very record, so clearing it here is what makes the panel's
+    // "断开或重连后恢复资源/全局设置" promise true instead of leaving a
+    // forgotten allowAll in force after a network blip.
+    record.execPolicyOverride = undefined;
     record.sftp = null;
     for (const sessionId of [...record.sessions]) {
       const session = this.sessions.get(sessionId);
@@ -1382,6 +1418,7 @@ export default class SshOpsService extends TypertRemoteService {
       proxyJump: record.proxyJump ?? [],
       defaultProjectPath: record.defaultProjectPath ?? null,
       loginCommand: record.loginCommand ?? null,
+      execPolicy: ["standard", "custom", "allowAll"].includes(record.execPolicy) ? record.execPolicy : null,
       groupId: group === undefined ? null : record.groupId,
       groupName: group?.name ?? null,
       credentialConfigured: primary.configured,
@@ -1428,6 +1465,9 @@ export default class SshOpsService extends TypertRemoteService {
       const loginCommand = Object.hasOwn(request, "loginCommand")
         ? request.loginCommand
         : (previous?.loginCommand ?? null);
+      const execPolicy = Object.hasOwn(request, "execPolicy")
+        ? request.execPolicy
+        : (previous?.execPolicy ?? null);
       const seenJumpProfiles = new Set();
       for (const hop of proxyJump) {
         if (hop.profileId) {
@@ -1453,6 +1493,7 @@ export default class SshOpsService extends TypertRemoteService {
         credentialId: Object.hasOwn(request, "credentialId") ? request.credentialId : (previous?.credentialId ?? null),
         defaultProjectPath,
         loginCommand,
+        execPolicy: ["standard", "custom", "allowAll"].includes(execPolicy) ? execPolicy : null,
         proxyJump,
         groupId,
         createdAt: previous?.createdAt ?? now,
@@ -1594,26 +1635,161 @@ export default class SshOpsService extends TypertRemoteService {
     }
   }
 
-  // ── agent auto-connect (issue #25) ─────────────────────────────────────────
+  // ── agent auto-connect (issue #25) + operator-level switches ───────────────
 
   async agentSettingsGet() {
-    return { ok: true, value: { agentAutoConnect: this.agentAutoConnect } };
+    const policy = this.globalExecPolicy();
+    return {
+      ok: true,
+      value: {
+        agentAutoConnect: this.agentAutoConnect,
+        execPolicy: policy.mode,
+        // The STORED checklist, not the tier-normalized one: the panel loads
+        // its checkboxes from here, and a tier of standard/allowAll must not
+        // hand it an empty list that it would then save back over.
+        execPolicyAllow: normalizeAllowList(this.execPolicyAllow),
+        // The category checklist the custom tier releases from, with its
+        // display labels (i18n identifiers; the panel translates them).
+        categories: ALL_CATEGORY_KEYS.map((key) => ({ key, label: CATEGORY_LABELS[key] }))
+      }
+    };
   }
 
   async agentSettingsSave(request) {
     const agentAutoConnect = request.agentAutoConnect === true;
+    // Policy fields are optional so a panel built before this feature still
+    // saves the auto-connect switch without touching the policy.
+    //
+    // The tier and the released-category checklist persist INDEPENDENTLY: the
+    // decision path ignores the checklist outside the custom tier anyway, so
+    // keeping it means an operator who ticks categories, flips to another tier
+    // and flips back finds the ticks where they left them instead of silently
+    // overwriting the stored list with an empty one.
+    const mode = normalizePolicy({ mode: request.execPolicy ?? this.execPolicy }).mode;
+    const allow = normalizeAllowList(request.execPolicyAllow ?? this.execPolicyAllow);
     try {
       const previous = this.settingsTable.get(SETTINGS_ROW_ID) ?? {};
       await this.settingsTable.put(SETTINGS_ROW_ID, {
         ...previous,
         agentAutoConnect,
+        execPolicy: mode,
+        execPolicyAllow: allow,
         updatedAt: new Date().toISOString()
       });
     } catch (error) {
       return { ok: false, error: fail("agent-settings-save-failed", error.message) };
     }
     this.agentAutoConnect = agentAutoConnect;
-    return { ok: true, value: { agentAutoConnect: this.agentAutoConnect } };
+    this.execPolicy = mode;
+    this.execPolicyAllow = allow;
+    return {
+      ok: true,
+      value: {
+        agentAutoConnect: this.agentAutoConnect,
+        execPolicy: mode,
+        execPolicyAllow: allow,
+        categories: ALL_CATEGORY_KEYS.map((key) => ({ key, label: CATEGORY_LABELS[key] }))
+      }
+    };
+  }
+
+  // ── execution policy (operator-only; NEVER registered as an agent tool) ────
+
+  /**
+   * The global policy, normalized. Defensive against prototype-stub service
+   * instances (tests) where class fields never initialized.
+   *
+   * The checklist is returned independently of the tier: it is one
+   * operator-maintained list, and a session or resource switch to the custom
+   * tier must release exactly what the operator ticked — not an empty set
+   * produced by the global tier happening to sit on standard.
+   */
+  globalExecPolicy() {
+    return {
+      mode: normalizePolicy({ mode: this.execPolicy }).mode,
+      allow: normalizeAllowList(this.execPolicyAllow)
+    };
+  }
+
+  /**
+   * Resolve the tier in force for one connection:
+   * session switch > resource field > global setting > built-in standard.
+   * Reads the resource record live (not a connect-time snapshot) so saving a
+   * profile's policy applies to already-connected sessions. Storage that is
+   * not ready fails safe to the global setting / standard.
+   *
+   * The released-category list travels WITH the result on every branch: only
+   * the tier is layered (one operator-maintained checklist serves every
+   * layer), but the decision function reads the list from this object. Leaving
+   * it off made the custom tier a silent no-op — the panel said "released",
+   * the gate kept blocking.
+   */
+  resolveExecPolicy(connectionId) {
+    const global = this.globalExecPolicy();
+    const conn = this.connections.get(connectionId);
+    if (conn !== void 0 && conn.execPolicyOverride !== undefined) {
+      return { mode: conn.execPolicyOverride, source: "session", allow: global.allow };
+    }
+    let profileOverride;
+    if (conn !== void 0 && conn.profileId && this.profileTable) {
+      try {
+        const record = this.profileTable.get(conn.profileId);
+        if (record && record.execPolicy !== null && record.execPolicy !== undefined) profileOverride = record.execPolicy;
+      } catch {}
+    }
+    if (profileOverride !== undefined) return { mode: profileOverride, source: "profile", allow: global.allow };
+    if (global.mode !== "standard") return { mode: global.mode, source: "global", allow: global.allow };
+    return {
+      mode: "standard",
+      source: this.profileTable === null && conn === void 0 ? "default" : "global",
+      allow: global.allow
+    };
+  }
+
+  /**
+   * Policy snapshot for the panel's pill. Also the single source the UI uses
+   * to render where each layer points. Never exposed to the agent as a tool.
+   */
+  execPolicyGet(request) {
+    const connectionId = request?.connectionId ?? this.activeConnectionId;
+    const resolved = this.resolveExecPolicy(connectionId);
+    const global = this.globalExecPolicy();
+    const conn = this.connections.get(connectionId);
+    let profileOverride = null;
+    if (conn !== void 0 && conn.profileId && this.profileTable) {
+      try {
+        const record = this.profileTable.get(conn.profileId);
+        if (record && record.execPolicy !== null && record.execPolicy !== undefined) profileOverride = record.execPolicy;
+      } catch {}
+    }
+    return {
+      ok: true,
+      value: {
+        effective: resolved.mode,
+        source: resolved.source,
+        allow: global.allow,
+        global: { policy: global.mode, allow: global.allow },
+        profileOverride
+      }
+    };
+  }
+
+  /**
+   * Switch the tier for one connection. Session-scoped by design: it mutates
+   * the in-memory connection record only, so a reconnect or panel reload
+   * falls back to the resource/global policy. This method must stay out of
+   * the agent tool surface — an agent able to call it could lift its own gate
+   * after a rejection.
+   */
+  execPolicySet(request) {
+    const policy = normalizePolicy(request.policy);
+    if (request.policy !== policy.mode) {
+      return { ok: false, error: fail("exec-policy-unsupported", `the execution policy supports ${["standard", "custom", "allowAll"].join(", ")}, not "${request.policy}"`) };
+    }
+    const conn = this.connections.get(request.connectionId);
+    if (conn === void 0) return { ok: false, error: fail("no-connection", `connection "${request.connectionId}" does not exist`) };
+    conn.execPolicyOverride = policy.mode;
+    return this.execPolicyGet({ connectionId: request.connectionId });
   }
 
   // ── interface language ─────────────────────────────────────────────────────
@@ -1930,33 +2106,13 @@ export default class SshOpsService extends TypertRemoteService {
     }
     try {
       if (text) {
-        const pending = this.pendingForSession(session.id);
-        if (pending) {
-          // A card's Execute button is the only confirmation path for an
-          // agent-originated dangerous command.  Keyboard Enter cannot submit
-          // it, while Ctrl-C and any edit revoke the pending approval first.
-          if (text === "\r" || text === "\n") {
-            this.appendTerminalNotice(session, t("此危险命令不会因回车执行：请使用面板弹出的确认卡片，点击“执行”或“撤销”。"));
-            return { ok: true, value: { written: 0 } };
-          }
-          if (text === "\x03") {
-            this.removePendingConfirmation(pending.confirmationId);
-            session.stream.write(text);
-            session.inputLine = "";
-            session.inputKnown = true;
-            return { ok: true, value: { written: text.length } };
-          }
-          this.removePendingConfirmation(pending.confirmationId);
-          // Clear the protected prefill before allowing the operator's new
-          // input through.  From this point the terminal is fully manual.
-          session.stream.write(`\x15${text}`);
-          session.inputLine = "";
-          session.inputKnown = true;
-          this.updateInputMirror(session, text);
-          return { ok: true, value: { written: text.length } };
-        }
-        // This path is interactive operator input. It remains intentionally
-        // unguarded; agent calls use writeToConnection()/execOnConnection().
+        // This path is interactive operator input and stays unguarded even
+        // while a confirmation card is pending: the card no longer prefills
+        // the terminal (that was removed in 0.2.14), so Enter cannot submit
+        // its command — the card's own Execute button is the only path.
+        // Blocking Enter or swallowing Ctrl-C here would instead break the
+        // standing boundary that a human's own keystrokes are never policed.
+        // Agent calls use writeToConnection()/execOnConnection().
         session.stream.write(text);
         this.updateInputMirror(session, text);
       }
@@ -1976,7 +2132,7 @@ export default class SshOpsService extends TypertRemoteService {
     const ready = () => session && conn && this.sessions.get(request.sessionId) === session
       && !conn.dead && !conn.closing && session.exited === null && session.stream
       && session.inputKnown === true && session.inputLine === ""
-      && !this.pendingForSession(session.id) && conn.sessions.size === 1;
+      && !this.hasPendingConfirmation(session.id) && conn.sessions.size === 1;
     if (!ready()) return { ok: false, error: fail("terminal-not-ready", t("请先结束前台程序、清空未提交输入，并仅保留一个交互终端")) };
     const revision = session.inputRevision ?? 0;
     const client = conn.client;
@@ -2012,7 +2168,7 @@ export default class SshOpsService extends TypertRemoteService {
     const ready = () => session && conn && this.sessions.get(request.sessionId) === session
       && !conn.dead && !conn.closing && session.exited === null && session.stream
       && session.inputKnown === true && session.inputLine === ""
-      && !this.pendingForSession(session.id) && conn.sessions.size === 1;
+      && !this.hasPendingConfirmation(session.id) && conn.sessions.size === 1;
     if (!ready()) return { ok: false, error: fail("terminal-not-ready", t("请先结束前台程序、清空未提交输入，并仅保留一个交互终端")) };
     try {
       if (!posixLoginShell(await this.resolveLoginShell(conn))) {
@@ -2200,6 +2356,10 @@ export default class SshOpsService extends TypertRemoteService {
   }
 
   batchPlan(request) {
+    // Deliberately tier-blind: the multi-server path always marks destructive
+    // commands for operator confirmation regardless of any execution policy —
+    // fanning out to many machines is a different risk dimension from a
+    // single-connection release, and the operator's click stays the gate.
     const decision = assessShellCommand(request.command);
     // Clamp here, not just in the RPC schema: the ssh_batch tool calls this
     // method directly and bypasses zod, so an agent-supplied timeout_ms must
@@ -2314,12 +2474,24 @@ export default class SshOpsService extends TypertRemoteService {
     return { ok: true, value: { cancelled: true } };
   }
 
-  /** The one protected line currently visible in a terminal, if any. */
-  pendingForSession(sessionId) {
-    for (const pending of this.pendingConfirmations.values()) {
-      if (pending.sessionId === sessionId && pending.prefilled) return pending;
+  /**
+   * Whether this terminal is waiting on a dangerous-command confirmation card
+   * right now — the state every "is this terminal free?" guard needs.
+   *
+   * The predicate this replaced also demanded `pending.prefilled`, a flag no
+   * card has carried since terminal prefill was removed in 0.2.14: it answered
+   * "nothing pending" for every card in existence, so each guard built on it
+   * was dead code (the CLI path's serialization gate, `ready()`, and the
+   * terminal Enter gate).
+   */
+  hasPendingConfirmation(sessionId) {
+    // Partially-constructed instances in unit tests never initialized the map.
+    const pendingConfirmations = this.pendingConfirmations;
+    if (pendingConfirmations === undefined) return false;
+    for (const pending of pendingConfirmations.values()) {
+      if (pending.sessionId === sessionId) return true;
     }
-    return null;
+    return false;
   }
 
   removePendingConfirmation(confirmationId) {
@@ -2637,31 +2809,40 @@ export default class SshOpsService extends TypertRemoteService {
       });
     });
     const state = { exitCode: null, stdout: "", stderr: "", truncated: false, timedOut: false };
+    // Settling is local-first: the timeout resolves NOW and only then tries
+    // to close the channel. Settling via the 'close' event alone would depend
+    // on the peer answering CHANNEL_CLOSE — a device that never responded to
+    // the exec request will not respond to the close either, and the caller
+    // would hang forever (#33). resolve() is idempotent, so a later close
+    // event is harmless.
+    let settle = () => {};
     const timer = setTimeout(() => {
       state.timedOut = true;
+      settle();
       try { stream.close(); } catch {}
     }, timeoutMs);
-    await new Promise((resolve) => {
-      stream.on("data", (chunk) => {
-        const result = appendCapped(state.stdout, chunk.toString("utf8"), this.config.maxCommandOutputBytes);
-        state.stdout = result.text;
-        state.truncated ||= result.truncated;
+    try {
+      await new Promise((resolve) => {
+        settle = resolve;
+        stream.on("data", (chunk) => {
+          const result = appendCapped(state.stdout, chunk.toString("utf8"), this.config.maxCommandOutputBytes);
+          state.stdout = result.text;
+          state.truncated ||= result.truncated;
+        });
+        stream.stderr.on("data", (chunk) => {
+          const result = appendCapped(state.stderr, chunk.toString("utf8"), this.config.maxCommandOutputBytes);
+          state.stderr = result.text;
+          state.truncated ||= result.truncated;
+        });
+        stream.on("close", (code) => {
+          state.exitCode = typeof code === "number" ? code : null;
+          settle();
+        });
+        stream.on("error", () => settle());
       });
-      stream.stderr.on("data", (chunk) => {
-        const result = appendCapped(state.stderr, chunk.toString("utf8"), this.config.maxCommandOutputBytes);
-        state.stderr = result.text;
-        state.truncated ||= result.truncated;
-      });
-      stream.on("close", (code) => {
-        clearTimeout(timer);
-        state.exitCode = typeof code === "number" ? code : null;
-        resolve();
-      });
-      stream.on("error", () => {
-        clearTimeout(timer);
-        resolve();
-      });
-    });
+    } finally {
+      clearTimeout(timer);
+    }
     return state;
   }
 
@@ -2686,6 +2867,14 @@ export default class SshOpsService extends TypertRemoteService {
       conn.loginShellProbe = this.collectExecOutput(conn.client, "echo $SHELL", 10000)
         .then((state) => {
           const name = state.stdout.trim().split("/").pop() ?? "";
+          // This probe is the authoritative exec-channel test in BOTH
+          // directions: a timeout with nothing back is the network-device
+          // signature (#33) — the channel opened but the device never answers
+          // it — while a shell name coming back proves the channel works, so a
+          // stall remembered earlier (a slow, silent command that timed out)
+          // is cleared instead of downgrading a healthy host for good.
+          if (state.timedOut && state.stdout === "" && state.exitCode === null) conn.execStalled = true;
+          else if (name.length > 0) conn.execStalled = false;
           conn.loginShell = name.length > 0 ? name.toLowerCase() : null;
         })
         .catch(() => {
@@ -2698,7 +2887,8 @@ export default class SshOpsService extends TypertRemoteService {
   }
 
   async execOnConnection(connectionId, command, timeoutMs = 30000, retried = false) {
-    const decision = assessShellCommand(command);
+    const policy = this.resolveExecPolicy(connectionId);
+    const decision = assessShellCommand(command, policy);
     if (!decision.ok) {
       // A simple, fully-literal rm/unlink/rmdir still goes through the
       // operator's confirmation card — but approving it performs the
@@ -2712,9 +2902,177 @@ export default class SshOpsService extends TypertRemoteService {
       }
       // The card, the reason and every notice stay byte-for-byte what they
       // always were — the trash is a silent rollback margin, never a new UX.
-      return this.prefillBlockedResult(connectionId, command, t(decision.category ?? decision.reason), trashScript);
+      return this.prefillBlockedResult(connectionId, command, t(decision.category ?? decision.reason), trashScript, policy);
     }
-    return this.runPreparedExec(connectionId, command, command, false, timeoutMs, retried);
+    // Network-CLI routing (#33): a connection whose exec probe timed out
+    // without a byte back has no POSIX exec channel (VRP, Comware, IOS…).
+    // Type the command into the already-open interactive terminal and
+    // complete on prompt return instead of hanging on exec.
+    const conn = this.connections.get(connectionId);
+    // The flag is only trusted while the login shell is NOT known to be
+    // POSIX: a host that answered `echo $SHELL` provably has a working exec
+    // channel, so a stale flag must never divert it to the terminal.
+    if (conn !== void 0 && conn.execStalled && !posixLoginShell(conn.loginShell)) {
+      return this.cliExecOnConnection(conn, command, timeoutMs);
+    }
+    const result = await this.runPreparedExec(connectionId, command, command, false, timeoutMs, retried);
+    if (result.ok && !result.value.timedOut) {
+      // An exec that settled on its own proves the channel works, so a stall
+      // remembered from an earlier slow/silent timeout is cleared here — the
+      // flag is set and cleared in one place, and no reconnect is needed to
+      // heal a connection that was misread once.
+      const settled = this.connections.get(connectionId);
+      if (settled !== void 0) settled.execStalled = false;
+    }
+    if (result.ok && result.value.timedOut && (result.value.stdout ?? "") === "" && (result.value.stderr ?? "") === "") {
+      // A silent timeout is only the network-device signature when the login
+      // shell probe ALSO came back empty (`loginShell === null`). When a POSIX
+      // shell answered, this was just a slow, quiet command — `sleep 45`, a
+      // build that prints nothing, output redirected to a file — and the
+      // caller must get its honest timeout result. Acting on the timeout alone
+      // downgraded healthy connections permanently: every later ssh_exec took
+      // the terminal path and failed with "network CLI prompt unrecognised"
+      // instead of running.
+      const stalled = this.connections.get(connectionId);
+      if (stalled !== void 0 && stalled.loginShell === null) {
+        // First contact with an exec-stalled device: mark it and fall through
+        // to the terminal path within the same call, so the first invocation
+        // already works instead of failing once.
+        stalled.execStalled = true;
+        // No terminal to type into (or the prompt could not be recognised):
+        // this returns the plain-language error rather than a silent empty
+        // timeout (#33 P1).
+        return this.cliExecOnConnection(stalled, command, timeoutMs);
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Route to the interactive-terminal path when the connection has a live
+   * PTY session; otherwise surface the plain-language "no terminal" error
+   * (#33 P1) instead of a silent empty timeout.
+   */
+  async cliExecOnConnection(conn, command, timeoutMs = 30000) {
+    const session = [...conn.sessions]
+      .map((id) => this.sessions.get(id))
+      .find((candidate) => candidate && candidate.exited === null && candidate.stream !== null);
+    if (!session) {
+      return {
+        ok: false,
+        error: fail("cli-no-terminal", t("该设备不支持 exec 通道（网络 CLI 设备，如华为 VRP / 华三 Comware），且当前没有打开的交互终端。请先在右侧 SSH 面板打开该设备的终端，再重试 ssh_exec；或在终端手动执行命令。"))
+      };
+    }
+    return this.cliExecOnSession(conn, session, command, timeoutMs);
+  }
+
+  /**
+   * Run one command on a network-CLI device by typing it into the interactive
+   * terminal (#33). The device contract is "one line, one command, back to
+   * the prompt", so completion is the prompt returning, not a channel close.
+   * The command appears in the operator's terminal — intentional: the
+   * operator sees what the agent typed. The destructive-command deny-list
+   * has already run for this command in execOnConnection; this path adds the
+   * format gate and its own serialization (one CLI query per connection, and
+   * never while a confirmation card is pending on that terminal).
+   */
+  async cliExecOnSession(conn, session, command, timeoutMs = 30000) {
+    if (this.hasPendingConfirmation(session.id)) {
+      return { ok: false, error: fail("cli-confirmation-pending", t("该终端存在待确认的危险命令卡片，请先处理（执行或撤销），再执行网络设备查询")) };
+    }
+    if (conn.cliBusy) {
+      return { ok: false, error: fail("cli-busy", t("该网络设备的上一条查询尚未完成，请稍候再试")) };
+    }
+    const screened = sanitizeCliCommand(command);
+    if (!screened.ok) {
+      return { ok: false, error: fail("cli-invalid-command", t(`无法在终端执行该命令：${screened.reason}`)) };
+    }
+    const cliCommand = screened.value;
+    const promptLine = extractCliPrompt(session.buffer.slice(-1500));
+    if (!promptLine) {
+      return { ok: false, error: fail("cli-prompt-unrecognized", t("未能在终端尾部识别网络 CLI 提示符（支持 VRP/Comware 的 <主机名> 与 [视图名]，Cisco 的 主机名> 与 主机名#）。请确认终端空闲并停在提示符上后重试。")) };
+    }
+    const startedAt = new Date().toISOString();
+    const startedAtMs = Date.now();
+    conn.cliBusy = true;
+    // Bounded collection. The rolling TAIL is what prompt detection needs
+    // (the device's prompt is the last line), and it is also the part worth
+    // keeping for diagnosis — an unbounded buffer could otherwise pour the
+    // full 200-page maximum of one `display` command straight into the
+    // agent's context. Bytes dropped off the front are reported honestly.
+    const maxBytes = this.config.maxCommandOutputBytes;
+    let collected = "";
+    let truncated = false;
+    const onData = (chunk) => {
+      const next = collected + chunk.toString("utf8");
+      if (Buffer.byteLength(next, "utf8") > maxBytes) truncated = true;
+      collected = tailCapped(next, maxBytes);
+    };
+    try {
+      session.stream.on("data", onData);
+      // Clear any half-typed operator line, then submit the command.
+      session.stream.write(`\x15${cliCommand}\r`);
+      session.inputLine = "";
+      session.inputKnown = true;
+      const deadline = startedAtMs + timeoutMs;
+      let pages = 0;
+      for (;;) {
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        const text = collected;
+        // Completion first: a prompt return ends the command even if an
+        // older ---- More ---- marker is still inside the window — the
+        // collected text keeps every past marker, so checking paging first
+        // would loop forever on short final pages (#33 follow-up).
+        if (promptReturned(text, promptLine)) break;
+        if (cliPageRequested(text)) {
+          if (pages >= 200) {
+            return { ok: false, error: fail("cli-paging-loop", t("终端分页请求超过 200 次，查询已中止")) };
+          }
+          pages += 1;
+          session.stream.write(" ");
+          continue;
+        }
+        if (Date.now() >= deadline) {
+          // Unfinished output: drop the echoed command line but keep the
+          // tail as-is (there is no prompt to strip), and say timedOut.
+          const stdout = stripCliOutput(text, promptLine, cliCommand, { timedOut: true });
+          return {
+            ok: true,
+            value: {
+              exitCode: null,
+              stdout,
+              stderr: "",
+              cwd: null,
+              commandId: `cli-${randomUUID()}`,
+              startedAt,
+              finishedAt: new Date().toISOString(),
+              durationMs: Date.now() - startedAtMs,
+              truncated,
+              timedOut: true
+            }
+          };
+        }
+      }
+      const stdout = stripCliOutput(collected, promptLine, cliCommand);
+      return {
+        ok: true,
+        value: {
+          exitCode: null,
+          stdout,
+          stderr: "",
+          cwd: null,
+          commandId: `cli-${randomUUID()}`,
+          startedAt,
+          finishedAt: new Date().toISOString(),
+          durationMs: Date.now() - startedAtMs,
+          truncated,
+          timedOut: false
+        }
+      };
+    } finally {
+      session.stream.removeListener("data", onData);
+      conn.cliBusy = false;
+    }
   }
 
   async runPreparedExec(connectionId, prepared, displayCommand, trashRun, timeoutMs = 30000, retried = false) {
@@ -2854,7 +3212,7 @@ export default class SshOpsService extends TypertRemoteService {
    * Build the ssh_exec result for a blocked destructive command: prefilled into
    * the terminal when possible, otherwise a copyable command card.
    */
-  prefillBlockedResult(connectionId, command, reason, trashScript = null) {
+  prefillBlockedResult(connectionId, command, reason, trashScript = null, policy = null) {
     const pending = this.prefillBlockedCommand(connectionId, command, reason, trashScript);
     const now = new Date().toISOString();
     return {
@@ -2874,7 +3232,10 @@ export default class SshOpsService extends TypertRemoteService {
         reason,
         command,
         prefilled: pending.prefilled,
-        queued: pending.queued
+        queued: pending.queued,
+        // The tier that produced this rejection, so the agent can tell the
+        // operator what to relax instead of retrying blindly.
+        ...(policy ? { policy: policy.mode, policySource: policy.source } : {})
       }
     };
   }
@@ -2883,13 +3244,16 @@ export default class SshOpsService extends TypertRemoteService {
   writeToConnection(connectionId, input) {
     const conn = this.connections.get(connectionId);
     if (conn === void 0) return { ok: false, error: fail("no-connection", `connection "${connectionId}" does not exist`) };
+    // The tier resolves per connection, not per session: every shell of this
+    // server shares the same gate.
+    const policy = this.resolveExecPolicy(connectionId);
     let written = 0;
     let blockedReason = null;
     for (const sessionId of conn.sessions) {
       const session = this.sessions.get(sessionId);
       if (session && session.exited === null && session.stream !== null) {
         try {
-          const guarded = this.prepareTerminalInput(session, input);
+          const guarded = this.prepareTerminalInput(session, input, policy);
           if (guarded.forwarded) session.stream.write(guarded.forwarded);
           written += guarded.forwarded.length;
           blockedReason ??= guarded.blockedReason;
@@ -2910,9 +3274,9 @@ export default class SshOpsService extends TypertRemoteService {
    * policy approval. A denied line is cleared with Ctrl-U before the shell can
    * execute it. History navigation and tab completion fail closed as well.
    */
-  prepareTerminalInput(session, text) {
+  prepareTerminalInput(session, text, policy = null) {
     session.inputRevision = (session.inputRevision ?? 0) + 1;
-    const { forwarded, blockedReason } = processTerminalInput(session, text, (line) => assessShellCommand(line));
+    const { forwarded, blockedReason } = processTerminalInput(session, text, (line) => assessShellCommand(line, policy ?? undefined));
     if (blockedReason !== null) this.appendTerminalNotice(session, blockedReason);
     return { forwarded, blockedReason };
   }

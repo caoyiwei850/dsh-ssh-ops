@@ -6,6 +6,13 @@
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { t } from "../i18n/core.js";
 
+/** Human name for an execution-policy tier, for agent-facing notices. */
+export function execPolicyLabel(mode) {
+  if (mode === "custom") return t("自定义放行");
+  if (mode === "allowAll") return t("全部放行");
+  return t("标准");
+}
+
 export function registerSshSessionTools(ctx, service) {
   ctx.tools.register(defineTool({
     name: "ssh_shell_integration",
@@ -235,7 +242,9 @@ export function registerSshSessionTools(ctx, service) {
           reason: { type: "string" },
           command: { type: "string" },
           prefilled: { type: "boolean" },
-          queued: { type: "boolean" }
+          queued: { type: "boolean" },
+          policy: { type: "string" },
+          policySource: { type: "string" }
         }
       },
       render(args, value) {
@@ -244,7 +253,10 @@ export function registerSshSessionTools(ctx, service) {
             ? t("命令未执行；右侧 SSH 终端面板已弹出确认卡片，等待操作员点击“执行”或“撤销”：")
             : t("命令未执行，无法预填，请粘贴到右侧终端执行：");
           const whereRuns = t("确认执行（或粘贴执行）发生在右侧交互 shell 内，跟随终端当前目录；与 ssh_exec 的 exec 通道目录无关。命令里的相对路径请按此理解。");
-          return [{ type: "text", text: t(`⚠️ 已拦截：${value.reason ?? ""}\n${where}\n\`\`\`bash\n${value.command ?? ""}\n\`\`\`\n${whereRuns}\n请勿重试/绕行，由人工确认执行。`) }];
+          const tierNote = value.policy
+            ? "\n" + t(`当前连接执行策略：${execPolicyLabel(value.policy)}${value.policySource === "session" ? t("（操作者本次会话内切换）") : ""}。若操作者希望放开此类命令，请其自行在右侧面板的策略开关中调整；请勿重试。`)
+            : "";
+          return [{ type: "text", text: t(`⚠️ 已拦截：${value.reason ?? ""}\n${where}\n\`\`\`bash\n${value.command ?? ""}\n\`\`\`\n${whereRuns}\n请勿重试/绕行，由人工确认执行。`) + tierNote }];
         }
         const out = value.stdout ?? "";
         const err = value.stderr ?? "";

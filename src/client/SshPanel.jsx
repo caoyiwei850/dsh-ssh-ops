@@ -27,6 +27,7 @@ import { privateKeyProblem } from "./pemkey.js";
 import { availableCommandSnippets, loadCommandSnippets, matchingCommandSnippets, saveCommandSnippets, searchCommandSnippets } from "./command-snippets.js";
 import { createTerminalPool } from "./terminal-pool.js";
 import { applyTerminalTheme, createTerminalThemeWatcher, getTerminalTheme } from "./terminal-theme.js";
+import { TIER_ORDER, execPolicyLabel, execPolicyLooseningDetail } from "./exec-policy-ui.js";
 import {
   DEFAULT_VIEW_ID,
   adoptIntoView,
@@ -77,6 +78,16 @@ let stylesInjected = false;
  * stays with the inline styles so the two cannot drift.
  */
 const PANEL_CSS = `
+.dsh-ssh-ops-policy-chip {
+  transition: opacity .18s ease, background .18s ease, padding .15s ease;
+}
+.dsh-ssh-ops-policy-chip:hover,
+.dsh-ssh-ops-policy-chip:focus-visible {
+  opacity: 1 !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  .dsh-ssh-ops-policy-chip { transition: none; }
+}
 .dsh-ssh-ops-add-btn {
   display: inline-flex;
   align-items: center;
@@ -182,6 +193,9 @@ function XtermView({ api, sessionId, connectionId }) {
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [searchResults, setSearchResults] = useState(null);
+  // True while the viewport sits above the latest output — the only moment a
+  // "jump to bottom" affordance is worth showing.
+  const [showJump, setShowJump] = useState(false);
 
   useEffect(() => {
     ensureStyles();
@@ -203,6 +217,19 @@ function XtermView({ api, sessionId, connectionId }) {
     } else {
       term.open(container);
     }
+
+    // Scroll watcher for the jump-to-bottom button: visible only while the
+    // viewport is scrolled above the latest output (autoscroll on new data
+    // and manual scrolling both land here via onScroll / the scroll event).
+    const viewport = container.querySelector(".xterm-viewport");
+    const updateJump = () => {
+      if (!viewport) { setShowJump(false); return; }
+      const distFromBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
+      setShowJump(distFromBottom > 8);
+    };
+    viewport?.addEventListener("scroll", updateJump, { passive: true });
+    const scrollSubscription = term.onScroll(updateJump);
+    updateJump();
 
     let alive = true;
     let writing = false;
@@ -367,6 +394,8 @@ function XtermView({ api, sessionId, connectionId }) {
       entryRef.current = null;
       setSearchOpen(false);
       resizeObserver.disconnect();
+      viewport?.removeEventListener("scroll", updateJump);
+      scrollSubscription?.dispose?.();
       inputSubscription.dispose();
       // Detach only — the pooled terminal (and its scrollback) survives this
       // unmount. Connections are host-side and are not touched here either.
@@ -391,6 +420,24 @@ function XtermView({ api, sessionId, connectionId }) {
       <div style={panelStyles.xtermWrap} ref={containerRef} data-closed={closed || undefined} />
       {/* The shortcut alone is not discoverable: this button is the visible
           entry point, and its tooltip teaches the keyboard path. */}
+      {/* Jump-to-bottom, DSH-session-style floating chevron: only appears
+          while the view is scrolled above the latest output. */}
+      {showJump && (
+        <button
+          type="button"
+          onClick={() => {
+            entryRef.current?.term?.scrollToBottom();
+            setShowJump(false);
+          }}
+          style={panelStyles.jumpFab}
+          title={t("滚动到底部（最新输出）")}
+          aria-label={t("滚动到底部（最新输出）")}
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </button>
+      )}
       {!searchOpen && (
         <button
           type="button"
@@ -1358,7 +1405,8 @@ export function SshPanel({ api, credentials, viewId = DEFAULT_VIEW_ID, viewSigna
 
       <div style={panelStyles.body}>
         <TabErrorBoundary key="terminal">
-          <div style={{ ...panelStyles.tabPane, display: tab === "terminal" ? "flex" : "none" }}>
+          <div style={{ ...panelStyles.tabPane, display: tab === "terminal" ? "flex" : "none", position: "relative" }}>
+            {active && <ExecPolicyPill api={api} connectionId={active.connectionId} />}
             {pendingConfirmations.length > 0 && !pendingModalOpen && (
               <div style={panelStyles.pendingInline}>
                 <div style={panelStyles.pendingInlineTitle}>{t("待确认操作（在此执行或撤销）")}</div>
@@ -1506,6 +1554,140 @@ export function SshPanel({ api, credentials, viewId = DEFAULT_VIEW_ID, viewSigna
       {dialogOpen && <ConnectDialog api={api} credentials={credentials} onConnected={openConnectionInPane} onClose={() => setDialogOpen(false)} />}
 
       {batchTask && <BatchDialog api={api} task={batchTask} onDone={() => setBatchTask(null)} />}
+    </div>
+  );
+}
+
+/**
+ * Execution-policy pill (operator-only): shows the tier in force for the
+ * active connection and switches it for this session. Loosening asks for a
+ * confirmation; tightening is instant. The switch lives in memory on the
+ * connection record and never persists — a reconnect falls back to the
+ * resource/global policy, so a forgotten session release cannot outlive its
+ * terminal.
+ */
+function ExecPolicyPill({ api, connectionId }) {
+  const [info, setInfo] = useState(null);
+  const [open, setOpen] = useState(false);
+  const [confirmTier, setConfirmTier] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    setInfo(null);
+    let alive = true;
+    api.execPolicyGet(connectionId).then((value) => { if (alive) setInfo(value); }).catch(() => {});
+    return () => { alive = false; };
+  }, [api, connectionId]);
+
+  const applyTier = async (tier) => {
+    setBusy(true);
+    try {
+      const value = await api.execPolicySet(connectionId, tier);
+      setInfo(value);
+    } catch (error) {
+      sshUiSetError(t(`无法切换执行策略：${error?.message ?? String(error)}`));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const choose = (tier) => {
+    setOpen(false);
+    if (!info || busy || tier === info.effective) return;
+    // Loosening is the direction that can destroy data: confirm it. Tightening
+    // (or the same tier) applies at once.
+    if (TIER_ORDER[tier] > TIER_ORDER[info.effective]) setConfirmTier(tier);
+    else applyTier(tier);
+  };
+
+  const menuRef = useRef(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    const onDoc = (event) => {
+      if (menuRef.current && !menuRef.current.contains(event.target)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+
+  const tier = info?.effective ?? "standard";
+  const sessionScoped = info?.source === "session";
+  const [hover, setHover] = useState(false);
+  const expanded = hover || open;
+  // Collapsed corner chip: by default ONLY a tier-colored dot hugging the
+  // bottom-left edge — a translucent 15px circle that practically never covers
+  // terminal output. Hovering (or an open menu) expands it to the full tier
+  // name and restores opacity; moving away collapses it again. allowAll stays
+  // a red dot even collapsed, so a released gate never fully disappears.
+
+  return (
+    <div
+      ref={menuRef}
+      style={{ position: "absolute", left: 14, bottom: 14, zIndex: 6 }}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+    >
+      <button
+        type="button"
+        onClick={() => setOpen((was) => !was)}
+        title={t("AI 命令执行策略（仅操作者可切换，本次会话内生效）")}
+        className="dsh-ssh-ops-policy-chip"
+        style={{
+          ...panelStyles.policyChip,
+          ...(expanded ? panelStyles.policyChipExpanded : {}),
+          ...(tier === "custom" ? panelStyles.policyChipCustom : {}),
+          ...(tier === "allowAll" ? panelStyles.policyChipAllowAll : {})
+        }}
+      >
+        <span style={{ ...panelStyles.policyDot, ...(tier === "custom" ? panelStyles.policyDotCustom : {}), ...(tier === "allowAll" ? panelStyles.policyDotAllowAll : {}) }} aria-hidden="true" />
+        {expanded && (
+          <span>{execPolicyLabel(tier)}{sessionScoped ? t("（会话）") : ""}</span>
+        )}
+      </button>
+      {open && (
+        <div style={panelStyles.policyMenu} role="menu">
+          {["standard", "custom", "allowAll"].map((candidate) => (
+            <button
+              key={candidate}
+              type="button"
+              role="menuitem"
+              disabled={busy}
+              onClick={() => choose(candidate)}
+              style={{ ...panelStyles.policyMenuItem, ...(candidate === tier ? panelStyles.policyMenuItemActive : {}) }}
+            >
+              <div style={{ ...panelStyles.policyMenuItemTitle, ...(candidate === "allowAll" ? panelStyles.policyMenuItemAllowAll : {}) }}>{execPolicyLabel(candidate)}{candidate === tier ? t("（当前）") : ""}</div>
+              <div style={panelStyles.policyMenuItemDesc}>
+                {candidate === "standard" && t("破坏性命令一律拦截，弹出确认卡片由操作者执行")}
+                {candidate === "custom" && t("仅放行勾选的类别，其余照常拦截")}
+                {candidate === "allowAll" && t("AI 可直接执行任何命令，含不可逆删除（不进回收站）")}
+              </div>
+            </button>
+          ))}
+          <div style={panelStyles.policyMenuHint}>{t("切换仅对本次会话生效；断开或重连后恢复资源/全局设置。")}</div>
+        </div>
+      )}
+      {confirmTier !== null && (
+        <div
+          style={panelStyles.pendingModalBackdrop}
+          role="dialog"
+          aria-modal="true"
+          aria-label={t("放宽执行策略")}
+          onClick={() => setConfirmTier(null)}
+        >
+          <div style={panelStyles.policyModal} onClick={(e) => e.stopPropagation()}>
+            <div style={panelStyles.policyModalTitle}>{t(`确认放宽为「${execPolicyLabel(confirmTier)}」？`)}</div>
+            {confirmTier !== null && (
+              <div style={panelStyles.policyModalHint}>
+                {execPolicyLooseningDetail(confirmTier, info?.allow?.length ?? 0)}
+              </div>
+            )}
+            <div style={panelStyles.dialogActions}>
+              <button type="button" style={panelStyles.btnSecondary} onClick={() => setConfirmTier(null)}>{t("取消")}</button>
+              <button type="button" style={panelStyles.btnPrimary} disabled={busy} onClick={() => { const tier2 = confirmTier; setConfirmTier(null); applyTier(tier2); }}>{busy ? t("忙…") : t("确认放宽")}</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1689,6 +1871,12 @@ const panelStyles = {
     background: "var(--dsh-ssh-ops-surface, #161b21)", border: "1px solid var(--dsh-ssh-ops-border, #3a414b)",
     color: "var(--dsh-ssh-ops-muted, #8b93a1)"
   },
+  jumpFab: {
+    position: "absolute", bottom: 14, right: 14, zIndex: 5, display: "inline-flex", alignItems: "center", justifyContent: "center",
+    width: 34, height: 34, padding: 0, borderRadius: "50%", cursor: "pointer",
+    background: "var(--dsh-ssh-ops-surface, #2f353d)", border: "1px solid var(--dsh-ssh-ops-border, #3a414b)",
+    color: "var(--dsh-ssh-ops-text, #d7dbe2)", boxShadow: "0 2px 8px rgba(0,0,0,.35)"
+  },
   searchBar: {
     position: "absolute", top: 6, right: 10, zIndex: 5, display: "flex", alignItems: "center", gap: 4,
     padding: "3px 6px", borderRadius: 6,
@@ -1811,6 +1999,93 @@ const panelStyles = {
   pendingReason: { fontSize: 12, color: "#ffb86b" },
   pendingCommand: { margin: 0, padding: 8, borderRadius: 6, background: "#101418", color: "#f4f6f8", border: "1px solid #262b33", fontSize: 12, whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontFamily: 'Menlo, Monaco, "Courier New", monospace' },
   pendingActions: { display: "flex", justifyContent: "flex-end", gap: 8 },
+  // Execution-policy chip: by default a translucent tier dot hugging the
+  // bottom-left edge (practically zero occlusion of terminal output); hover or
+  // an open menu expands it to the tier name. Colors ride the host's dsw
+  // tokens so the chip and its menu stay readable on both Sidebar themes —
+  // the earlier hardcoded near-black fill was illegible on the light theme.
+  policyChip: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 6,
+    background: "var(--dsw-alias-bg-layer-3, rgba(127,127,127,.18))",
+    border: "1px solid var(--dsw-alias-border-l3, rgba(127,127,127,.4))",
+    color: "var(--dsw-alias-label-secondary, #8b93a1)",
+    borderRadius: 999,
+    padding: 4,
+    fontSize: 11,
+    cursor: "pointer",
+    whiteSpace: "nowrap",
+    opacity: 0.45
+  },
+  policyChipExpanded: {
+    padding: "3px 10px",
+    opacity: 0.92
+  },
+  policyChipCustom: {
+    borderColor: "rgba(183,121,31,.55)"
+  },
+  policyChipAllowAll: {
+    borderColor: "rgba(208,80,72,.6)"
+  },
+  policyDot: {
+    width: 7,
+    height: 7,
+    borderRadius: "50%",
+    flex: "none",
+    background: "var(--dsw-alias-label-secondary, #8b93a1)"
+  },
+  policyDotCustom: { background: "#b7791f" },
+  policyDotAllowAll: { background: "#d64541" },
+  policyMenu: {
+    position: "absolute",
+    bottom: "calc(100% + 6px)",
+    left: 0,
+    zIndex: 900,
+    width: 300,
+    background: "var(--dsw-alias-bg-layer-3, #181c22)",
+    border: "1px solid var(--dsw-alias-border-l3, rgba(127,127,127,.35))",
+    borderRadius: 8,
+    boxShadow: "0 12px 32px rgba(0,0,0,.28)",
+    padding: 6,
+    display: "flex",
+    flexDirection: "column",
+    gap: 2,
+    opacity: 1
+  },
+  policyMenuItem: {
+    background: "transparent",
+    border: "none",
+    borderRadius: 6,
+    padding: "6px 8px",
+    cursor: "pointer",
+    textAlign: "left",
+    color: "inherit"
+  },
+  policyMenuItemActive: {
+    background: "var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,.14))"
+  },
+  policyMenuItemTitle: { fontSize: 12, fontWeight: 600, color: "var(--dsw-alias-label-primary, #d7dbe2)" },
+  policyMenuItemAllowAll: { color: "#d64541" },
+  policyMenuItemDesc: { fontSize: 11, color: "var(--dsw-alias-label-secondary, #8b93a1)", marginTop: 2 },
+  policyMenuHint: { fontSize: 10, color: "var(--dsw-alias-label-tertiary, #8b93a1)", padding: "6px 8px 2px", borderTop: "1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.22))", marginTop: 4 },
+  // The policy confirm dialog follows the host theme via dsw tokens (unlike
+  // the dark-titled pendingModal cards it borrows the backdrop from), so its
+  // text stays readable on a light Sidebar theme.
+  policyModal: {
+    width: 480,
+    maxWidth: "92vw",
+    background: "var(--dsw-alias-bg-layer-3, #181c22)",
+    border: "1px solid var(--dsw-alias-border-l3, rgba(127,127,127,.35))",
+    borderRadius: 12,
+    boxShadow: "0 16px 48px rgba(0,0,0,.3)",
+    padding: 16,
+    display: "flex",
+    flexDirection: "column",
+    gap: 10
+  },
+  policyModalTitle: { fontSize: 15, fontWeight: 700, color: "var(--dsw-alias-label-primary, #d7dbe2)" },
+  policyModalHint: { fontSize: 12, color: "var(--dsw-alias-label-secondary, #9aa3af)" },
   btnDanger: { background: "#c9372c", color: "#fff", border: "1px solid #e14b40", borderRadius: 6, padding: "6px 14px", fontSize: 13, cursor: "pointer" },
   hiddenFileInput: { display: "none" },
   keyImportHint: { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11, color: "var(--dsh-ssh-ops-muted, #8b93a1)" },

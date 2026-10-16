@@ -16,7 +16,7 @@ import { profileSaveRequestSchema, profileInfoSchema } from "../src/schemas.js";
   assert.equal(profileSaveRequestSchema.safeParse({ ...base, loginCommand: "bash -l\r\nrm -rf /" }).success, false, "newline would be ambiguous about what runs");
   assert.equal(profileSaveRequestSchema.safeParse({ ...base, loginCommand: "bash\x00 -l" }).success, false, "control characters rejected");
   assert.equal(profileSaveRequestSchema.safeParse({ ...base, loginCommand: "x".repeat(1025) }).success, false, "length cap");
-  assert.equal(profileInfoSchema.safeParse({ ...base, hostKeyMode: "accept-new", secondaryConfigured: false, credentialConfigured: true, passphraseConfigured: false, connected: false, profileId: "00000000-0000-0000-0000-000000000000", groupId: null, groupName: null, credentialId: null, credentialName: null, proxyJump: [], defaultProjectPath: null, agentForward: false, loginCommand: "bash -l" }).success, true);
+  assert.equal(profileInfoSchema.safeParse({ ...base, hostKeyMode: "accept-new", secondaryConfigured: false, credentialConfigured: true, passphraseConfigured: false, connected: false, profileId: "00000000-0000-0000-0000-000000000000", groupId: null, groupName: null, credentialId: null, credentialName: null, proxyJump: [], defaultProjectPath: null, agentForward: false, loginCommand: "bash -l", execPolicy: null }).success, true);
 }
 
 function fakeTable(entries = []) {

@@ -56,6 +56,11 @@ export const DESCRIPTORS = [
   def("selectConnection", S.selectConnectionRequestSchema, "SshSelectConnectionRequest", S.selectConnectionResultSchema, "SshSelectConnectionResult"),
   def("agentSettingsGet", S.agentSettingsGetRequestSchema, "SshAgentSettingsGetRequest", S.agentSettingsResultSchema, "SshAgentSettingsResult"),
   def("agentSettingsSave", S.agentSettingsSaveRequestSchema, "SshAgentSettingsSaveRequest", S.agentSettingsResultSchema, "SshAgentSettingsResult"),
+  // Execution policy: panel-only RPCs for the operator's tier pill. These are
+  // deliberately NOT agent tools — an agent that could call execPolicySet
+  // could lift its own gate right after a rejection.
+  def("execPolicyGet", S.execPolicyGetRequestSchema, "ExecPolicyGetRequest", S.execPolicyGetResultSchema, "ExecPolicyGetResult"),
+  def("execPolicySet", S.execPolicySetRequestSchema, "ExecPolicySetRequest", S.execPolicySetResultSchema, "ExecPolicySetResult"),
   def("languageGet", S.languageGetRequestSchema, "SshLanguageGetRequest", S.languageResultSchema, "SshLanguageResult"),
   def("languageSave", S.languageSaveRequestSchema, "SshLanguageSaveRequest", S.languageResultSchema, "SshLanguageResult"),
   def("openSession", S.openSessionRequestSchema, "SshOpenSessionRequest", S.openSessionResultSchema, "SshOpenSessionResult"),

@@ -94,8 +94,21 @@ export class SshApi {
     return this.call("agentSettingsGet", {});
   }
 
-  agentSettingsSave(agentAutoConnect) {
-    return this.call("agentSettingsSave", { agentAutoConnect });
+  agentSettingsSave(agentAutoConnect, execPolicy, execPolicyAllow) {
+    const request = { agentAutoConnect };
+    // Policy fields are optional so existing callers (tests, older panes)
+    // keep saving just the auto-connect switch.
+    if (execPolicy !== undefined) request.execPolicy = execPolicy;
+    if (execPolicyAllow !== undefined) request.execPolicyAllow = execPolicyAllow;
+    return this.call("agentSettingsSave", request);
+  }
+
+  execPolicyGet(connectionId) {
+    return this.call("execPolicyGet", connectionId ? { connectionId } : {});
+  }
+
+  execPolicySet(connectionId, policy) {
+    return this.call("execPolicySet", { connectionId, policy });
   }
 
   languageGet() {

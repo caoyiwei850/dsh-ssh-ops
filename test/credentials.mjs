@@ -60,7 +60,7 @@ function fakeTable(entries = []) {
   // The saved record itself must never carry secret material.
   assert.deepEqual(
     Object.keys(table.entries()[0][1]).sort(),
-    ["agentForward", "authKind", "createdAt", "credentialId", "defaultProjectPath", "groupId", "host", "hostKeyMode", "loginCommand", "name", "port", "proxyJump", "updatedAt", "username"].sort(),
+    ["agentForward", "authKind", "createdAt", "credentialId", "defaultProjectPath", "execPolicy", "groupId", "host", "hostKeyMode", "loginCommand", "name", "port", "proxyJump", "updatedAt", "username"].sort(),
     "stored record holds config only, no password/privateKey field"
   );
   const stem = profile.profileId.replaceAll("-", "").toUpperCase();
