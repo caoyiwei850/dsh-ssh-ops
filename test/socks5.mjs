@@ -17,17 +17,17 @@ assert.equal(parseGreeting(Buffer.from([0x05, 0x02, 0x00])), null, "a declared m
 assert.equal(parseRequest(Buffer.from([0x05, 0x01, 0x00])), null);
 assert.deepEqual(
   parseRequest(Buffer.from([0x05, 0x01, 0x00, 0x01, 127, 0, 0, 1, 0x1f, 0x90])),
-  { cmd: 0x01, host: "127.0.0.1", port: 8080 }
+  { cmd: 0x01, host: "127.0.0.1", port: 8080, bytes: 10 }
 );
 {
   const name = Buffer.from("db.internal", "utf8");
   const frame = Buffer.concat([Buffer.from([0x05, 0x01, 0x00, 0x03, name.length]), name, Buffer.from([0x01, 0xbb])]);
-  assert.deepEqual(parseRequest(frame), { cmd: 0x01, host: "db.internal", port: 443 });
+  assert.deepEqual(parseRequest(frame), { cmd: 0x01, host: "db.internal", port: 443, bytes: 18 });
 }
 {
   // 2001:db8::1
   const frame = Buffer.from([0x05, 0x01, 0x00, 0x04, 0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0x00, 0x16]);
-  assert.deepEqual(parseRequest(frame), { cmd: 0x01, host: "2001:db8:0:0:0:0:0:1", port: 22 });
+  assert.deepEqual(parseRequest(frame), { cmd: 0x01, host: "2001:db8:0:0:0:0:0:1", port: 22, bytes: 22 });
 }
 assert.deepEqual(parseRequest(Buffer.from([0x05, 0x02, 0x00, 0x01, 0, 0, 0, 0, 0, 0])), { cmd: 0x02, unsupportedCommand: true });
 assert.equal(parseRequest(Buffer.from([0x05, 0x01, 0x00, 0x09, 0, 0, 0, 0, 0, 0])).ok, false);
@@ -132,6 +132,151 @@ async function openThroughProxy({ atyp = 0x03, host = "localhost", port = echoPo
 }
 
 assert.ok(forwardCalls >= 3, `each accepted client opens its own channel (saw ${forwardCalls})`);
+
+// ── pipelined payload: bytes sent with the CONNECT frame reach the upstream ──
+{
+  const c = net.connect(proxyPort, "127.0.0.1");
+  await new Promise((r) => c.once("connect", r));
+  c.write(Buffer.from([0x05, 0x01, 0x00]));
+  await readExactly(c, 2);
+  const name = Buffer.from("localhost");
+  const request = Buffer.concat([Buffer.from([0x05, 0x01, 0x00, 0x03, name.length]), name, Buffer.from([(echoPort >> 8) & 0xff, echoPort & 0xff])]);
+  const payload = Buffer.from("PIPELINED-PAYLOAD");
+  c.write(Buffer.concat([request, payload]));   // one segment, no reply wait
+  await readExactly(c, 10);                     // the CONNECT reply
+  const echoed = await Promise.race([
+    readExactly(c, payload.length),
+    new Promise((resolve) => setTimeout(() => resolve(null), 1000))
+  ]);
+  assert.equal(echoed === null ? "(dropped)" : echoed.toString("utf8"), "PIPELINED-PAYLOAD",
+    "payload pipelined with CONNECT must not be dropped");
+  c.destroy();
+}
+
+// ── handshake-window payload: arrives after the request, before the channel ──
+{
+  // A slow forwardOut holds the channel closed; anything the client sends in
+  // that window must be buffered and flushed once the stream resolves — the
+  // parser fix must not trade the drop for a new loss.
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const slow = net.createServer((socket) => {
+    attachSocks5(socket, {
+      forwardOut: (host, port, cb) => {
+        gate.then(() => {
+          const up = net.connect(port, host);
+          up.once("connect", () => cb(null, up));
+          up.once("error", cb);
+        });
+      }
+    });
+  });
+  const slowPort = await listen(slow);
+  const c = net.connect(slowPort, "127.0.0.1");
+  await new Promise((r) => c.once("connect", r));
+  c.write(Buffer.from([0x05, 0x01, 0x00]));
+  await readExactly(c, 2);
+  const name = Buffer.from("localhost");
+  const request = Buffer.concat([Buffer.from([0x05, 0x01, 0x00, 0x03, name.length]), name, Buffer.from([(echoPort >> 8) & 0xff, echoPort & 0xff])]);
+  const payload = Buffer.from("WINDOW-PAYLOAD");
+  c.write(request);
+  c.write(payload);          // lands while the channel is still opening
+  await new Promise((r) => setTimeout(r, 30));
+  release();
+  await readExactly(c, 10);  // reply
+  const echoed = await Promise.race([
+    readExactly(c, payload.length),
+    new Promise((resolve) => setTimeout(() => resolve(null), 1000))
+  ]);
+  assert.equal(echoed === null ? "(dropped)" : echoed.toString("utf8"), "WINDOW-PAYLOAD",
+    "payload arriving during the channel-opening window must be flushed, not lost");
+  c.destroy();
+  await close(slow);
+}
+
+// ── bulk transfer: the parser must retire once the channel opens ───────────
+{
+  const MIB = 1024 * 1024;
+  const total = 64;
+  let accepted = null;
+  const observer = net.createServer((socket) => {
+    accepted = socket;
+    attachSocks5(socket, {
+      forwardOut: (host, port, callback) => {
+        const upstream = net.connect(port, host);
+        upstream.once("connect", () => callback(null, upstream));
+        upstream.once("error", callback);
+      }
+    });
+  });
+  const observerPort = await listen(observer);
+  const c = net.connect(observerPort, "127.0.0.1");
+  await new Promise((r) => c.once("connect", r));
+  c.write(Buffer.from([0x05, 0x01, 0x00]));
+  await readExactly(c, 2);
+  const name = Buffer.from("localhost");
+  c.write(Buffer.concat([Buffer.from([0x05, 0x01, 0x00, 0x03, name.length]), name, Buffer.from([(echoPort >> 8) & 0xff, echoPort & 0xff])]));
+  await readExactly(c, 10);
+  // The data path is pipe()'s alone now: the handshake parser must have been
+  // removed. (Two 'data' listeners was the memory leak — every tunnelled byte
+  // was concatenated into the parse buffer; one is the fix.) Deterministic,
+  // unlike measuring external memory, which only drops after a GC.
+  assert.equal(accepted.listenerCount("data"), 1,
+    "after the channel opens, pipe() must be the only data listener (parser retired)");
+  let received = 0;
+  const drained = new Promise((resolve) => {
+    const on = (data) => { received += data.length; if (received >= total * MIB) { c.removeListener("data", on); resolve(); } };
+    c.on("data", on);
+  });
+  const chunk = Buffer.alloc(MIB, 0x41);
+  for (let i = 0; i < total; i++) {
+    c.write(chunk);
+    await new Promise((r) => setImmediate(r));   // let the echo drain between writes
+  }
+  await drained;
+  c.destroy();
+  await close(observer);
+  console.log(`bulk: ${total} MiB round-tripped through the tunnel (parser retired, data path is pipe's)`);
+}
+
+// ── close counting: exactly one onClose per served socket ───────────────────
+{
+  let active = 0;
+  let closes = 0;
+  const counted = net.createServer((socket) => {
+    active += 1;
+    attachSocks5(socket, {
+      forwardOut: (host, port, callback) => {
+        const upstream = net.connect(port, host);
+        upstream.once("connect", () => callback(null, upstream));
+        upstream.once("error", callback);
+      },
+      onClose: () => { closes += 1; active = Math.max(0, active - 1); }
+    });
+  });
+  const countedPort = await listen(counted);
+  const openOne = async () => {
+    const c = net.connect(countedPort, "127.0.0.1");
+    await new Promise((r) => c.once("connect", r));
+    c.write(Buffer.from([0x05, 0x01, 0x00]));
+    await readExactly(c, 2);
+    const name = Buffer.from("localhost");
+    c.write(Buffer.concat([Buffer.from([0x05, 0x01, 0x00, 0x03, name.length]), name, Buffer.from([(echoPort >> 8) & 0xff, echoPort & 0xff])]));
+    await readExactly(c, 10);
+    return c;
+  };
+  const a = await openOne();
+  const b = await openOne();
+  assert.equal(active, 2, "two live clients counted");
+  a.destroy();
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(closes, 1, "closing one client notifies onClose exactly once");
+  assert.equal(active, 1, "closing one of two clients leaves one live connection");
+  b.destroy();
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(active, 0, "the last close drains the counter");
+  await close(counted);
+}
 
 await close(proxy);
 await close(echo);

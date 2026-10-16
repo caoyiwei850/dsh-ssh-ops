@@ -45,8 +45,11 @@ export function parseGreeting(bytes) {
 
 /**
  * Parse a CONNECT request. The address is returned as a string ssh2 accepts:
- * dotted quad, IPv6 text, or the domain name verbatim.
- * @returns `{ cmd, host, port }`, `{ ok: false, reason }`, or null for "need more bytes".
+ * dotted quad, IPv6 text, or the domain name verbatim. `bytes` carries the
+ * request frame's on-wire length so the caller can strip it from the buffer
+ * (reconstructing the address type from the string form would be ambiguous
+ * for domain names like "1.2.3.4").
+ * @returns `{ cmd, host, port, bytes }`, `{ ok: false, reason }`, or null for "need more bytes".
  */
 export function parseRequest(bytes) {
   if (bytes.length < 4) return null;
@@ -57,20 +60,20 @@ export function parseRequest(bytes) {
   if (atyp === 0x01) {
     if (bytes.length < 10) return null;
     const host = `${bytes[4]}.${bytes[5]}.${bytes[6]}.${bytes[7]}`;
-    return { cmd, host, port: bytes.readUInt16BE(8) };
+    return { cmd, host, port: bytes.readUInt16BE(8), bytes: 10 };
   }
   if (atyp === 0x03) {
     if (bytes.length < 5) return null;
     const length = bytes[4];
     if (bytes.length < 5 + length + 2) return null;
     const host = bytes.subarray(5, 5 + length).toString("utf8");
-    return { cmd, host, port: bytes.readUInt16BE(5 + length) };
+    return { cmd, host, port: bytes.readUInt16BE(5 + length), bytes: 5 + length + 2 };
   }
   if (atyp === 0x04) {
     if (bytes.length < 22) return null;
     const groups = [];
     for (let offset = 4; offset < 20; offset += 2) groups.push(bytes.readUInt16BE(offset).toString(16));
-    return { cmd, host: groups.join(":"), port: bytes.readUInt16BE(20) };
+    return { cmd, host: groups.join(":"), port: bytes.readUInt16BE(20), bytes: 22 };
   }
   return { ok: false, reason: `unsupported address type ${atyp}` };
 }
@@ -91,7 +94,15 @@ export function replyBytes(code) {
 export function attachSocks5(socket, { forwardOut, onClose }) {
   let buffer = Buffer.alloc(0);
   let state = "greeting";
-  const closed = () => { try { onClose?.(); } catch { /* counting must never throw */ } };
+  // The close counting contract: exactly one onClose per served socket. The
+  // socket can reach 'close' through several teardowns, so the notification
+  // itself must be idempotent — the host's connection counter hangs off it.
+  let closeNotified = false;
+  const closed = () => {
+    if (closeNotified) return;
+    closeNotified = true;
+    try { onClose?.(); } catch { /* counting must never throw */ }
+  };
   const fail = (code) => {
     try { socket.write(replyBytes(code)); } catch {}
     socket.destroy();
@@ -120,19 +131,32 @@ export function attachSocks5(socket, { forwardOut, onClose }) {
         if (request === null) return;
         if (request.ok === false) { fail(SOCKS_REPLY.ADDRESS_NOT_SUPPORTED); return; }
         if (request.unsupportedCommand) { fail(SOCKS_REPLY.COMMAND_NOT_SUPPORTED); return; }
+        // Cut the consumed request frame off the buffer exactly like the
+        // greeting: a client may pipeline its payload in the same segment,
+        // and those bytes must survive for the channel flush below.
+        buffer = buffer.subarray(request.bytes);
         state = "open";
         forwardOut(request.host, request.port, (error, stream) => {
           if (error || !stream) { fail(replyCodeForError(error)); return; }
           socket.write(replyBytes(SOCKS_REPLY.SUCCEEDED));
+          // One flush, then the parser retires: bytes buffered during the
+          // short channel-opening window go to the upstream, the data path
+          // is handed to pipe(), and onData is removed. Leaving this
+          // listener attached would re-buffer every tunnelled byte here —
+          // an unbounded per-connection memory leak with O(n²) concat cost.
+          socket.removeListener("data", onData);
+          if (buffer.length > 0) stream.write(buffer);
+          buffer = Buffer.alloc(0);
           stream.on("error", () => socket.destroy());
           socket.on("error", () => stream.destroy());
-          socket.on("close", () => { stream.destroy(); closed(); });
+          socket.on("close", () => stream.destroy());
           socket.pipe(stream);
           stream.pipe(socket);
         });
         return;
       }
-      // Connected: everything after the request is payload handled by pipe().
+      // Channel opening (stream not resolved yet): keep buffering so
+      // pipelined payload survives the handshake window; flushed above.
       return;
     }
   };
