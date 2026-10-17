@@ -1,3 +1,7 @@
+[中文](./product-guide.md) · [English](./product-guide.en.md)
+
+---
+
 # DSH SSH Ops 产品文档
 
 > 在 DSH 主对话里指挥服务器干活，右侧始终留着一台真实交互终端——外加文件管理、端口转发、数据库操作与多机批量执行，全部在一个插件里。
