@@ -27,37 +27,72 @@ function shell(pid, { directory = cwd, foreground = true, args = ['-bash'] } = {
 function run(command = 'pwd -P') {
   return spawnSync('/bin/sh', ['-c', buildCwdAwareCommand(command, {procRoot})], {cwd:root,env:{...process.env,SSH_CONNECTION:'test-transport'},encoding:'utf8'});
 }
+const drop = (pid) => rmSync(join(procRoot, String(pid)), {recursive:true, force:true});
 try {
   assert.equal(posixLoginShell('bash'),true); assert.equal(posixLoginShell('fish'),false);
+
+  // No candidate at all: never blocks, cwd simply unknown.
   let result = run('echo fallback');
   assert.equal(result.status,0); assert.equal(extractExecCwd(result.stdout).cwd,null);
+
+  // A normal login shell: follow its cwd, preserving awkward characters.
   shell(101);
   shell(202,{foreground:false,directory:root,args:['bash','-c','sleep 60']});
   result = run();
   assert.equal(result.status,0,result.stderr);
-  const parsed=extractExecCwd(result.stdout);
+  let parsed=extractExecCwd(result.stdout);
   assert.ok(parsed.cwd.endsWith("working dir 'quoted' "), 'preserve whitespace and quotes');
   assert.equal(parsed.stdout,parsed.cwd+'\n','actual directory matches metadata');
-  rmSync(join(procRoot,'101'),{recursive:true});
-  result=run('echo MUST_NOT_RUN');
-  assert.equal(result.status,125,'background shell cannot become the selected directory');
-  assert.ok(!result.stdout.includes('MUST_NOT_RUN'));
+
+  // Vendor login-shell launchers. UGREEN NAS runs `exec "$SHELL" -` from
+  // sshd ForceCommand, so argv is `bash -`; stock shells may use `--` or `-s`.
+  // All of these are interactive prompts and must resolve normally.
+  for (const args of [['bash','-'],['bash','--'],['bash','-s'],['bash','-i','-l']]) {
+    drop(101);
+    shell(101,{args});
+    result=run();
+    assert.equal(result.status,0,`${args.join(' ')} must resolve as an interactive shell: ${result.stderr}`);
+    parsed=extractExecCwd(result.stdout);
+    assert.ok(parsed.cwd.endsWith("working dir 'quoted' "), `cwd follows ${args.join(' ')}`);
+  }
+
+  // Only a background/busy candidate: degrade to the login directory, run anyway.
+  drop(101);
+  result=run('echo BUSY_DEGRADED');
+  assert.equal(result.status,0,'a busy terminal no longer blocks the command');
+  assert.ok(result.stdout.includes('BUSY_DEGRADED'));
+  assert.equal(extractExecCwd(result.stdout).cwd,null);
   assert.match(result.stderr,/busy or non-interactive/,'busy is its own status, not "ambiguous"');
   assert.match(result.stderr,/bash\(202 pgrp=202 tpgid=101\)/,'busy candidate carries comm/pid/pgrp/tpgid detail');
+  assert.match(result.stderr,/continuing from the login directory/,'degradation is announced');
+
+  // A selected shell whose cwd cannot be read still fails closed.
   shell(101,{directory:join(root,'deleted')});
   result=run('echo MUST_NOT_RUN');
   assert.equal(result.status,125,'inaccessible directory fails closed');
   assert.equal(extractExecCwd(result.stdout).cwd,null);
   assert.ok(!result.stdout.includes('MUST_NOT_RUN'));
-  rmSync(join(procRoot,'101'),{recursive:true});
+
+  // Multiple foreground shells: degrade instead of refusing to work at all.
+  drop(101);
   shell(101); shell(303);
-  result=run('echo MUST_NOT_RUN'); assert.equal(result.status,125,'multiple foreground shells are ambiguous');
+  result=run('echo MULTI_DEGRADED');
+  assert.equal(result.status,0,'an ambiguous match degrades instead of blocking');
+  assert.ok(result.stdout.includes('MULTI_DEGRADED'));
+  assert.equal(extractExecCwd(result.stdout).cwd,null);
   assert.match(result.stderr,/multiple interactive shells/,'ambiguity is its own status, not "busy"');
-  rmSync(join(procRoot,'101'),{recursive:true}); rmSync(join(procRoot,'303'),{recursive:true});
+  assert.match(result.stderr,/continuing from the login directory/);
+
+  // A foreground `bash -c` is not an interactive prompt: still degrade, not block.
+  drop(101); drop(303);
   shell(101,{args:['bash','-c','echo script']});
-  result=run('echo MUST_NOT_RUN'); assert.equal(result.status,125,'foreground bash -c is not an interactive prompt');
+  result=run('echo SCRIPT_DEGRADED');
+  assert.equal(result.status,0,'foreground bash -c degrades instead of blocking');
+  assert.ok(result.stdout.includes('SCRIPT_DEGRADED'));
+  assert.equal(extractExecCwd(result.stdout).cwd,null);
   assert.match(result.stderr,/bash\(101 non-interactive\)/,'argv-rejected candidate is reported as non-interactive');
+
   assert.deepEqual(extractExecCwd('plain output'),{cwd:null,stdout:'plain output'});
   assert.equal(extractExecCwd(EXEC_CWD_MARKER+'\n').cwd,null);
 } finally { rmSync(root,{recursive:true,force:true}); }
-console.log('exec cwd: foreground, background, ambiguous, failed cd, real pwd metadata: passed');
+console.log('exec cwd: foreground, custom login argv, degraded busy/ambiguous/non-interactive, failed cd, real pwd metadata: passed');
