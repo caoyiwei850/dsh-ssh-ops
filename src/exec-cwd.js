@@ -38,7 +38,7 @@ __dsh_find_shell() {
     __dsh_args=$(tr '\\0' '\\n' < "$__dsh_p/cmdline" 2>/dev/null | sed '1d')
     __dsh_valid=yes
     while IFS= read -r __dsh_arg; do
-      case $__dsh_arg in ''|-i|-l|-il|-li|--login|--noprofile|--norc) ;; *) __dsh_valid=no ;; esac
+      case $__dsh_arg in ''|-i|-l|-il|-li|-|--|-s|--login|--noprofile|--norc) ;; *) __dsh_valid=no ;; esac
     done <<EOF
 $__dsh_args
 EOF
@@ -68,14 +68,10 @@ if [ "$__dsh_status" -eq 0 ]; then
   fi
   __dsh_encoded=$(pwd -P | base64 | tr -d '\\r\\n')
 elif [ "$__dsh_status" -eq 2 ]; then
-  printf '${EXEC_CWD_MARKER}\\n'
-  printf '%s\\n' '${EXEC_CWD_ERROR_PREFIX} multiple interactive shells match this connection; command was not executed' >&2
-  exit 125
+  printf '%s\\n' '${EXEC_CWD_ERROR_PREFIX} multiple interactive shells match this connection; continuing from the login directory' >&2
 elif [ "$__dsh_status" -eq 3 ]; then
-  printf '${EXEC_CWD_MARKER}\\n'
-  __dsh_msg='${EXEC_CWD_ERROR_PREFIX} interactive shell is busy or non-interactive; command was not executed'\${__dsh_out:+ candidates:$__dsh_out}
+  __dsh_msg='${EXEC_CWD_ERROR_PREFIX} interactive shell is busy or non-interactive; continuing from the login directory'\${__dsh_out:+ candidates:$__dsh_out}
   printf '%s\\n' "$__dsh_msg" >&2
-  exit 125
 fi
 printf '${EXEC_CWD_MARKER}%s\\n' "$__dsh_encoded"
 `.trim();
