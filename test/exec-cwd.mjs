@@ -24,8 +24,8 @@ function shell(pid, { directory = cwd, foreground = true, args = ['-bash'] } = {
   writeFileSync(join(dir, 'cmdline'), args.join('\0') + '\0');
   writeFileSync(join(dir, 'stat'), `${pid} (bash) S 1 ${pid} 100 34816 ${foreground ? pid : 101} 0\n`);
 }
-function run(command = 'pwd -P') {
-  return spawnSync('/bin/sh', ['-c', buildCwdAwareCommand(command, {procRoot})], {cwd:root,env:{...process.env,SSH_CONNECTION:'test-transport'},encoding:'utf8'});
+function run(command = 'pwd -P', shellPath = '/bin/sh') {
+  return spawnSync(shellPath, ['-c', buildCwdAwareCommand(command, {procRoot})], {cwd:root,env:{...process.env,SSH_CONNECTION:'test-transport'},encoding:'utf8'});
 }
 const drop = (pid) => rmSync(join(procRoot, String(pid)), {recursive:true, force:true});
 try {
@@ -94,5 +94,19 @@ try {
 
   assert.deepEqual(extractExecCwd('plain output'),{cwd:null,stdout:'plain output'});
   assert.equal(extractExecCwd(EXEC_CWD_MARKER+'\n').cwd,null);
+  // zsh keeps SH_WORD_SPLIT off, so `set -- $__dsh_stat` yields a single word
+  // there and pgrp/tty/tpgid all read back empty — an idle shell then looks
+  // busy, and every ssh_exec against a zsh login fails with exit 125. The
+  // login shell runs this resolver, so it must split identically under zsh.
+  const hasZsh = spawnSync('zsh', ['-c', 'exit 0'], {encoding:'utf8'}).status === 0;
+  if (hasZsh) {
+    shell(707);
+    const viaZsh = run('pwd -P', 'zsh');
+    assert.equal(viaZsh.status, 0, viaZsh.stderr);
+    assert.ok(extractExecCwd(viaZsh.stdout).cwd.endsWith("working dir 'quoted' "), 'zsh must resolve the same interactive shell');
+    drop(707);
+  } else {
+    console.log('exec cwd: zsh not installed, skipping the sh-word-split regression');
+  }
 } finally { rmSync(root,{recursive:true,force:true}); }
-console.log('exec cwd: foreground, custom login argv, degraded busy/ambiguous/non-interactive, failed cd, real pwd metadata: passed');
+console.log('exec cwd: foreground, custom login argv, degraded busy/ambiguous/non-interactive, failed cd, zsh word-split, real pwd metadata: passed');

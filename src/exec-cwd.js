@@ -25,12 +25,19 @@ __dsh_find_shell() {
     __dsh_seen=$((__dsh_seen + 1))
     __dsh_stat=$(cat "$__dsh_p/stat" 2>/dev/null) || continue
     __dsh_stat=\${__dsh_stat##*) }
-    set -- $__dsh_stat
-    [ "$#" -ge 6 ] && [ "$3" = "$6" ] && [ "$5" != 0 ] || {
+    # Field-split through read, not through unquoted expansion: zsh keeps
+    # SH_WORD_SPLIT off by default, so \`set -- $__dsh_stat\` yields one word
+    # there and every field below reads back empty. read splits on IFS in
+    # every shell this resolver may be handed to.
+    __dsh_st=''; __dsh_ppid=''; __dsh_pgrp=''; __dsh_sid=''; __dsh_tty=''; __dsh_tpgid=''
+    read -r __dsh_st __dsh_ppid __dsh_pgrp __dsh_sid __dsh_tty __dsh_tpgid __dsh_rest <<EOF
+$__dsh_stat
+EOF
+    [ -n "$__dsh_tpgid" ] && [ "$__dsh_pgrp" = "$__dsh_tpgid" ] && [ "$__dsh_tty" != 0 ] || {
       __dsh_busy=$((__dsh_busy + 1))
       # Status 3 names up to three rejected candidates, so a "terminal busy"
       # report can be told apart from a resolver-side mismatch in the field.
-      [ "$__dsh_busy" -le 3 ] && __dsh_detail="$__dsh_detail $__dsh_c($__dsh_n pgrp=$3 tpgid=$6)"
+      [ "$__dsh_busy" -le 3 ] && __dsh_detail="$__dsh_detail $__dsh_c($__dsh_n pgrp=$__dsh_pgrp tpgid=$__dsh_tpgid)"
       continue
     }
     # Foreground is necessary but not sufficient: bash -c/script jobs are
