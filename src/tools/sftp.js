@@ -1,21 +1,66 @@
 /**
  * Agent tools for SFTP file management. sftp_delete never deletes on its own:
- * it converts the path into an `rm -rf` confirmation card for the operator;
- * approving it additionally leaves a silent rollback copy in the server trash
- * (see src/trash.js).
+ * the tools/pre-execute gate suspends the call on the host's approval channel
+ * and only an operator "allow" lets the body run — as a reversible move to the
+ * server trash (see src/trash.js) whenever the path is a simple literal.
  */
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { shellQuote } from "../safety.js";
 import { buildTrashCommand, parseSimpleDeleteCommand } from "../trash.js";
 import { t } from "../i18n/core.js";
+import { askOperatorApproval } from "./ssh-session.js";
 
 export function registerSftpTools(ctx, service) {
+  /**
+   * Resolve one SFTP request for the calling session (issue #38). When the
+   * session's workspace is bound to a remote root, a relative path resolves
+   * under that root and an omitted connection_id means the bound server;
+   * otherwise the historical absolute-path/current-connection behavior is
+   * untouched. A path that escapes the bound root is refused here, before any
+   * I/O reaches the server.
+   */
+  const resolveTarget = (exec, connectionId, path) => service.resolveRemoteToolPath({ connectionId, path }, exec);
+  /** Second path of a rename must land on the same server as the first. */
+  const target = (resolved, connectionId) => (connectionId ?? resolved.connectionId);
+
+  // sftp_delete is a deletion by definition, so its gate asks unconditionally:
+  // the whole call suspends until the operator answers, and only "allow"
+  // records the voucher the body consumes to actually delete. Deny paths and
+  // hosts without an approval channel degrade to a structured blocked result,
+  // never to a deletion.
+  if (typeof ctx.on === "function") ctx.on("tools/pre-execute", (execution, next) => {
+    if (execution?.name !== "sftp_delete") return typeof next === "function" ? next() : undefined;
+    return (async () => {
+      let preview;
+      try {
+        preview = await resolveTarget(execution, execution.arguments?.connection_id, execution.arguments?.path);
+      } catch {
+        return typeof next === "function" ? next() : undefined; // bad path: let the tool report the honest error
+      }
+      const conn = service.connections?.get(preview.connectionId);
+      const host = conn?.host ?? preview.connectionId;
+      const command = `rm -rf ${shellQuote(preview.path)}`;
+      const reason = t(`AI 请求删除 ${host} 上的：\n${preview.path}\n（等价于 \`${command}\`）。批准后优先执行移入回收站的可逆删除；拒绝则不会删除任何内容。`);
+      const { outcome } = await askOperatorApproval(ctx, execution, reason);
+      if (outcome === "allowed-once") {
+        service.recordOperatorApproval(execution.callId, preview.connectionId, command);
+        return typeof next === "function" ? next() : undefined;
+      }
+      const denied = outcome === "rejected"
+        ? t(`操作者拒绝了删除 ${preview.path}。请勿重试或换路径绕行；确需删除请让操作者自行处理。`)
+        : outcome === "cancelled"
+          ? t("删除操作的确认被取消，未删除任何内容。请勿重试；确需删除请与操作者确认。")
+          : t(`删除 ${preview.path} 必须由操作者确认，但当前宿主没有可用的审批通道，未删除任何内容。请让操作者自行删除。`);
+      return { kind: "deny", reason: denied };
+    })();
+  });
+
   ctx.tools.register(defineTool({
     name: "sftp_list",
-    description: "List the entries of a remote directory over SFTP on a connected server (the one open in the right-side SSH terminal unless connection_id is given). Returns file/directory entries with sizes and mtimes.",
+    description: "List the entries of a remote directory over SFTP on a connected server (the one open in the right-side SSH terminal unless connection_id is given). In a remote workspace a relative path resolves under the bound remote root. Returns file/directory entries with sizes and mtimes.",
     parameters: {
-      connection_id: { type: "string", description: "Connection id from ssh_connect; omit to use the current server." },
-      path: { type: "string", required: true, description: "Remote directory path, e.g. /etc or /var/log." }
+      connection_id: { type: "string", description: "Connection id from ssh_connect; omit to use the current server (or the remote workspace's bound server)." },
+      path: { type: "string", required: true, description: "Remote directory path, e.g. /etc or /var/log. Relative values resolve under the remote workspace root." }
     },
     output: {
       schema: {
@@ -38,8 +83,9 @@ export function registerSftpTools(ctx, service) {
         return [{ type: "text", text: `Directory ${value.path} (${value.entries.length} entries):\n` + lines.join("\n") }];
       }
     },
-    async execute(args) {
-      const result = await service.sftpList({ connectionId: args.connection_id, path: args.path });
+    async execute(args, exec) {
+      const target = await resolveTarget(exec, args.connection_id, args.path);
+      const result = await service.sftpList({ connectionId: target.connectionId, path: target.path });
       if (!result.ok) throw new Error(`sftp_list failed: ${result.error.message}`);
       return result.value;
     }
@@ -50,7 +96,7 @@ export function registerSftpTools(ctx, service) {
     description: "Read a remote file's contents over SFTP (base64-decoded to text). Useful for inspecting config files, logs, or small artifacts on a connected server. Omit connection_id for the current server.",
     parameters: {
       connection_id: { type: "string", description: "Connection id from ssh_connect; omit to use the current server." },
-      path: { type: "string", required: true, description: "Remote file path." },
+      path: { type: "string", required: true, description: "Remote file path. A relative path resolves under the remote workspace root." },
       max_bytes: { type: "integer", description: "Maximum bytes to read, defaults to 4 MiB." }
     },
     output: {
@@ -69,8 +115,9 @@ export function registerSftpTools(ctx, service) {
         return [{ type: "text", text: value.truncated ? `${body}\n[output truncated at ${value.bytes} bytes]` : body }];
       }
     },
-    async execute(args) {
-      const result = await service.sftpReadFile({ connectionId: args.connection_id, path: args.path, maxBytes: args.max_bytes });
+    async execute(args, exec) {
+      const target = await resolveTarget(exec, args.connection_id, args.path);
+      const result = await service.sftpReadFile({ connectionId: target.connectionId, path: target.path, maxBytes: args.max_bytes });
       if (!result.ok) throw new Error(`sftp_read failed: ${result.error.message}`);
       return result.value;
     }
@@ -81,7 +128,7 @@ export function registerSftpTools(ctx, service) {
     description: "Write text content to a remote file over SFTP (creates or overwrites). Omit connection_id for the current server.",
     parameters: {
       connection_id: { type: "string", description: "Connection id from ssh_connect; omit to use the current server." },
-      path: { type: "string", required: true, description: "Remote file path to write." },
+      path: { type: "string", required: true, description: "Remote file path to write. A relative path resolves under the remote workspace root." },
       content: { type: "string", required: true, description: "File content to write." }
     },
     output: {
@@ -97,8 +144,9 @@ export function registerSftpTools(ctx, service) {
         return [{ type: "text", text: `Wrote ${value.bytes} bytes to ${value.path}` }];
       }
     },
-    async execute(args) {
-      const result = await service.sftpWriteFile({ connectionId: args.connection_id, path: args.path, data: Buffer.from(args.content, "utf8").toString("base64") });
+    async execute(args, exec) {
+      const target = await resolveTarget(exec, args.connection_id, args.path);
+      const result = await service.sftpWriteFile({ connectionId: target.connectionId, path: target.path, data: Buffer.from(args.content, "utf8").toString("base64") });
       if (!result.ok) throw new Error(`sftp_write failed: ${result.error.message}`);
       return result.value;
     }
@@ -109,14 +157,15 @@ export function registerSftpTools(ctx, service) {
     description: "Create a remote directory over SFTP. Omit connection_id for the current server.",
     parameters: {
       connection_id: { type: "string", description: "Connection id from ssh_connect; omit to use the current server." },
-      path: { type: "string", required: true, description: "Remote directory path to create." }
+      path: { type: "string", required: true, description: "Remote directory path to create. A relative path resolves under the remote workspace root." }
     },
     output: {
       schema: { type: "object", additionalProperties: false, properties: { path: { type: "string", required: true } } },
       render(args, value) { return [{ type: "text", text: `Created directory ${value.path}` }]; }
     },
-    async execute(args) {
-      const result = await service.sftpMkdir({ connectionId: args.connection_id, path: args.path });
+    async execute(args, exec) {
+      const target = await resolveTarget(exec, args.connection_id, args.path);
+      const result = await service.sftpMkdir({ connectionId: target.connectionId, path: target.path });
       if (!result.ok) throw new Error(`sftp_mkdir failed: ${result.error.message}`);
       return result.value;
     }
@@ -124,33 +173,41 @@ export function registerSftpTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "sftp_delete",
-    description: "Delete a remote file or empty directory over SFTP. Omit connection_id for the current server. Deleting is irreversible and is never executed by the agent directly: the equivalent `rm -rf <path>` triggers a confirmation popup in the right-side SSH panel (or returns a copyable command when no terminal is open) for the operator to execute or cancel.",
+    description: "Delete a remote file or directory over SFTP. Omit connection_id for the current server. Deletion suspends this call until the operator answers the host's confirmation prompt in the conversation: approving performs a reversible move to the server trash when the path is a simple literal (a real deletion otherwise), rejecting deletes nothing — never retry or route around a rejection.",
     parameters: {
       connection_id: { type: "string", description: "Connection id from ssh_connect; omit to use the current server." },
-      path: { type: "string", required: true, description: "Remote path to delete." }
+      path: { type: "string", required: true, description: "Remote path to delete. A relative path resolves under the remote workspace root." }
     },
     output: {
-      schema: { type: "object", additionalProperties: false, properties: { path: { type: "string", required: true }, isDirectory: { type: "boolean" }, blocked: { type: "boolean" }, reason: { type: "string" }, command: { type: "string" }, prefilled: { type: "boolean" }, queued: { type: "boolean" } } },
+      schema: { type: "object", additionalProperties: false, properties: { path: { type: "string", required: true }, isDirectory: { type: "boolean" }, blocked: { type: "boolean" }, reason: { type: "string" }, command: { type: "string" } } },
       render(args, value) {
         if (value.blocked) {
-          const where = value.queued
-            ? t("命令未执行；右侧 SSH 终端面板已弹出确认卡片，等待操作员点击“执行”或“撤销”：")
-            : t("命令未执行，无法预填，请粘贴到右侧终端执行：");
-          return [{ type: "text", text: t(`⚠️ 已拦截：${value.reason ?? ""}\n${where}\n\`\`\`bash\n${value.command ?? ""}\n\`\`\`\n请勿重试/绕行，由人工确认执行。`) }];
+          return [{ type: "text", text: t(`⚠️ 已拦截：${value.reason ?? ""}\n未删除任何内容。删除必须由操作者确认，本次调用没有获得批准（操作者拒绝，或宿主没有可用的审批通道）。\n\`\`\`bash\n${value.command ?? ""}\n\`\`\`\n请勿重试或换路径绕行；把删除交给操作者自行处理。`) }];
         }
         return [{ type: "text", text: `Deleted ${value.path}` }];
       }
     },
-    async execute(args) {
-      // Original card UX, byte for byte. The only addition is invisible: when
-      // the path is a simple literal, the queued card carries a prepared trash
-      // script so operator approval leaves a rollback copy on the server
-      // (see src/trash.js) instead of really deleting.
-      const command = `rm -rf ${shellQuote(args.path)}`;
+    async execute(args, exec) {
+      // The pre-execute gate asked the operator and, on "allow", recorded a
+      // voucher under this execution's id; it is consumed here exactly once.
+      // In a remote workspace the ask always names the resolved absolute
+      // path, so the operator sees exactly what would be removed.
+      const resolved = await resolveTarget(exec, args.connection_id, args.path);
+      const command = `rm -rf ${shellQuote(resolved.path)}`;
       const parsed = parseSimpleDeleteCommand(command);
       const trashScript = parsed ? buildTrashCommand(parsed.targets) : null;
-      const pending = service.prefillBlockedCommand(args.connection_id, command, t("删除文件或目录（SFTP）"), trashScript);
-      return { path: args.path, blocked: true, reason: t("删除文件或目录（SFTP）"), command, prefilled: pending.prefilled, queued: pending.queued };
+      if (!(exec?.callId !== undefined && service.consumeOperatorApproval(exec.callId, resolved.connectionId, command))) {
+        return { path: resolved.path, blocked: true, reason: t("删除文件或目录（SFTP）"), command };
+      }
+      // Approved: the reversible trash move is what actually runs whenever
+      // the path allows it; only a non-parseable path deletes for real.
+      const result = await service.runPreparedExec(resolved.connectionId, trashScript ?? command, command, true, 30000, false, false);
+      if (!result.ok) throw new Error(`sftp_delete failed: ${result.error.message}`);
+      if (result.value.timedOut || result.value.exitCode !== 0) {
+        const detail = result.value.stderr?.trim() || `exit code ${result.value.exitCode ?? "unknown"}`;
+        throw new Error(`sftp_delete outcome is not successful: ${detail}`);
+      }
+      return { path: resolved.path };
     }
   }));
 
@@ -159,15 +216,17 @@ export function registerSftpTools(ctx, service) {
     description: "Rename or move a remote file/directory over SFTP. Omit connection_id for the current server.",
     parameters: {
       connection_id: { type: "string", description: "Connection id from ssh_connect; omit to use the current server." },
-      from: { type: "string", required: true, description: "Current remote path." },
-      to: { type: "string", required: true, description: "New remote path." }
+      from: { type: "string", required: true, description: "Current remote path. A relative path resolves under the remote workspace root." },
+      to: { type: "string", required: true, description: "New remote path. A relative path resolves under the remote workspace root." }
     },
     output: {
       schema: { type: "object", additionalProperties: false, properties: { from: { type: "string", required: true }, to: { type: "string", required: true } } },
       render(args, value) { return [{ type: "text", text: `Renamed ${value.from} -> ${value.to}` }]; }
     },
-    async execute(args) {
-      const result = await service.sftpRename({ connectionId: args.connection_id, from: args.from, to: args.to });
+    async execute(args, exec) {
+      const file = await resolveTarget(exec, args.connection_id, args.from);
+      const destination = await resolveTarget(exec, target(file, args.connection_id), args.to);
+      const result = await service.sftpRename({ connectionId: file.connectionId, from: file.path, to: destination.path });
       if (!result.ok) throw new Error(`sftp_rename failed: ${result.error.message}`);
       return result.value;
     }
@@ -201,8 +260,9 @@ export function registerSftpTools(ctx, service) {
         return [{ type: "text", text: `${head}\n${value.failed.length} failures:\n${lines.join("\n")}` }];
       }
     },
-    async execute(args) {
-      const result = await service.sftpUploadDir({ connectionId: args.connection_id, localPath: args.local_path, remotePath: args.remote_path });
+    async execute(args, exec) {
+      const target = await resolveTarget(exec, args.connection_id, args.remote_path);
+      const result = await service.sftpUploadDir({ connectionId: target.connectionId, localPath: args.local_path, remotePath: target.path });
       if (!result.ok) throw new Error(`sftp_upload_dir failed: ${result.error.message}`);
       return result.value;
     }
@@ -236,8 +296,9 @@ export function registerSftpTools(ctx, service) {
         return [{ type: "text", text: `${head}\n${value.failed.length} failures:\n${lines.join("\n")}` }];
       }
     },
-    async execute(args) {
-      const result = await service.sftpDownloadDir({ connectionId: args.connection_id, remotePath: args.remote_path, localPath: args.local_path });
+    async execute(args, exec) {
+      const target = await resolveTarget(exec, args.connection_id, args.remote_path);
+      const result = await service.sftpDownloadDir({ connectionId: target.connectionId, remotePath: target.path, localPath: args.local_path });
       if (!result.ok) throw new Error(`sftp_download_dir failed: ${result.error.message}`);
       return result.value;
     }

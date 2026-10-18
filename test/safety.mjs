@@ -83,7 +83,6 @@ assert.equal(
 const service = Object.create(SshOpsService.prototype);
 service.config = { maxBufferBytes: 1024, maxCaptureBytes: 512, maxCommandOutputBytes: 128 };
 service.wakeWaiters = () => {};
-service.pendingConfirmations = new Map();
 
 const safeSession = { inputLine: "", inputKnown: true, buffer: "" };
 const safeInput = service.prepareTerminalInput(safeSession, "free -h\r");
@@ -137,72 +136,33 @@ service.connections = new Map();
 const rejectedExec = await service.execOnConnection("missing", "DROP DATABASE production");
 assert.equal(rejectedExec.blocked, true);
 assert.equal(rejectedExec.value.command, "DROP DATABASE production");
-assert.equal(rejectedExec.value.prefilled, false);
 assert.match(rejectedExec.value.reason, /删除数据库/);
 
-// A blocked command is queued for confirmation without being written to the
-// terminal input line; the operator can only execute it via the panel's
-// Execute button (which sends the command + Enter to the PTY). shred is used
-// here because it is blocked but NOT trashable — simple rm commands take the
-// reversible trash path instead (tested below).
+// Without a valid approval voucher the blocked command is denied outright:
+// no queue, no terminal notice — the ask flow suspends the tool call itself,
+// so a blocked result here means "the ask did not happen or did not grant".
 const prefillWrites = [];
 service.connections = new Map([["live", { host: "192.0.2.10", port: 22, username: "root", sessions: new Set(["live-sess"]) }]]);
 service.sessions = new Map([["live-sess", { id: "live-sess", exited: null, stream: { write(v) { prefillWrites.push(v); } }, inputLine: "", inputKnown: true, buffer: "" }]]);
-const prefilledExec = await service.execOnConnection("live", "shred /tmp/x");
-assert.equal(prefilledExec.blocked, true);
-assert.equal(prefilledExec.value.prefilled, false);
-assert.equal(prefilledExec.value.queued, true);
-assert.equal(prefilledExec.value.command, "shred /tmp/x");
-assert.match(prefilledExec.value.reason, /删除文件或目录/);
-assert.match(service.sessions.get("live-sess").buffer, /弹出确认卡片/);
-assert.equal(service.sessions.get("live-sess").inputLine, "", "the command is not prefilled into the terminal");
+const deniedExec = await service.execOnConnection("live", "shred /tmp/x");
+assert.equal(deniedExec.blocked, true);
+assert.equal(deniedExec.value.command, "shred /tmp/x");
+assert.match(deniedExec.value.reason, /删除文件或目录/);
+assert.equal(deniedExec.value.queued, undefined, "nothing is queued anymore — the ask replaced the cards");
+assert.equal(service.sessions.get("live-sess").buffer, "", "no terminal notice: the gate suspends the call instead of queueing");
 
-// Each dangerous action is queued independently; approvals submit exactly once.
-const queuedExec = await service.execOnConnection("live", "shred /tmp/y");
-assert.equal(queuedExec.value.queued, true);
-assert.equal(queuedExec.value.prefilled, false);
-assert.equal(service.pendingConfirmationList().value.confirmations.length, 2);
-// Keyboard Enter is normal operator input now — it passes through and does not
-// execute or interfere with the queued confirmation.
-await service.write({ sessionId: "live-sess", data: Buffer.from("\r").toString("base64") });
-assert.equal(prefillWrites.at(-1), "\r", "keyboard Enter passes through as normal input");
-const secondPending = service.pendingConfirmationList().value.confirmations.find((item) => item.command === "shred /tmp/y");
-assert.equal((await service.pendingConfirmationApprove({ confirmationId: secondPending.confirmationId })).value.executed, true);
-assert.equal(prefillWrites.at(-1), "\x15shred /tmp/y\r", "card approval clears the line and submits the command");
-const firstPending = service.pendingConfirmationList().value.confirmations.find((item) => item.command === "shred /tmp/x");
-assert.equal((await service.pendingConfirmationApprove({ confirmationId: firstPending.confirmationId })).value.executed, true);
-assert.equal(prefillWrites.at(-1), "\x15shred /tmp/x\r", "the card clears the line and submits once");
-assert.equal(service.pendingConfirmationList().value.confirmations.length, 0);
+// A voucher is bound to the exact command the operator saw: a different one
+// grants nothing, and consuming a voucher happens exactly once.
+service.recordOperatorApproval("call-1", "live", "shred /tmp/other");
+const mismatched = await service.execOnConnection("live", "shred /tmp/x", 30000, false, "call-1");
+assert.equal(mismatched.blocked, true, "a voucher for another command grants nothing");
+assert.equal(service.operatorApprovals.size, 0, "the mismatched voucher is still consumed once");
 
-const cancelExec = await service.execOnConnection("live", "shred /tmp/cancel");
-const cancelPending = service.pendingConfirmationList().value.confirmations[0];
-assert.equal(cancelExec.value.prefilled, false);
-assert.equal((await service.pendingConfirmationCancel({ confirmationId: cancelPending.confirmationId })).value.cancelled, true);
-
-// Typing in the terminal does not revoke a queued confirmation; the operator
-// must use the panel's Execute/Undo buttons to handle it.
-const editExec = await service.execOnConnection("live", "shred /tmp/edit");
-assert.equal(editExec.value.prefilled, false);
-await service.write({ sessionId: "live-sess", data: Buffer.from("echo manual").toString("base64") });
-assert.equal(service.pendingConfirmationList().value.confirmations.length, 1, "terminal input does not revoke a queued confirmation");
-assert.equal(prefillWrites.at(-1), "echo manual", "terminal input passes through normally");
-await service.pendingConfirmationCancel({ confirmationId: service.pendingConfirmationList().value.confirmations[0].confirmationId });
-assert.equal(service.pendingConfirmationList().value.confirmations.length, 0);
-
-// A command containing control characters (e.g. Tab) is not prefilled into the
-// PTY; it falls back to a copyable card so completion/Cancel are not triggered.
-service.connections = new Map([["ctrl-conn", { host: "192.0.2.10", port: 22, username: "root", sessions: new Set(["ctrl"]) }]]);
-service.sessions = new Map([["ctrl", { id: "ctrl", exited: null, stream: { write() { throw new Error("must not prefill control chars"); } }, inputLine: "", inputKnown: true, buffer: "" }]]);
-const ctrlExec = await service.execOnConnection("ctrl-conn", "shred\t/tmp/y");
-assert.equal(ctrlExec.blocked, true);
-assert.equal(ctrlExec.value.prefilled, false);
-
-// ── simple rm commands still pop the exact same card; approval silently ─────
-// ── performs the reversible trash move as a rollback margin ──────────────────
+// ── an approved simple rm runs the reversible trash move on the exec ────────
+// ── channel; the PTY never sees the rm at all ────────────────────────────────
 {
   const trashService = Object.create(SshOpsService.prototype);
   trashService.config = { maxBufferBytes: 1024, maxCaptureBytes: 512, maxCommandOutputBytes: 4096 };
-  trashService.pendingConfirmations = new Map();
   trashService.wakeWaiters = () => {};
   let sent = null;
   trashService.collectExecOutput = async (client, command) => {
@@ -220,69 +180,68 @@ assert.equal(ctrlExec.value.prefilled, false);
   trashService.connections = new Map([["live", { host: "192.0.2.10", port: 22, username: "root", sessions: new Set(["live-sess"]), loginShell: "bash" }]]);
   trashService.sessions = new Map([["live-sess", { id: "live-sess", exited: null, stream: { write(v) { trashWrites.push(v); } }, inputLine: "", inputKnown: true, buffer: "" }]]);
 
-  // Issue time: nothing executes; a card queues with the prepared script.
-  // Reason and every visible string are exactly the historical ones.
+  // No voucher: nothing executes, the structured denial comes back.
   const queued = await trashService.execOnConnection("live", "rm -rf /tmp/x");
   assert.equal(queued.blocked, true, "the rm still waits for the operator");
-  assert.equal(queued.value.queued, true);
   assert.equal(sent, null, "no exec happens before approval");
   assert.equal(queued.value.reason, "删除文件或目录", "the reason text is unchanged");
-  const pending = trashService.pendingConfirmationList().value.confirmations[0];
-  assert.ok(pending, "a confirmation card is queued");
-  const stored = [...trashService.pendingConfirmations.values()][0];
-  assert.ok(stored.trashScript && stored.trashScript.includes(".dsh-trash") && stored.trashScript.includes("'/tmp/x'"), "the card silently carries the prepared trash script");
 
-  // Approval runs the trash script on the exec channel, mirrors the outcome
-  // into the terminal, and consumes the card. The PTY never sees the rm.
-  const approved = await trashService.pendingConfirmationApprove({ confirmationId: pending.confirmationId });
-  assert.equal(approved.ok, true);
-  assert.equal(approved.value.executed, true);
+  // The gate's voucher — what the host's allowed-once records — unlocks the
+  // call: the trash move runs on the exec channel and the agent sees its
+  // output. The PTY never sees the rm.
+  trashService.recordOperatorApproval("call-trash", "live", "rm -rf /tmp/x");
+  const approved = await trashService.execOnConnection("live", "rm -rf /tmp/x", 30000, false, "call-trash");
+  assert.equal(approved.blocked, undefined, "the approved command ran");
+  assert.equal(approved.value.exitCode, 0);
   assert.ok(sent.includes(".dsh-trash") && sent.includes("manifest.tsv"), "approval executes the generated script");
   assert.ok(!trashWrites.some((w) => w.includes("rm")), "the real rm never reaches the PTY");
-  assert.equal(trashService.pendingConfirmationList().value.confirmations.length, 0, "the card is consumed");
+  assert.equal(trashService.operatorApprovals.size, 0, "the voucher is consumed exactly once");
   const mirrored = trashService.sessions.get("live-sess").buffer;
   assert.ok(mirrored.includes("$ rm -rf /tmp/x"), "the terminal mirror echoes the original command");
-  assert.ok(!mirrored.includes("回收站") && !mirrored.includes("♻"), "the terminal looks exactly as it always did — no trash advertising");
   assert.ok(!mirrored.includes("__DSH_TRASH_V1__"), "the terminal mirror never shows protocol lines");
 
-  // The operator can cancel instead — nothing runs at all.
-  await trashService.execOnConnection("live", "rm -rf /tmp/y");
-  const cancelPending = trashService.pendingConfirmationList().value.confirmations[0];
+  // Compound rm carries no trash script — the operator-approved command runs
+  // literally on the exec channel, exactly as approved.
   sent = null;
-  const cancelled = await trashService.pendingConfirmationCancel({ confirmationId: cancelPending.confirmationId });
-  assert.equal(cancelled.ok, true);
-  assert.equal(sent, null, "cancellation never executes");
+  trashService.recordOperatorApproval("call-compound", "live", "rm -rf /tmp/x && echo done");
+  const compound = await trashService.execOnConnection("live", "rm -rf /tmp/x && echo done", 30000, false, "call-compound");
+  assert.equal(compound.blocked, undefined);
+  assert.ok(sent.endsWith("rm -rf /tmp/x && echo done"), "compound approval runs the literal command");
 
-  // A non-POSIX login shell cannot anchor relative paths, so the silent
-  // rollback margin is unavailable there: approval falls back to the
-  // historical PTY execution of the literal approved command.
-  const fishService = Object.create(SshOpsService.prototype);
-  fishService.config = trashService.config;
-  fishService.pendingConfirmations = new Map();
-  fishService.wakeWaiters = () => {};
-  fishService.ensureAlive = async () => true;
-  fishService.collectExecOutput = async () => { throw new Error("must not use the exec channel for a non-POSIX shell"); };
-  const fishWrites = [];
-  fishService.connections = new Map([["fish", { host: "192.0.2.10", port: 22, username: "root", sessions: new Set(["fish-sess"]), loginShell: "fish" }]]);
-  fishService.sessions = new Map([["fish-sess", { id: "fish-sess", exited: null, stream: { write(v) { fishWrites.push(v); } }, inputLine: "", inputKnown: true, buffer: "" }]]);
-  const fishQueued = await fishService.execOnConnection("fish", "rm -rf relative");
-  assert.equal(fishQueued.blocked, true);
-  const fishPending = fishService.pendingConfirmationList().value.confirmations[0];
-  const fishApproved = await fishService.pendingConfirmationApprove({ confirmationId: fishPending.confirmationId });
-  assert.equal(fishApproved.value.executed, true, "non-POSIX shell falls back to the historical execution");
-  assert.ok(fishWrites.at(-1).includes("\x15rm -rf relative\r"), "the fallback submits the literal command via the PTY");
+  // A dangerous command must not be replayed when the transport dies after
+  // dispatch: the first run may already have taken effect.
+  const ambiguousService = Object.create(SshOpsService.prototype);
+  ambiguousService.config = { maxBufferBytes: 1024, maxCaptureBytes: 512, maxCommandOutputBytes: 4096 };
+  ambiguousService.operatorApprovals = new Map();
+  ambiguousService.connections = new Map([[
+    "live",
+    { id: "live", host: "192.0.2.10", sessions: new Set(), client: {}, dead: true }
+  ]]);
+  ambiguousService.sessions = new Map();
+  ambiguousService.resolveExecPolicy = () => ({ mode: "standard", source: "global", allow: [] });
+  ambiguousService.resolveLoginShell = async () => null;
+  ambiguousService.ensureAlive = async () => true;
+  ambiguousService.wakeWaiters = () => {};
+  let ambiguousRuns = 0;
+  ambiguousService.collectExecOutput = async () => {
+    ambiguousRuns += 1;
+    throw new Error("transport lost after dispatch");
+  };
+  ambiguousService.recordOperatorApproval("call-once", "live", "reboot");
+  const ambiguous = await ambiguousService.execOnConnection("live", "reboot", 30000, false, "call-once");
+  assert.equal(ambiguous.ok, false);
+  assert.equal(ambiguousRuns, 1, "an approved dangerous command is never transparently replayed");
+}
 
-  // Compound rm commands carry no trash script — approval runs the real
-  // command through the PTY, exactly as before.
-  const compound = await trashService.execOnConnection("live", "rm -rf /tmp/x && echo done");
-  assert.equal(compound.blocked, true);
-  assert.equal(compound.value.queued, true);
-  assert.equal(compound.value.command, "rm -rf /tmp/x && echo done");
-  const compoundStored = [...trashService.pendingConfirmations.values()][0];
-  assert.equal(compoundStored.trashScript, undefined, "compound commands never get a trash script");
-  const compoundApproved = await trashService.pendingConfirmationApprove({ confirmationId: compoundStored.confirmationId });
-  assert.equal(compoundApproved.value.executed, true);
-  assert.ok(trashWrites.at(-1).includes("\x15rm -rf /tmp/x && echo done\r"), "compound approval still submits the literal command via the PTY");
+// Approval vouchers expire even when the tool body never consumes them.
+{
+  const ttlService = Object.create(SshOpsService.prototype);
+  ttlService.operatorApprovals = new Map();
+  ttlService.operatorApprovalTtlMs = 10;
+  ttlService.recordOperatorApproval("stale", "live", "reboot");
+  assert.equal(ttlService.operatorApprovals.size, 1);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(ttlService.operatorApprovals.size, 0, "the unref'd expiry timer removes abandoned grants");
 }
 
 const allowedButMissing = await service.execOnConnection("missing", "free -h");
@@ -340,23 +299,19 @@ for (const [name, [args, value]] of Object.entries(renderFixtures)) {
   assert.equal(typeof content[0].text, "string", `${name} text should not be split into characters`);
 }
 
-// A blocked ssh_exec renders a copyable command card, not a thrown error.
+// A blocked ssh_exec renders the denial (command + reason), not a thrown error.
 {
   const sshExecTool = registeredTools.find((t) => t.name === "ssh_exec");
   const baseBlocked = { connectionId: "live", host: "192.0.2.10", exitCode: null, stdout: "", stderr: "", cwd: null, commandId: "(blocked)", startedAt: "2026-08-20T00:00:00.000Z", finishedAt: "2026-08-20T00:00:00.000Z", durationMs: 0, truncated: false, timedOut: false, redacted: false };
-  const prefilledCard = sshExecTool.output.render({}, { ...baseBlocked, blocked: true, reason: "删除文件或目录", command: "rm -rf /tmp/x", prefilled: false, queued: true });
-  assert.equal(prefilledCard.length, 1);
-  assert.match(prefilledCard[0].text, /已拦截：删除文件或目录/);
-  assert.match(prefilledCard[0].text, /未执行/);
-  assert.match(prefilledCard[0].text, /确认卡片/);
-  assert.match(prefilledCard[0].text, /```bash\nrm -rf \/tmp\/x\n```/);
-  assert.match(prefilledCard[0].text, /请勿重试/);
-  assert.match(prefilledCard[0].text, /绕行/);
-  const copyCard = sshExecTool.output.render({}, { ...baseBlocked, blocked: true, reason: "删除文件或目录", command: "rm -rf /tmp/x", prefilled: false, queued: false });
-  assert.match(copyCard[0].text, /粘贴到右侧终端执行/);
-  assert.match(copyCard[0].text, /```bash/);
-  assert.match(copyCard[0].text, /请勿重试/);
-  // Normal (non-blocked) ssh_exec output renders the cwd note, then output.
+  const deniedCard = sshExecTool.output.render({}, { ...baseBlocked, blocked: true, reason: "删除文件或目录", command: "rm -rf /tmp/x" });
+  assert.equal(deniedCard.length, 1);
+  assert.match(deniedCard[0].text, /已拦截：删除文件或目录/);
+  assert.match(deniedCard[0].text, /未执行/);
+  assert.match(deniedCard[0].text, /没有获得批准/);
+  assert.match(deniedCard[0].text, /```bash\nrm -rf \/tmp\/x\n```/);
+  assert.match(deniedCard[0].text, /请勿重试/);
+  assert.match(deniedCard[0].text, /绕行/);
+// Normal (non-blocked) ssh_exec output renders the cwd note, then output.
   const normalCard = sshExecTool.output.render({}, { connectionId: "live", host: "192.0.2.10", exitCode: 0, stdout: "ok\n", stderr: "", cwd: "/root/KVideo", commandId: "cmd-1", startedAt: "x", finishedAt: "x", durationMs: 1, truncated: false, timedOut: false, redacted: false });
   assert.equal(normalCard[0].text, "[cwd: /root/KVideo]\nok\n");
   // Unknown cwd spells out the home fallback instead of printing "null".
@@ -364,40 +319,64 @@ for (const [name, [args, value]] of Object.entries(renderFixtures)) {
   assert.match(fallbackCard[0].text, /^\[cwd: login directory — no interactive shell directory detected\]\nok\n$/);
 }
 
-// sftp_delete still queues a confirmation card; for a simple literal path the
-// card carries a prepared trash script, so operator approval performs the
-// reversible move instead of a real rm.
+// sftp_delete denies without an operator voucher; with the gate's voucher it
+// deletes via the reversible trash move on the exec channel.
 {
   const sftpTool = registeredTools.find((t) => t.name === "sftp_delete");
   service.connections = new Map([["sftp-conn", { host: "192.0.2.10", port: 22, username: "root", sessions: new Set(["sftp-sess"]) }]]);
   service.sessions = new Map([["sftp-sess", { id: "sftp-sess", exited: null, stream: { write() {} }, inputLine: "", inputKnown: true, buffer: "" }]]);
   const sftpRes = await sftpTool.execute({ path: "/tmp/foo", connection_id: "sftp-conn" });
   assert.equal(sftpRes.blocked, true);
-  assert.equal(sftpRes.queued, true);
+  assert.equal(sftpRes.queued, undefined, "no queue: the ask replaced the cards");
   assert.equal(sftpRes.path, "/tmp/foo");
   assert.equal(sftpRes.command, "rm -rf '/tmp/foo'");
   assert.equal(sftpRes.reason, "删除文件或目录（SFTP）", "reason text unchanged");
-  const sftpStored = [...service.pendingConfirmations.values()].find((item) => item.command === "rm -rf '/tmp/foo'");
-  assert.ok(sftpStored.trashScript && sftpStored.trashScript.includes("'/tmp/foo'"), "the card silently carries the prepared trash script");
   const sftpCard = sftpTool.output.render({}, sftpRes);
-  assert.match(sftpCard[0].text, /确认卡片/);
+  assert.match(sftpCard[0].text, /未删除任何内容/);
   assert.match(sftpCard[0].text, /```bash\nrm -rf '\/tmp\/foo'\n```/);
   assert.match(sftpCard[0].text, /请勿重试/);
-  assert.ok(!sftpCard[0].text.includes("回收站"), "the card text is unchanged — no trash advertising");
-  // Omitted connection_id must resolve to the current right-side connection,
-  // otherwise the card would claim a queue entry while none exists.
-  service.activeConnectionId = "sftp-conn";
-  const activeSftpRes = await sftpTool.execute({ path: "/tmp/current.txt" });
-  assert.equal(activeSftpRes.queued, true);
-  // Paths with spaces / quotes are POSIX single-quoted so they cannot escape.
-  const sftpRes2 = await sftpTool.execute({ path: "/tmp/a b'c", connection_id: "sftp-conn" });
-  assert.equal(sftpRes2.command, "rm -rf '/tmp/a b'\\''c'");
-  // A path containing a control character cannot ride the trash script, and
-  // the tab also makes the command unprefillable → copyable card fallback.
-  const tabRes = await sftpTool.execute({ path: "/tmp/a\tb", connection_id: "sftp-conn" });
-  assert.equal(tabRes.blocked, true);
-  assert.equal(tabRes.queued, false);
-  assert.match(sftpTool.output.render({}, tabRes)[0].text, /粘贴到右侧终端执行/);
+
+  // With the gate's voucher the reversible trash move runs on the exec
+  // channel; the voucher is consumed exactly once.
+  let trashSent = null;
+  service.runPreparedExec = async (connectionId, prepared, displayCommand) => {
+    trashSent = { connectionId, prepared, displayCommand };
+    return { ok: true, value: { exitCode: 0, stdout: "moved", stderr: "", cwd: null, commandId: "x", startedAt: "x", finishedAt: "x", durationMs: 0, truncated: false, timedOut: false, redacted: false } };
+  };
+  service.recordOperatorApproval("sftp-call", "sftp-conn", "rm -rf '/tmp/foo'");
+  const deleted = await sftpTool.execute({ path: "/tmp/foo", connection_id: "sftp-conn" }, { callId: "sftp-call" });
+  assert.equal(deleted.blocked, undefined);
+  assert.equal(deleted.path, "/tmp/foo");
+  assert.ok(trashSent.prepared.includes(".dsh-trash") && trashSent.prepared.includes("'/tmp/foo'"), "approval runs the reversible trash move");
+  assert.equal(trashSent.displayCommand, "rm -rf '/tmp/foo'");
+  assert.equal(service.operatorApprovals.size, 0, "voucher consumed exactly once");
+
+  // Quoting: spaces and quotes survive POSIX single-quoting end to end.
+  service.recordOperatorApproval("sftp-call-2", "sftp-conn", "rm -rf '/tmp/a b'\\''c'");
+  const deleted2 = await sftpTool.execute({ path: "/tmp/a b'c", connection_id: "sftp-conn" }, { callId: "sftp-call-2" });
+  assert.equal(deleted2.path, "/tmp/a b'c");
+
+  service.runPreparedExec = async () => ({
+    ok: true,
+    value: {
+      exitCode: 2,
+      stdout: "",
+      stderr: "rm: permission denied",
+      cwd: null,
+      commandId: "x",
+      startedAt: "x",
+      finishedAt: "x",
+      durationMs: 0,
+      truncated: false,
+      timedOut: false
+    }
+  });
+  service.recordOperatorApproval("sftp-call-fail", "sftp-conn", "rm -rf '/tmp/foo'");
+  await assert.rejects(
+    () => sftpTool.execute({ path: "/tmp/foo", connection_id: "sftp-conn" }, { callId: "sftp-call-fail" }),
+    /outcome is not successful: rm: permission denied/
+  );
+  delete service.runPreparedExec;
 }
 
 // db_execute blocked SQL returns a copyable SQL card (not a thrown error); only

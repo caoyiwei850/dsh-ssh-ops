@@ -9,6 +9,7 @@ import { requestPaneOpen } from "./pane-selection.js";
 import { privateKeyProblem } from "./pemkey.js";
 import { t } from "../i18n/core.js";
 import { useLanguage } from "./locale.js";
+import { ResourceWorkspaces } from "./ResourceWorkspaces.jsx";
 import { TIER_ORDER, execPolicyLabel, execPolicyLooseningDetail } from "./exec-policy-ui.js";
 
 /** Injected at build time from package.json (scripts/build-client.mjs). */
@@ -47,13 +48,13 @@ const hostKeyModeLabels = () => ({
   off: t("关闭校验（不推荐）")
 });
 
-function emptyForm() {
+function emptyForm(defaultUsername) {
   return {
     profileId: undefined,
     name: "",
     host: "",
     port: "22",
-    username: "root",
+    username: (defaultUsername ?? "").trim() || "root",
     authKind: "password",
     hostKeyMode: "accept-new",
     agentForward: false,
@@ -137,22 +138,16 @@ export async function migrateLegacyProfiles(api) {
   return true;
 }
 
-function ResourceEditor({ initial, groups, profiles, sharedCredentials = [], credentials, api, onClose, onSaved }) {
-  const [form, setForm] = useState(() => initial ? profileToForm(initial) : emptyForm());
+function ResourceEditor({ initial, groups, profiles, sharedCredentials = [], credentials, api, defaultUsername = null, onClose, onSaved }) {
+  const [form, setForm] = useState(() => initial ? profileToForm(initial) : emptyForm(defaultUsername));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const keyFileInput = useRef(null);
-  // Advanced options start collapsed; an existing resource that already
-  // carries an advanced value opens expanded so nothing stays hidden.
-  const [advancedOpen, setAdvancedOpen] = useState(() => Boolean(
-    initial
-    && ((initial.defaultProjectPath ?? "") !== ""
-      || (initial.loginCommand ?? "") !== ""
-      || (initial.hostKeyMode ?? "accept-new") !== "accept-new"
-      || (initial.execPolicy ?? "") !== ""
-      || initial.secondaryConfigured
-      || initial.agentForward === true)
-  ));
+  // Two tabs instead of one ever-growing form: 基本 carries the coordinates and
+  // credentials, 高级选项 the rarely-touched knobs. The dialog always opens on
+  // 基本 — an editor that jumps tabs based on what is configured feels random
+  // (operator ruling on the earlier auto-advance behavior).
+  const [formTab, setFormTab] = useState("basic");
   const set = (key) => (event) => setForm((current) => ({ ...current, [key]: event.target.type === "checkbox" ? event.target.checked : event.target.value }));
   const addJump = () => setForm((current) => ({ ...current, proxyJump: [...current.proxyJump, { profileId: "" }] }));
   const updateJump = (index, key, value) => setForm((current) => ({ ...current, proxyJump: current.proxyJump.map((hop, i) => i === index ? { ...hop, [key]: value } : hop) }));
@@ -227,7 +222,10 @@ function ResourceEditor({ initial, groups, profiles, sharedCredentials = [], cre
       const secondaryRef = form.authKind === "password" ? saved.credentialRefs.privateKey : saved.credentialRefs.password;
       if (form.secondary.trim()) await credentialWrite(credentials, secondaryRef, form.secondary);
       else if (form.clearSecondary) await credentialUnset(credentials, secondaryRef);
-      await onSaved();
+      // The saved username becomes the next new-server prefill: the host has
+      // already persisted it by now; hand it up so this session's state keeps
+      // up without a settings round-trip.
+      await onSaved({ username: form.username.trim() });
       onClose();
     } catch (cause) {
       setError(cause?.message ?? String(cause));
@@ -239,10 +237,18 @@ function ResourceEditor({ initial, groups, profiles, sharedCredentials = [], cre
   const primaryConfigured = initial?.credentialConfigured;
   return (
     <div style={styles.backdrop} onClick={busy ? undefined : onClose}>
-      <div className="dsh-ssh-ops-resource-modal" style={styles.dialog} onClick={(event) => event.stopPropagation()}>
+      <div className="dsh-ssh-ops-resource-modal" style={{ ...styles.dialog, width: 520 }} onClick={(event) => event.stopPropagation()}>
         <div style={styles.dialogTitle}>{form.profileId ? t("编辑 SSH 资源") : t("新增 SSH 资源")}</div>
+        {/* Two fixed tabs, no sliding thumb: the thumb is sized for the
+            three-tab settings strip and a half-width one reads as a stray box
+            here. A plain selected state is enough for two choices. */}
+        <div style={styles.formTabs} role="tablist" aria-label={t("资源信息与高级选项")}>
+          <button type="button" role="tab" aria-selected={formTab === "basic"} onClick={() => setFormTab("basic")} style={formTab === "basic" ? styles.formTabActive : styles.formTab}>{t("基本")}</button>
+          <button type="button" role="tab" aria-selected={formTab === "advanced"} onClick={() => setFormTab("advanced")} style={formTab === "advanced" ? styles.formTabActive : styles.formTab}>{t("高级选项")}</button>
+        </div>
         {/* One shared 3-column grid for the coordinate rows: every column
             boundary sits at 1/3 and 2/3, so the three rows line up. */}
+        {formTab === "basic" && <>
         <div style={styles.formGrid}>
           <Field label={t("名称")}><input value={form.name} onChange={set("name")} placeholder={t("阿里云生产环境")} style={styles.input} /></Field>
           <Field label={t("主机")} style={{ gridColumn: "span 2" }}><input value={form.host} onChange={set("host")} placeholder={t("example.com 或 IP 地址")} style={styles.input} /></Field>
@@ -286,8 +292,8 @@ function ResourceEditor({ initial, groups, profiles, sharedCredentials = [], cre
           {form.proxyJump.map((hop, index) => <div key={index} style={styles.jumpRow}><select value={hop.profileId ?? ""} onChange={(event) => updateJump(index, "profileId", event.target.value)} style={styles.input}><option value="">{t("选择已保存服务器")}</option>{profiles.filter((profile) => profile.profileId !== form.profileId).map((profile) => <option key={profile.profileId} value={profile.profileId}>{profile.name} · {profile.username}@{profile.host}:{profile.port}</option>)}</select><button type="button" onClick={() => removeJump(index)} style={styles.danger}>{t("移除")}</button></div>)}
           <button type="button" onClick={addJump} style={styles.secondary}>{t("＋ 添加跳板机")}</button>
         </Field>
-        <button type="button" onClick={() => setAdvancedOpen((open) => !open)} style={styles.advToggle} aria-expanded={advancedOpen}>{t(`${advancedOpen ? "▾" : "▸"} 高级选项${advancedOpen ? "" : t("（项目目录 · 指纹 · 第二因素 · Agent 转发 · 登录命令 · 执行策略）")}`)}</button>
-        {advancedOpen && (
+        </>}
+        {formTab === "advanced" && (
           <div style={styles.credentialColumns}>
             <Field label={t("默认项目目录")}>
               <input value={form.defaultProjectPath} onChange={set("defaultProjectPath")} placeholder={t("例如 /srv/apps/my-service")} style={styles.input} />
@@ -295,6 +301,14 @@ function ResourceEditor({ initial, groups, profiles, sharedCredentials = [], cre
             <Field label={t("登录命令（可选）")} hint={t("设置后终端以该命令作为登录会话打开，替代服务器默认 shell")}>
               <input value={form.loginCommand} onChange={set("loginCommand")} placeholder={t("例如 bash -l")} style={styles.input} title={t("在默认 shell 不兼容的服务器（如 zsh）上填 bash -l 可临时改用 bash；命令即整个登录会话，想要正常 profile 加载请带 -l；留空按服务器默认。")} />
             </Field>
+            {/* Workspace-level counterpart of 默认项目目录: that field is the
+                resource-wide default path, this one pins a specific DSH
+                workspace to a directory on this very server. */}
+            <div style={{ gridColumn: "span 2", minWidth: 0 }}>
+              {form.profileId
+                ? <ResourceWorkspaces api={api} profileId={form.profileId} projectPath={form.defaultProjectPath} />
+                : <div style={styles.advNotice}>{t("远程工作区需要先保存这台服务器——保存后回到「高级选项」即可把工作区绑定到它的目录。")}</div>}
+            </div>
             <Field label={t("主机指纹校验")}>
               <select value={form.hostKeyMode} onChange={set("hostKeyMode")} style={styles.input}>
                 <option value="accept-new">{hostKeyModeLabels()["accept-new"]}</option>
@@ -445,6 +459,11 @@ export function SshResources({ api, credentials }) {
   const [execPolicyAllow, setExecPolicyAllow] = useState([]);
   const [policyCategories, setPolicyCategories] = useState([]);
   const [policySaving, setPolicySaving] = useState(false);
+  // Username the new-server form prefills: auto-remembered host-side from the
+  // last profileSave (issue #36 feedback) — no manual knob, null falls back
+  // to "root". Loaded once with the rest of the settings; updated locally
+  // again whenever an editor saves.
+  const [defaultUsername, setDefaultUsername] = useState(null);
   // Self-update: 检查更新 opens the dialog and runs a check; the meta rows,
   // manual-update command and auto-update all live inside the dialog.
   // The interface follows the host's language automatically (root resolver);
@@ -531,6 +550,7 @@ export function SshResources({ api, credentials }) {
           setExecPolicy(settings.execPolicy ?? "standard");
           setExecPolicyAllow(settings.execPolicyAllow ?? []);
           setPolicyCategories(settings.categories ?? []);
+          setDefaultUsername(settings.defaultUsername ?? null);
         }
       } catch {
         if (alive) {
@@ -819,7 +839,7 @@ export function SshResources({ api, credentials }) {
                   ...(execPolicy === tier ? { ...styles.policySegmentActive, ...(tier === "allowAll" ? styles.policySegmentAllowAllActive : {}) } : {})
                 }}
                 title={
-                  tier === "standard" ? t("破坏性命令一律拦截，弹出确认卡片由操作者执行")
+                  tier === "standard" ? t("破坏性命令一律拦截，由操作者在会话内审批后才执行")
                   : tier === "custom" ? t("仅放行勾选的类别，其余照常拦截")
                   : t("AI 可直接执行任何命令，含不可逆删除（不进回收站）")
                 }
@@ -911,7 +931,7 @@ export function SshResources({ api, credentials }) {
       {hostKeyPopup && (
         <HostKeyPopup host={hostKeyPopup.host} port={hostKeyPopup.port} known={hostKeyPopup} copied={copiedHostKey} onCopy={copyHostFingerprint} onForget={forgetHost} forgetBusy={forgetBusy} onClose={() => setHostKeyPopup(null)} />
       )}
-      {editor && <ResourceEditor initial={editor.profile} groups={groups} profiles={profiles} sharedCredentials={sharedCredentials} api={api} credentials={credentials} onClose={() => setEditor(null)} onSaved={refresh} />}
+      {editor && <ResourceEditor initial={editor.profile} groups={groups} profiles={profiles} sharedCredentials={sharedCredentials} api={api} credentials={credentials} defaultUsername={defaultUsername} onClose={() => setEditor(null)} onSaved={(saved) => { if (saved?.username) setDefaultUsername(saved.username); return refresh(); }} />}
       {credentialEditor && <SharedCredentialEditor initial={credentialEditor.credentialId ? credentialEditor : null} credentials={credentials} api={api} onClose={() => setCredentialEditor(null)} onSaved={refresh} />}
     </div>
   );
@@ -1001,7 +1021,10 @@ const styles = {
   groupTitle: { fontSize: 13, fontWeight: 650, marginBottom: 8 }, groupCreate: { display: "flex", gap: 8, flexWrap: "nowrap", alignItems: "center" }, groupChips: { display: "flex", gap: 7, flexWrap: "wrap", marginTop: 10 }, groupChip: { display: "inline-flex", alignItems: "center", gap: 5, padding: "4px 7px", borderRadius: 99, background: "rgba(127,127,127,.16)", fontSize: 12 }, chipDelete: { border: 0, background: "transparent", color: "#f07171", cursor: "pointer", padding: 0, fontSize: 15, lineHeight: 1 }, credentialList: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 6, maxHeight: 168, overflowY: "auto", marginTop: 8, paddingRight: 2 }, credentialRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 5, minWidth: 0 }, credentialActions: { display: "flex", alignItems: "center", gap: 2 }, credentialLabel: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12 }, groupedList: { display: "grid", gap: 18 }, groupHeadingButton: { border: 0, padding: 0, margin: "0 0 8px", background: "transparent", color: "inherit", cursor: "pointer", textAlign: "left" }, groupHeading: { fontSize: 14, fontWeight: 650 }, groupCount: { fontWeight: 400, opacity: 0.72 }, groupEmpty: { padding: 12, color: "inherit", opacity: 0.76, border: "1px dashed rgba(127,127,127,.55)", borderRadius: 8, fontSize: 12 },
   snippetForm: { display: "grid", gridTemplateColumns: "minmax(100px,.8fr) minmax(180px,2fr) minmax(110px,.7fr) auto", gap: 8, marginTop: 10, alignItems: "center" }, snippetList: { display: "grid", gap: 7, marginTop: 10 }, snippetItem: { display: "flex", justifyContent: "space-between", gap: 12, padding: "8px 10px", border: "1px solid rgba(127,127,127,.4)", borderRadius: 7, fontSize: 12 }, snippetScope: { marginLeft: 7, opacity: .7 }, snippetCommand: { marginTop: 4, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", opacity: .82, overflowWrap: "anywhere" }, fingerprint: { marginTop: 8, maxWidth: 560, overflowWrap: "anywhere", fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", fontSize: 12, lineHeight: 1.45, opacity: 0.86 }, backdrop: { position: "fixed", inset: 0, zIndex: 2000, background: "rgba(0,0,0,.42)", display: "flex", alignItems: "center", justifyContent: "center" }, dialog: { width: 440, maxWidth: "calc(100vw - 32px)", maxHeight: "calc(100vh - 32px)", overflow: "auto", background: "var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-overlay, #fff))", color: "var(--dsw-alias-label-primary, inherit)", borderRadius: 12, padding: 18, boxShadow: "0 20px 60px rgba(0,0,0,.28)", display: "flex", flexDirection: "column", gap: 11 }, dialogTitle: { fontSize: 16, fontWeight: 650 },
   field: { display: "flex", flexDirection: "column", gap: 5, fontSize: 13 }, hint: { color: "var(--dsw-alias-label-secondary, inherit)", fontWeight: 400 },
-  formGrid: { display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 10 }, advToggle: { border: 0, padding: 0, background: "transparent", color: "inherit", opacity: 0.76, cursor: "pointer", fontSize: 13, textAlign: "left", alignSelf: "flex-start" },
+  formGrid: { display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 10 }, advNotice: { padding: "10px 12px", borderRadius: 8, border: "1px dashed rgba(127,127,127,.5)", fontSize: 12, lineHeight: 1.6, color: "var(--dsw-alias-label-secondary, inherit)" },
+  formTabs: { display: "flex", gap: 3, padding: 3, borderRadius: 8, background: "rgba(127,127,127,.14)", border: "1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.22))" },
+  formTab: { flex: "1 1 0", minWidth: 0, border: "1px solid transparent", borderRadius: 6, padding: "6px 10px", background: "transparent", color: "var(--dsw-alias-label-secondary, inherit)", cursor: "pointer", font: "inherit", fontSize: 13, lineHeight: "20px" },
+  formTabActive: { flex: "1 1 0", minWidth: 0, border: "1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.35))", borderRadius: 6, padding: "6px 10px", background: "rgba(127,127,127,.24)", color: "var(--dsw-alias-label-primary, inherit)", cursor: "default", font: "inherit", fontSize: 13, lineHeight: "20px", fontWeight: 600 },
   titleRow: { display: "flex", alignItems: "center", gap: "8px 12px", minWidth: 0, flexWrap: "wrap" },
   titleLinks: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
   updateIntro: { margin: "0 0 14px", fontSize: 13, lineHeight: "20px", color: "var(--dsw-alias-label-secondary, #8b93a1)" },

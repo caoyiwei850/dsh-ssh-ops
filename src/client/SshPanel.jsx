@@ -27,6 +27,7 @@ import { privateKeyProblem } from "./pemkey.js";
 import { availableCommandSnippets, loadCommandSnippets, matchingCommandSnippets, saveCommandSnippets, searchCommandSnippets } from "./command-snippets.js";
 import { createTerminalPool } from "./terminal-pool.js";
 import { applyTerminalTheme, createTerminalThemeWatcher, getTerminalTheme } from "./terminal-theme.js";
+import { clampFontSize, createWheelZoom, loadTerminalFontSize, saveTerminalFontSize } from "./terminal-zoom.js";
 import { TIER_ORDER, execPolicyLabel, execPolicyLooseningDetail } from "./exec-policy-ui.js";
 import {
   DEFAULT_VIEW_ID,
@@ -136,11 +137,28 @@ function ensureStyles() {
  * alive across those unmounts. Host-side, output written while no view is
  * attached accumulates in the session buffer and is replayed on re-attach.
  */
+/**
+ * One zoom level for the whole workspace: every pooled terminal shares the
+ * font size, loaded once and persisted on change. Mounted views register a
+ * refit so the PTY columns/rows follow the new glyph size.
+ */
+let terminalFontSize = loadTerminalFontSize();
+const terminalFontSizeListeners = new Set();
+
+function applyTerminalFontSize(size) {
+  const next = clampFontSize(size);
+  if (next === terminalFontSize) return;
+  terminalFontSize = next;
+  saveTerminalFontSize(next);
+  terminalPool.forEachTerm((term) => { term.options.fontSize = next; });
+  for (const listener of terminalFontSizeListeners) listener();
+}
+
 const terminalPool = createTerminalPool({
   create: () => {
     const term = new Terminal({
       cursorBlink: true,
-      fontSize: 13,
+      fontSize: terminalFontSize,
       fontFamily: 'Menlo, Monaco, "Courier New", monospace',
       scrollback: 5000,
       // The search addon's match HIGHLIGHTS are gated behind this flag; the
@@ -274,6 +292,35 @@ function XtermView({ api, sessionId, connectionId }) {
     };
     container.addEventListener("keydown", onKeyDown, true);
 
+    // Ctrl+wheel / trackpad pinch zooms the font. Caught on the container in
+    // the capture phase so xterm's viewport never scrolls on it, and with
+    // preventDefault so the browser's page zoom stays out of it.
+    const wheelZoom = createWheelZoom();
+    const onWheel = (event) => {
+      const step = wheelZoom(event);
+      if (step === null) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (step !== 0) applyTerminalFontSize(terminalFontSize + step);
+    };
+    container.addEventListener("wheel", onWheel, { capture: true, passive: false });
+
+    // Copy-on-select, terminal-emulator style. Selection changes fire
+    // continuously during a drag, so settle briefly before copying; a cleared
+    // selection never copies, so unrelated clicks cannot overwrite the
+    // clipboard. Silent when the clipboard is unavailable — the selection is
+    // still on screen to copy by hand.
+    let copyTimer = null;
+    const selectionSubscription = term.onSelectionChange(() => {
+      if (copyTimer !== null) clearTimeout(copyTimer);
+      copyTimer = setTimeout(() => {
+        copyTimer = null;
+        if (!alive || !term.hasSelection()) return;
+        const text = term.getSelection();
+        if (text) { try { globalThis.navigator?.clipboard?.writeText?.(text)?.catch?.(() => {}); } catch {} }
+      }, 180);
+    });
+
     const controller = new AbortController();
     const NO_SESSION_NOTICE = t(`\r\n\x1b[31m[终端会话已失效：DSH 服务已重启或该连接已关闭。请到 设置 → SSH 资源 重新连接]\x1b[0m\r\n`);
     const EXIT_NOTICE = `\r\n\x1b[90m[session exited]\x1b[0m\r\n`;
@@ -382,6 +429,9 @@ function XtermView({ api, sessionId, connectionId }) {
     const raf = requestAnimationFrame(fitNow);
     const resizeObserver = new ResizeObserver(fitNow);
     resizeObserver.observe(container);
+    // A font-size change leaves the container box as it was, so the
+    // ResizeObserver stays silent — refit explicitly to resync the PTY grid.
+    terminalFontSizeListeners.add(fitNow);
 
     return () => {
       alive = false;
@@ -389,6 +439,10 @@ function XtermView({ api, sessionId, connectionId }) {
       cancelAnimationFrame(raf);
       pendingInput = "";
       container.removeEventListener("keydown", onKeyDown, true);
+      container.removeEventListener("wheel", onWheel, true);
+      terminalFontSizeListeners.delete(fitNow);
+      if (copyTimer !== null) clearTimeout(copyTimer);
+      selectionSubscription.dispose();
       resultsSubscription?.dispose?.();
       search?.clearDecorations?.();
       entryRef.current = null;
@@ -841,69 +895,6 @@ async function refreshConnections(api) {
   }
 }
 
-function PendingConfirmations({ confirmations, busyId, onApprove, onCancel, onCopy, alwaysExpand = false }) {
-  const [expandedId, setExpandedId] = useState(null);
-  const prevIdsRef = useRef(null);
-
-  // Cards collapse to a one-line command so several can be reviewed without
-  // scrolling inside the block. The polling loop replaces the array every
-  // second with equal content, so only react when the id list actually
-  // changes (mount / new item / handled item): expand the newest command.
-  useEffect(() => {
-    const ids = confirmations.map((item) => item.confirmationId);
-    const previous = prevIdsRef.current;
-    prevIdsRef.current = ids;
-    if (previous !== null && previous.length === ids.length && ids.every((id, i) => id === previous[i])) return;
-    setExpandedId(ids.length > 0 ? ids[ids.length - 1] : null);
-  }, [confirmations]);
-
-  if (confirmations.length === 0) {
-    return <div style={panelStyles.emptyState}>{t("暂无待确认的危险操作。")}</div>;
-  }
-  return (
-    <div style={panelStyles.pendingList}>
-      {confirmations.map((item) => {
-        const expanded = alwaysExpand || item.confirmationId === expandedId;
-        return (
-          <section key={item.confirmationId} style={panelStyles.pendingCard}>
-            <div style={panelStyles.pendingHead}>
-              <span style={panelStyles.pendingBadge} aria-hidden="true">⚠</span>
-              <button
-                type="button"
-                style={{ ...panelStyles.pendingToggle, cursor: alwaysExpand ? "default" : "pointer" }}
-                title={expanded ? item.command : t(`${item.command}（点击展开完整信息）`)}
-                onClick={() => {
-                  if (!alwaysExpand) setExpandedId(expanded ? null : item.confirmationId);
-                }}
-              >
-                {item.command}
-              </button>
-              <span style={panelStyles.pendingHostTag}>{item.name || item.host}</span>
-            </div>
-            {expanded && (
-              <>
-                <div style={panelStyles.pendingMeta}>{t(`来源：Agent · ${new Date(item.createdAt).toLocaleString()}`)}</div>
-                <div style={panelStyles.pendingReason}>{t(`风险：${item.reason}`)}</div>
-                <pre style={panelStyles.pendingCommand}>{item.command}</pre>
-              </>
-            )}
-            <div style={panelStyles.pendingActions}>
-              {expanded && (
-                <button type="button" style={panelStyles.btnSecondary} onClick={() => onCopy(item.command)}>{t("复制命令")}</button>
-              )}
-              <button type="button" style={panelStyles.btnDanger} disabled={busyId === item.confirmationId} onClick={() => onApprove(item.confirmationId)}>
-                {busyId === item.confirmationId ? t("处理中…") : t("执行")}
-              </button>
-              <button type="button" style={panelStyles.btnSecondary} disabled={busyId === item.confirmationId} onClick={() => onCancel(item.confirmationId)}>{t("撤销")}</button>
-            </div>
-          </section>
-        );
-      })}
-    </div>
-  );
-}
-
-
 function BatchDialog({ api, task, onDone }) {
   const [profiles, setProfiles] = useState([]);
   const [selected, setSelected] = useState({});
@@ -930,8 +921,8 @@ function BatchDialog({ api, task, onDone }) {
     }
   };
 
-  // Escape defers the dialog like the confirmation modal does — but never
-  // while a run is in flight, which would drop the results mid-execution.
+  // Escape defers the dialog like the policy confirmation dialog does — but
+  // never while a run is in flight, which would drop the results.
   useEffect(() => {
     if (busy) return;
     const onKey = (event) => {
@@ -1001,19 +992,12 @@ export function SshPanel({ api, credentials, viewId = DEFAULT_VIEW_ID, viewSigna
   // brand-new task auto-opens. Handled tasks are gone from the server, and the
   // leftover count stays visible in the inline notice for manual re-open.
   const seenBatchIdsRef = useRef(new Set());
-  const [pendingConfirmations, setPendingConfirmations] = useState([]);
-  const [pendingBusy, setPendingBusy] = useState(null);
-  const [pendingModalOpen, setPendingModalOpen] = useState(false);
   const [commandSnippets, setCommandSnippets] = useState(loadCommandSnippets);
   const [profiles, setProfiles] = useState([]);
   const [groups, setGroups] = useState([]);
   const [snippetQuery, setSnippetQuery] = useState("");
   const [snippetEditorOpen, setSnippetEditorOpen] = useState(false);
   const [snippetForm, setSnippetForm] = useState({ name: "", command: "", scope: "global", scopeId: "" });
-  // Confirmation ids this panel session has already surfaced. Only a brand-new
-  // id re-opens the interruptive popup, so deferring one is not undone by the
-  // next poll tick.
-  const seenPendingIdsRef = useRef(null);
   /** Whether this mount already offered to adopt the live host connections. */
   const adoptedRef = useRef(false);
   const snippetSearchRef = useRef(null);
@@ -1041,32 +1025,6 @@ export function SshPanel({ api, credentials, viewId = DEFAULT_VIEW_ID, viewSigna
       setProfiles(profileValue.profiles ?? []);
       setGroups(groupValue.groups ?? []);
     }).catch(() => {});
-  }, [api]);
-
-  const refreshPendingConfirmations = async () => {
-    try {
-      const { confirmations } = await api.pendingConfirmationList();
-      setPendingConfirmations(confirmations);
-      // Dangerous commands must come to the operator, not wait to be found:
-      // anything never shown before pops the confirmation modal. On remount
-      // (panel reopened) items still unhandled also pop up again.
-      const seen = seenPendingIdsRef.current;
-      if (seen === null) {
-        seenPendingIdsRef.current = new Set(confirmations.map((c) => c.confirmationId));
-        if (confirmations.length > 0) setPendingModalOpen(true);
-      } else if (confirmations.some((c) => !seen.has(c.confirmationId))) {
-        for (const c of confirmations) seen.add(c.confirmationId);
-        setPendingModalOpen(true);
-      }
-    } catch (error) {
-      sshUiSetError(t(`无法刷新待确认队列：${error?.message ?? String(error)}`));
-    }
-  };
-
-  useEffect(() => {
-    refreshPendingConfirmations();
-    const timer = setInterval(refreshPendingConfirmations, 1000);
-    return () => clearInterval(timer);
   }, [api]);
 
   const refreshBatchTasks = async () => {
@@ -1098,21 +1056,6 @@ export function SshPanel({ api, credentials, viewId = DEFAULT_VIEW_ID, viewSigna
     const timer = setInterval(refreshBatchTasks, 1000);
     return () => clearInterval(timer);
   }, [api]);
-
-
-  // Every queued command handled → no reason to keep the popup up.
-  useEffect(() => {
-    if (pendingModalOpen && pendingConfirmations.length === 0) setPendingModalOpen(false);
-  }, [pendingModalOpen, pendingConfirmations]);
-
-  useEffect(() => {
-    if (!pendingModalOpen) return;
-    const onKey = (event) => {
-      if (event.key === "Escape") setPendingModalOpen(false);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [pendingModalOpen]);
 
   // Split panes are sibling trees over one connection list, and the dock kit
   // remounts this body when the layout root turns into a split. Which servers
@@ -1276,28 +1219,6 @@ export function SshPanel({ api, credentials, viewId = DEFAULT_VIEW_ID, viewSigna
     }
   };
 
-  const actOnPending = async (confirmationId, action) => {
-    setPendingBusy(confirmationId);
-    sshUiSetError(null);
-    try {
-      if (action === "approve") await api.pendingConfirmationApprove(confirmationId);
-      else await api.pendingConfirmationCancel(confirmationId);
-    } catch (error) {
-      sshUiSetError(error?.message ?? String(error));
-    } finally {
-      await refreshPendingConfirmations();
-      setPendingBusy(null);
-    }
-  };
-
-  const copyPendingCommand = async (command) => {
-    try {
-      await navigator.clipboard.writeText(command);
-    } catch (error) {
-      sshUiSetError(t(`复制命令失败：${error?.message ?? String(error)}`));
-    }
-  };
-
   return (
     <div style={panelStyles.workspace}>
       <div style={panelStyles.serverTabs}>
@@ -1407,18 +1328,6 @@ export function SshPanel({ api, credentials, viewId = DEFAULT_VIEW_ID, viewSigna
         <TabErrorBoundary key="terminal">
           <div style={{ ...panelStyles.tabPane, display: tab === "terminal" ? "flex" : "none", position: "relative" }}>
             {active && <ExecPolicyPill api={api} connectionId={active.connectionId} />}
-            {pendingConfirmations.length > 0 && !pendingModalOpen && (
-              <div style={panelStyles.pendingInline}>
-                <div style={panelStyles.pendingInlineTitle}>{t("待确认操作（在此执行或撤销）")}</div>
-                <PendingConfirmations
-                  confirmations={pendingConfirmations}
-                  busyId={pendingBusy}
-                  onApprove={(id) => actOnPending(id, "approve")}
-                  onCancel={(id) => actOnPending(id, "cancel")}
-                  onCopy={copyPendingCommand}
-                />
-              </div>
-            )}
             {paneConnections.length > 0 ? (
               paneConnections.map((conn) => {
                 const sessionId = conn.sessions?.[0] ?? null;
@@ -1524,32 +1433,6 @@ export function SshPanel({ api, credentials, viewId = DEFAULT_VIEW_ID, viewSigna
           </div>
         </TabErrorBoundary>
       </div>
-
-      {pendingModalOpen && pendingConfirmations.length > 0 && (
-        <div
-          style={panelStyles.pendingModalBackdrop}
-          role="dialog"
-          aria-modal="true"
-          aria-label={t("危险操作确认")}
-          onClick={() => setPendingModalOpen(false)}
-        >
-          <div style={panelStyles.pendingModal} onClick={(e) => e.stopPropagation()}>
-            <div style={panelStyles.pendingModalTitle}>{t("⚠️ 检测到危险命令等待确认")}</div>
-            <div style={panelStyles.pendingModalHint}>{t("以下命令由 Agent 发起且尚未执行，只有点击「执行」才会发送到服务器。")}</div>
-            <PendingConfirmations
-              confirmations={pendingConfirmations}
-              busyId={pendingBusy}
-              onApprove={(id) => actOnPending(id, "approve")}
-              onCancel={(id) => actOnPending(id, "cancel")}
-              onCopy={copyPendingCommand}
-              alwaysExpand
-            />
-            <div style={panelStyles.dialogActions}>
-              <button type="button" style={panelStyles.btnSecondary} onClick={() => setPendingModalOpen(false)}>{t("稍后在面板中处理")}</button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {dialogOpen && <ConnectDialog api={api} credentials={credentials} onConnected={openConnectionInPane} onClose={() => setDialogOpen(false)} />}
 
@@ -1657,7 +1540,7 @@ function ExecPolicyPill({ api, connectionId }) {
             >
               <div style={{ ...panelStyles.policyMenuItemTitle, ...(candidate === "allowAll" ? panelStyles.policyMenuItemAllowAll : {}) }}>{execPolicyLabel(candidate)}{candidate === tier ? t("（当前）") : ""}</div>
               <div style={panelStyles.policyMenuItemDesc}>
-                {candidate === "standard" && t("破坏性命令一律拦截，弹出确认卡片由操作者执行")}
+                {candidate === "standard" && t("破坏性命令一律拦截，由操作者在会话内审批后才执行")}
                 {candidate === "custom" && t("仅放行勾选的类别，其余照常拦截")}
                 {candidate === "allowAll" && t("AI 可直接执行任何命令，含不可逆删除（不进回收站）")}
               </div>
@@ -1955,21 +1838,6 @@ const panelStyles = {
   batchNotice: { padding: "6px 10px", fontSize: 12, color: "#ffb86b", background: "rgba(255,184,107,.1)", borderBottom: "1px solid #3a3420", cursor: "pointer", userSelect: "none" },
   batchList: { display: "flex", flexDirection: "column", gap: 4, maxHeight: 120, overflowY: "auto" },
   batchItem: { display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#d7dbe2", cursor: "pointer" },
-  pendingInline: { flex: "none", display: "flex", flexDirection: "column", gap: 6, maxHeight: 260, overflowY: "auto", padding: "2px 0 8px", borderBottom: "1px solid #262b33", marginBottom: 8 },
-  pendingInlineTitle: { fontSize: 12, fontWeight: 600, color: "#ffb86b" },
-  pendingList: { display: "flex", flexDirection: "column", gap: 10, overflowY: "auto", padding: "2px 0" },
-  pendingCard: { border: "1px solid #3a414b", borderRadius: 8, padding: 10, background: "#181c22", display: "flex", flexDirection: "column", gap: 7 },
-  pendingHead: { display: "flex", alignItems: "center", gap: 8, minWidth: 0 },
-  pendingBadge: { flex: "none", color: "#ffb86b", fontSize: 13, lineHeight: 1 },
-  pendingToggle: {
-    flex: 1, minWidth: 0, textAlign: "left",
-    background: "#101418", border: "1px solid #262b33", borderRadius: 6,
-    color: "#f4f6f8", fontSize: 12,
-    fontFamily: 'Menlo, Monaco, "Courier New", monospace',
-    padding: "6px 8px",
-    whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis"
-  },
-  pendingHostTag: { flex: "none", maxWidth: 140, fontSize: 11, color: "#9aa3af", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
   pendingModalBackdrop: {
     position: "fixed",
     inset: 0,
@@ -1979,26 +1847,7 @@ const panelStyles = {
     alignItems: "center",
     justifyContent: "center"
   },
-  pendingModal: {
-    width: 560,
-    maxWidth: "92vw",
-    maxHeight: "80vh",
-    overflowY: "auto",
-    background: "#181c22",
-    border: "1px solid #4a3520",
-    borderRadius: 12,
-    boxShadow: "0 16px 48px rgba(0,0,0,.55)",
-    padding: 16,
-    display: "flex",
-    flexDirection: "column",
-    gap: 10
-  },
-  pendingModalTitle: { fontSize: 15, fontWeight: 700, color: "#ffb86b" },
-  pendingModalHint: { fontSize: 12, color: "#9aa3af" },
-  pendingMeta: { fontSize: 11, color: "#9aa3af" },
-  pendingReason: { fontSize: 12, color: "#ffb86b" },
   pendingCommand: { margin: 0, padding: 8, borderRadius: 6, background: "#101418", color: "#f4f6f8", border: "1px solid #262b33", fontSize: 12, whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontFamily: 'Menlo, Monaco, "Courier New", monospace' },
-  pendingActions: { display: "flex", justifyContent: "flex-end", gap: 8 },
   // Execution-policy chip: by default a translucent tier dot hugging the
   // bottom-left edge (practically zero occlusion of terminal output); hover or
   // an open menu expands it to the tier name. Colors ride the host's dsw
@@ -2070,7 +1919,7 @@ const panelStyles = {
   policyMenuItemDesc: { fontSize: 11, color: "var(--dsw-alias-label-secondary, #8b93a1)", marginTop: 2 },
   policyMenuHint: { fontSize: 10, color: "var(--dsw-alias-label-tertiary, #8b93a1)", padding: "6px 8px 2px", borderTop: "1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.22))", marginTop: 4 },
   // The policy confirm dialog follows the host theme via dsw tokens (unlike
-  // the dark-titled pendingModal cards it borrows the backdrop from), so its
+  // the dark dialog it borrows the backdrop from), so its
   // text stays readable on a light Sidebar theme.
   policyModal: {
     width: 480,

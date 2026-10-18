@@ -6,7 +6,7 @@
 
 > Drive your servers from the DSH main conversation while keeping a real interactive terminal on the right — plus file management, port forwarding, database access, and multi-server batch execution, all in one plugin.
 
-**Version 0.3.22** · MIT License · [GitHub repository](https://github.com/caoyiwei850/dsh-ssh-ops) · [Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases)
+**Version 0.4.0** · MIT License · [GitHub repository](https://github.com/caoyiwei850/dsh-ssh-ops) · [Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases)
 
 ---
 
@@ -62,7 +62,7 @@ The AI in the main conversation gains **40 tools** in total (see the appendix fo
 **GitHub channel (recommended)**:
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.3.22
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.0
 ```
 
 This installs source and builds automatically during install. Note that pnpm ≥ 10 blocks build scripts of dependencies by default — if the SSH tab does not appear after a restart, go into `node_modules/dsh-ssh-ops/`, run `npm install && npm run build`, and restart (see [INSTALL.md](../INSTALL.md) for details).
@@ -139,11 +139,12 @@ You can also let the AI do it: `db_query` is a lexically enforced read-only gate
 
 ### 6.1 Connection management
 
-- **Everything is a resource**: server details (name/host/port/username/auth/group) are saved in DSH local storage with no limit on count; passwords, PEM keys, and key passphrases go only into DSH's official local credential store `~/.dsh/.credentials.yaml` (owner-only permissions) — browser storage, AI context, tool results, and the resource list never read or display secret contents.
+- **Everything is a resource**: server details (name/host/port/username/auth/group) are saved in DSH local storage with no limit on count; passwords, PEM keys, and key passphrases go only into DSH's official local credential store `~/.dsh/.credentials.yaml` (owner-only permissions) — browser storage, AI context, tool results, and the resource list never read or display secret contents. The new-server form prefills the username you used on your **last save** (`root` when there is no history yet) — no configuration needed; the default simply follows whatever you save.
 - **Shared credentials**: save one password/key as a shared credential referenced by multiple servers and jump hosts — the whole team can share one ops key, and changing it once updates everywhere. Deletion is refused while anything still references it.
 - **Connection stability**: keepalive (20 s × 3) defeats silent NAT drops; unexpected transport loss reconnects with exponential backoff (capped at 30 s) and commands caught mid-flight transparently retry once; non-conforming SSH banners (e.g. `SSH-2.0- OpenSSH` with an extra space) are normalized and retried once.
 - **Network devices**: on Huawei VRP / H3C Comware / Cisco network-CLI devices, `ssh_exec` recognizes prompts, advances paging (`---- More ----`), and treats prompt-return as completion — no more 15-second timeouts returning empty output.
 - **Per-pane channels**: with the host's split view, each pane keeps its own servers and connections; the same server opened in two panes builds two independent connections (or check "reuse the open connection" in the connect dialog to share one).
+- **Terminal ergonomics**: `Ctrl + wheel` (trackpad pinch works too) zooms every terminal's font size (8–28, remembered across reloads); **copy on select** — text you drag-select in the terminal lands on the clipboard about 0.2 s after you stop; the **Logs** tab tints **warning lines amber and error lines red** while you read a recording (search hits are tinted the same way).
 
 ### 6.2 Working with the AI
 
@@ -154,13 +155,24 @@ You can also let the AI do it: `db_query` is a lexically enforced read-only gate
 - **Output redaction**: before anything reaches the model, private keys, Bearer tokens, `sk-` API keys, database passwords, and similar secrets are scrubbed.
 - **Session logs**: the "Logs" sub-tab records terminal sessions (preview / search / download / delete; 8 MB per session, 256 MB directory rotation), and the AI has `ssh_session_log_search` and friends for on-demand retrieval.
 
+### 6.2.1 Remote workspace (binding a workspace to a server directory)
+
+Under **Settings → SSH resources → edit a resource → Advanced** (right below the default project directory), bind one DSH workspace to *this server plus an absolute remote path* (say `/srv/app`). The resource editor now has two tabs, **Basics** and **Advanced** — everyday fields on the first, low-frequency knobs like this one on the second. Once bound:
+
+- In that workspace the AI's `sftp_*` calls **default to that remote directory** — relative paths resolve against it (a session sitting in a subdirectory maps to the same depth), the bound server is the default so no `connection_id` is needed, and anything outside the root is refused.
+- The conversation states that the workspace's files live remotely, so the AI stops treating the (essentially empty) local directory as the project.
+- **No retyping the path**: if this server has a default project directory, the path field offers it as a one-click line right below (`Use the default project directory: /…`). The two fields stay separate on purpose — the project directory decides where *your* "open project" terminal and file tab start, the binding only decides where the AI's `sftp_*` lands — so this just removes the duplicate entry. The line hides itself once the field already matches.
+- You may enable "auto-connect on file operations", still gated by the settings switch that allows the AI to connect saved servers; an auto-connected machine is opened in the right-side panel so you always see which server is in play.
+
+**Boundary (important)**: this is not a remote mount. DSH's native `read`/`write`/`edit`/`glob`/`grep` and local bash still run on your own machine — the host mounts exactly one filesystem backend and this plugin does not touch it. Remote reads and writes go through `sftp_*` or `ssh_exec`; `@` completion stays local too. Binding is the **operator's** decision: only the panel can change it, and the AI has no tool for it.
+
 ### 6.3 AI command execution policy (important)
 
 This is the dial for how much the AI may do, configured under **Settings → SSH Resources → AI command execution policy**, with three tiers:
 
 | Tier | Behavior |
 | --- | --- |
-| **Standard** (default) | High-risk commands (file deletion, database destruction, disk formatting, reboot, and five more categories) are always intercepted and shown as confirmation cards for the operator to decide |
+| **Standard** (default) | High-risk commands (file deletion, database destruction, disk formatting, reboot, and five more categories) always escalate to the operator via an in-conversation interruptive approval — nothing runs without a human decision |
 | **Custom release** | Choose which of the 8 categories to release (e.g. only "reboot or shut down the server") |
 | **Allow all** | The AI executes everything directly — **released commands run as written and deletions no longer go through the trash**; be sure you accept that before enabling |
 
@@ -180,7 +192,7 @@ The 8 high-risk categories: delete files or directories / bulk-delete files / de
 
 **Layer 3 — dangerous SQL becomes recoverable.** `DROP`/`TRUNCATE`/`SHUTDOWN` never execute; at interception the affected tables are **automatically backed up** (row data via a read-only export path, plus CREATE DDL where available); `DROP TABLE` goes further and becomes an **isolation rename** (`<table>_to_be_dropped_<date>`) — data stays in place and the final true DROP is only ever accepted from the panel, initiated by a human.
 
-When the blocklist triggers, a confirmation modal pops over the whole viewport (full command + risk reason); unhandled items stay pinned above the terminal. Dangerous commands are **never pre-filled** into the terminal input line — a stray Enter cannot execute them.
+When the blocklist triggers, the whole tool call **suspends in the conversation** while the host's native approval channel asks the operator (full command + host + risk category); while waiting, the AI cannot retry, work around, or continue in parallel, and an absent operator counts as rejection (fail-closed). An approval is one-shot and burns on use; if the command was dispatched but the connection drops before a result arrives, the system never replays it automatically and instead asks the operator to verify the actual outcome.
 
 ### 6.5 Database engineering
 
@@ -198,7 +210,7 @@ The interface automatically follows DSH's own language (Chinese / English), redr
 
 **Pre-release inspection** — "Connect to prod-web-1 and check disk, memory, and the last 100 lines of the app log for errors"; inspection commands are ordinary ops operations and run normally.
 
-**Tracking down a full disk** — the AI runs `df -h` to locate, drills down with `du`, and when it proposes deleting large files a confirmation card pops up; you click "Execute" and the files go to the trash instead of being deleted — clean the trash once the business confirms all is well.
+**Tracking down a full disk** — the AI runs `df -h` to locate, drills down with `du`, and when it proposes deleting large files an approval request pops up; you click "Approve" and the files go to the trash instead of being deleted — clean the trash once the business confirms all is well.
 
 **Inner-network database behind a jump host** — configure the jump host on the server resource → put the inner loopback address in the database connection → it connects through the SSH tunnel automatically; `db_query` from there.
 
@@ -217,7 +229,7 @@ The interface automatically follows DSH's own language (Chinese / English), redr
 Expected. Turn on **Settings → SSH Resources → AI auto-connect** before the AI can connect to saved servers by name.
 
 **The AI wanted to delete something and was blocked — but it is safe. What now?**
-Click "Execute" on the confirmation card yourself — simple deletions then go to the trash (recoverable); or release that category in the execution policy; or run it yourself in the terminal.
+Click "Approve" on the in-conversation confirmation yourself — simple deletions then go to the trash (recoverable); or release that category in the execution policy; or run it yourself in the terminal.
 
 **Authentication fails?**
 The plugin returns a structured diagnosis (methods tried, what the server still accepts, next steps). Common causes: a truncated private key, the public key missing from the server's `authorized_keys`, or an encrypted key's passphrase pasted into the password field.
@@ -235,13 +247,13 @@ Set `query_timeout_ms` on the connection (`0` = unlimited), and save it in the r
 
 Omitting `connection_id` / `db_connection_id` targets the currently active connection — no need to list connections first.
 
-**SSH session (7)**: `ssh_list` connection metadata plus (when enabled) saved servers · `ssh_connect` open a connection · `ssh_connect_profile` connect to a saved resource by name (requires the AI auto-connect switch) · `ssh_exec` run a command · `ssh_read` on-demand terminal buffer read · `ssh_write` write interactive input to the terminal · `ssh_disconnect` disconnect
+**SSH session (7)**: `ssh_list` connection metadata plus (when enabled) saved servers · `ssh_connect` open a connection · `ssh_connect_profile` connect to a saved resource by name (requires the AI auto-connect switch) · `ssh_exec` run a command · `ssh_read` incremental terminal read (by default only output since the previous read; `mode: "tail"` for the full capture) · `ssh_write` write interactive input to the terminal · `ssh_disconnect` disconnect
 
 **Manual terminal context (3)**: `ssh_terminal_sessions` terminal metadata and read cursors · `ssh_terminal_context` per-confirmation redacted history · `ssh_shell_integration` enable OSC 133 integration in bash/zsh (afterwards cwd / exit code / prompt state become readable)
 
 **Session logs (3)**: `ssh_session_log_list` / `ssh_session_log_read` / `ssh_session_log_search`
 
-**SFTP (8)**: `sftp_list` · `sftp_read` (4 MiB default cap) · `sftp_write` · `sftp_mkdir` · `sftp_delete` (never executes directly — joins the confirmation queue / trash) · `sftp_rename` · `sftp_upload_dir` · `sftp_download_dir` (batch tree transfer; small files concurrent, large files exclusive, single-file failures never abort the batch)
+**SFTP (8)**: `sftp_list` · `sftp_read` (4 MiB default cap) · `sftp_write` · `sftp_mkdir` · `sftp_delete` (never executes directly — requires host in-conversation approval; simple literal paths move to the trash when possible) · `sftp_rename` · `sftp_upload_dir` · `sftp_download_dir` (batch tree transfer; small files concurrent, large files exclusive, single-file failures never abort the batch)
 
 **Port forwarding (3)**: `tunnel_start` (`local` / `remote` / `dynamic` SOCKS5) · `tunnel_list` · `tunnel_stop`
 
@@ -251,4 +263,4 @@ Omitting `connection_id` / `db_connection_id` targets the currently active conne
 
 ---
 
-*This document matches v0.3.22; for the fine detail consult the [README](../README.en.md) and the [CHANGELOG](../CHANGELOG.md).*
+*This document matches v0.4.0; for the fine detail consult the [README](../README.en.md) and the [CHANGELOG](../CHANGELOG.md).*

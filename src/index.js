@@ -16,7 +16,7 @@ import { credentialRef } from "@deepseek-ai/dsh-credentials";
 import { defineDomain, domainTable } from "@deepseek-ai/dsh-storage-domain";
 import { TypertRemoteService } from "@deepseek-ai/dsh-typert-protocol";
 import { z } from "zod";
-import { assessShellCommand, isPrefillable, normalizeAllowList, normalizePolicy, shellQuote, CATEGORY_DELETE_FILES, ALL_CATEGORY_KEYS, CATEGORY_LABELS } from "./safety.js";
+import { assessShellCommand, normalizeAllowList, normalizePolicy, shellQuote, CATEGORY_DELETE_FILES, ALL_CATEGORY_KEYS, CATEGORY_LABELS } from "./safety.js";
 import { EXEC_CWD_ERROR_PREFIX, buildCwdAwareCommand, execEchoWarning, extractExecCwd, posixLoginShell } from "./exec-cwd.js";
 import { buildTrashCommand, parseSimpleDeleteCommand, parseTrashOutput } from "./trash.js";
 import { scpCommand, scpDownload, scpUpload } from "./scp.js";
@@ -27,14 +27,14 @@ import { createAuthTracker, makeAuthHandler, classifyConnectFailure, formatConne
 import { applyAgentForwarding } from "./ssh-agent.js";
 import { processTerminalInput } from "./terminal-input.js";
 import { fail } from "./envelope.js";
-import { POLICY_NOTICE_PREFIX, DANGEROUS_DEFAULT_REASON } from "./policy-messages.js";
+import { POLICY_NOTICE_PREFIX } from "./policy-messages.js";
 import { DbOpsManager } from "./db-ops.js";
 import { defaultDbPort } from "./db-drivers.js";
 import { attachSocks5 } from "./socks5.js";
 import { SessionLogStore } from "./session-log.js";
 import { SHELL_FAMILY_PROBE, ShellIntegrationTracker, parseShellFamilyProbe, shellIntegrationCommand } from "./shell-integration.js";
 import { homedir } from "node:os";
-import { join as joinPath, dirname as dirnamePath, relative as relativePath } from "node:path";
+import { join as joinPath, dirname as dirnamePath, relative as relativePath, posix } from "node:path";
 import { mkdir as fsMkdir, readdir as fsReaddir, stat as fsStat } from "node:fs/promises";
 import { createReadStream, createWriteStream } from "node:fs";
 import { runTransferTasks, joinRemotePath, splitRemotePath } from "./sftp-dir.js";
@@ -45,6 +45,18 @@ import {
   blobAlgorithm,
   DEFAULT_HOST_KEY_MODE
 } from "./hostkey.js";
+import {
+  RemoteWorkspaceStore,
+  RemoteWorkspacePathError,
+  remoteWorkspaceDomainSpec,
+  remoteWorkspacePromptText,
+  normalizeRemoteRoot,
+  resolveRemotePath,
+  isRemotePathInside,
+  workspaceRelativePart,
+  REMOTE_WORKSPACE_OFFLINE,
+  REMOTE_WORKSPACE_OUTSIDE
+} from "./remote-workspace.js";
 import { registerSshSessionTools } from "./tools/ssh-session.js";
 import { registerSftpTools } from "./tools/sftp.js";
 import { registerTunnelTools } from "./tools/tunnel.js";
@@ -59,6 +71,7 @@ const MAX_COMMAND_OUTPUT_BYTES = 64 * 1024;
 const MAX_CAPTURE_BYTES = 128 * 1024;
 const READ_TIMEOUT_MS = 300;
 const MAX_SESSIONS = 64;
+const OPERATOR_APPROVAL_TTL_MS = 5 * 60 * 1000;
 // ssh2 disables keepalives by default; without them NATs and cloud firewalls
 // silently drop idle connections and every later operation fails on a dead
 // transport. Keep the mapping alive and detect a truly dead link fast.
@@ -269,6 +282,9 @@ const settingsRecordSchema = z.object({
   // standard tier at read time, never widen it.
   execPolicy: z.string().optional(),
   execPolicyAllow: z.array(z.string()).optional(),
+  // Username the panel prefills into its new-server form; auto-remembered
+  // from the last profileSave (issue #36). Empty/absent falls back to "root".
+  defaultUsername: z.string().max(128).optional(),
   updatedAt: z.string().optional()
 });
 
@@ -281,6 +297,16 @@ export const settingsDomainSpec = defineDomain({
 });
 
 const SETTINGS_ROW_ID = "main";
+
+/**
+ * The stored default username, hardened: trim, cap the length, collapse
+ * blank/absent/non-string to null ("no preference").
+ */
+export function normalizeDefaultUsername(value) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed === "" ? null : trimmed.slice(0, 128);
+}
 
 /**
  * Interpret one persisted settings record into the runtime switches. Absent
@@ -299,7 +325,8 @@ export function loadSettingsRecord(record = {}) {
     // still carries the operator's ticks, so switching tiers back and forth
     // never empties the checklist.
     execPolicy: normalizePolicy({ mode: record.execPolicy }).mode,
-    execPolicyAllow: normalizeAllowList(record.execPolicyAllow)
+    execPolicyAllow: normalizeAllowList(record.execPolicyAllow),
+    defaultUsername: normalizeDefaultUsername(record.defaultUsername)
   };
 }
 
@@ -412,8 +439,17 @@ export default class SshOpsService extends TypertRemoteService {
   sessions = new Map();
   /** sessionId -> tombstoned exit records for late reads */
   exitedSessions = new Map();
-  /** confirmationId -> agent-originated dangerous command awaiting a human. */
-  pendingConfirmations = new Map();
+  /**
+   * callId -> operator approval voucher for one agent-originated dangerous
+   * command. The tools/pre-execute gate asks through the host's approval
+   * channel and records the grant here; the tool body consumes it exactly
+   * once (and only for the same connection/command) to proceed past the
+   * inner safety gate. TTL-bounded so an aborted execution cannot leak a
+   * live grant. This replaced the 0.3.x confirmation-card queue: the ask
+   * suspends the tool call itself, so nothing waits in a panel-side queue
+   * anymore.
+   */
+  operatorApprovals = new Map();
   /** batchId -> operator-selected batch exec task awaiting selection/execution. */
   batchTasks = new Map();
 
@@ -435,6 +471,12 @@ export default class SshOpsService extends TypertRemoteService {
    */
   execPolicy = "standard";
   execPolicyAllow = [];
+  /**
+   * Last username the operator saved a server with; the panel prefills its
+   * new-server form with it (issue #36 feedback — no manual knob). Persisted
+   * in ssh_ops_settings on every profileSave; null falls back to "root".
+   */
+  defaultUsername = null;
   /**
    * Interface language last resolved from DSH's own Settings → Language by
    * the browser half ("zh" | "en"), or null before the first write-back.
@@ -459,6 +501,9 @@ export default class SshOpsService extends TypertRemoteService {
   knownHosts = null;
   /** Operator settings table; null until [Service.init]. */
   settingsTable = null;
+  /** Remote-workspace bindings table and its adapter; null until [Service.init]. */
+  remoteWorkspaceTable = null;
+  remoteWorkspaces = null;
 
   constructor(ctx, config = {}) {
     super(ctx, "sshOps");
@@ -490,7 +535,10 @@ export default class SshOpsService extends TypertRemoteService {
       this.connections.clear();
       this.sessions.clear();
       this.exitedSessions.clear();
-      this.pendingConfirmations.clear();
+      for (const voucher of this.operatorApprovals.values()) {
+        if (voucher.timer !== undefined) clearTimeout(voucher.timer);
+      }
+      this.operatorApprovals.clear();
       this.activeConnectionId = null;
       try { this.dbOps?.closeAll().catch(() => {}); } catch {}
     }, "ssh-ops: cleanup");
@@ -544,6 +592,7 @@ export default class SshOpsService extends TypertRemoteService {
       this.agentAutoConnect = loaded.agentAutoConnect;
       this.execPolicy = loaded.execPolicy;
       this.execPolicyAllow = loaded.execPolicyAllow;
+      this.defaultUsername = loaded.defaultUsername;
       // An explicit choice drives the host half from the first message it
       // builds. With no choice stored, the host keeps its default (zh) and
       // the browser half adopts DSH's language and writes it back.
@@ -567,6 +616,371 @@ export default class SshOpsService extends TypertRemoteService {
       // until then it is the best-known host language.
       if (this.language !== null) setLanguage(this.language);
     } catch {}
+    const workspaceDomain = await this.ctx.storageDomain.open(remoteWorkspaceDomainSpec);
+    this.remoteWorkspaceTable = workspaceDomain.table("workspaces");
+    this.remoteWorkspaces = new RemoteWorkspaceStore(this.remoteWorkspaceTable);
+    this.ctx.effect(() => () => workspaceDomain.close(), "ssh-ops: remote workspace domain close");
+    // The model must know which of its tools reach which filesystem. Announced
+    // only for a bound workspace, so an ordinary local workspace keeps the
+    // system prompt it always had (issue #38).
+    this.ctx.inject(["systemPrompt"], (promptCtx) => {
+      promptCtx.effect(() => promptCtx.systemPrompt.context({
+        name: "ssh-ops:remote-workspace",
+        order: promptCtx.systemPrompt.getContextOrder("WORKING_DIRECTORY") + 1,
+        required: false,
+        interpolate: false,
+        text: (context) => {
+          try {
+            return this.remoteWorkspacePromptFor(context?.agent?.session);
+          } catch {
+            return "";
+          }
+        }
+      }), "ssh-ops: remote workspace prompt");
+    });
+  }
+
+  // ── Remote workspaces (issue #38) ──────────────────────────────────────────
+
+  /**
+   * The binding that governs one host directory, deepest workspace wins.
+   * @param {string|undefined} directory - canonical host path.
+   * @returns {{record: object, relative: string}|undefined} binding, if any.
+   */
+  remoteBindingFor(directory) {
+    if (this.remoteWorkspaces === null || typeof directory !== "string") return undefined;
+    try {
+      return this.remoteWorkspaces.findForPath(directory);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * The committed working directory of one Agent Session. New hosts expose the
+   * live projection through `workingDirectory`; older supported hosts only
+   * carry the original directory in `session.header.cwd`. Prefer the projection
+   * and fall back to the header so a remote workspace never becomes a silent
+   * no-op on DSH 0.2.0 or a profile that omits the optional service.
+   * @param {object|undefined} session - Agent Session.
+   * @returns {string|undefined} absolute host directory.
+   */
+  sessionDirectory(session) {
+    if (session === undefined || session === null) return undefined;
+    const directories = this.ctx.get("workingDirectory");
+    if (typeof directories?.get === "function") {
+      try {
+        const current = directories.get(session);
+        if (typeof current === "string" && current !== "") return current;
+      } catch {}
+    }
+    return typeof session.header?.cwd === "string" && session.header.cwd !== ""
+      ? session.header.cwd
+      : undefined;
+  }
+
+  /**
+   * The committed working directory of the Agent that issued a tool call.
+   * Reading a projection (when available) keeps this a pure lookup.
+   * @param {object|undefined} exec - tool execution context.
+   * @returns {string|undefined} absolute host directory.
+   */
+  sessionDirectoryOf(exec) {
+    return this.sessionDirectory(exec?.agent?.session);
+  }
+
+  /**
+   * Resolve the nearest existing SFTP path through `realpath`, appending any
+   * missing suffix. This closes the symbolic-link escape left by lexical
+   * containment: `/root/link/new-file` is checked against the real target of
+   * `link`, not the visible spelling under the bound root.
+   * @param {object} sftp - raw ssh2 SFTP subsystem.
+   * @param {string} target - absolute POSIX path.
+   * @returns {Promise<string>} canonical absolute path with the missing suffix.
+   */
+  async canonicalRemotePath(sftp, target) {
+    const suffix = [];
+    let candidate = target;
+    for (;;) {
+      try {
+        const resolved = await this.sftpCall(sftp, (cb) => sftp.realpath(candidate, cb));
+        return posix.join(resolved, ...suffix.reverse());
+      } catch (error) {
+        if (suffix.length === 0) {
+          const attrs = await this.sftpCall(sftp, (cb) => sftp.lstat(target, cb)).catch(() => undefined);
+          if (attrs !== undefined && (attrs.mode & 0o170000) === 0o120000) {
+            throw new RemoteWorkspacePathError(
+              `refusing to operate through an unresolved symbolic link: ${JSON.stringify(target)}`,
+              REMOTE_WORKSPACE_OUTSIDE
+            );
+          }
+        }
+        const parent = posix.dirname(candidate);
+        if (parent === candidate) throw error;
+        suffix.push(posix.basename(candidate));
+        candidate = parent;
+      }
+    }
+  }
+
+  /**
+   * Verify that the path's real target stays under the binding's real root.
+   * The operation still uses the operator-visible spelling; this check only
+   * decides whether that spelling is safe to follow.
+   * @param {object} connection - live SSH connection record.
+   * @param {string} root - bound remote root.
+   * @param {string} target - resolved remote path.
+   * @returns {Promise<void>} rejects on symlink escape or verification failure.
+   */
+  async assertRemoteWorkspaceTarget(connection, root, target) {
+    const sftp = await this.requireSftp(connection);
+    if (!sftp.ok) {
+      throw new RemoteWorkspacePathError(
+        `remote workspace path could not be verified: ${sftp.error.message}`,
+        REMOTE_WORKSPACE_OFFLINE
+      );
+    }
+    let canonicalRoot;
+    let canonicalTarget;
+    try {
+      canonicalRoot = await this.canonicalRemotePath(sftp.sftp, root);
+      canonicalTarget = await this.canonicalRemotePath(sftp.sftp, target);
+    } catch (error) {
+      if (error instanceof RemoteWorkspacePathError) throw error;
+      throw new RemoteWorkspacePathError(
+        `remote workspace path could not be verified: ${error.message}`,
+        REMOTE_WORKSPACE_OFFLINE
+      );
+    }
+    if (!isRemotePathInside(canonicalRoot, canonicalTarget)) {
+      throw new RemoteWorkspacePathError(
+        `path resolves outside the remote workspace root ${JSON.stringify(root)} through a symbolic link: ${JSON.stringify(target)}`,
+        REMOTE_WORKSPACE_OUTSIDE
+      );
+    }
+  }
+
+  /**
+   * Resolve one SFTP tool request for the calling session. Unbound sessions
+   * keep the historical behaviour (absolute path, current/omitted connection).
+   * A bound session resolves relative paths under its remote root, defaults to
+   * the bound server, refuses escapes, and never silently talks to another
+   * server than the one the binding names. A session that sits in a
+   * subdirectory of the workspace maps that subdirectory under the remote
+   * root, so `.` means the same place on both sides.
+   * @param {{connectionId?: string, path: string}} request - tool arguments.
+   * @param {object|undefined} exec - tool execution context.
+   * @returns {Promise<{connectionId: string|undefined, path: string, bound: boolean}>} resolved target.
+   * @throws {RemoteWorkspacePathError} on an escape or an offline binding.
+   */
+  async resolveRemoteToolPath(request, exec) {
+    const sessionDirectory = this.sessionDirectoryOf(exec);
+    const binding = this.remoteBindingFor(sessionDirectory);
+    if (binding === undefined) return { connectionId: request.connectionId, path: request.path, bound: false };
+    const record = binding.record;
+    const subdirectory = binding.relative === undefined ? workspaceRelativePart(record.workspacePath, sessionDirectory) : binding.relative;
+    const base = subdirectory === null || subdirectory === "" ? record.remotePath : `${record.remotePath}/${subdirectory}`;
+    let resolvedPath;
+    try {
+      resolvedPath = resolveRemotePath(base, request.path);
+    } catch (error) {
+      throw new RemoteWorkspacePathError(error.message, REMOTE_WORKSPACE_OUTSIDE);
+    }
+    const connection = await this.requireRemoteWorkspaceConnection(record);
+    if (request.connectionId !== undefined && request.connectionId !== connection.connectionId) {
+      throw new RemoteWorkspacePathError(
+        `this workspace is bound to ${record.remotePath} on another server; omit connection_id or pass ${connection.connectionId}`,
+        REMOTE_WORKSPACE_OFFLINE
+      );
+    }
+    await this.assertRemoteWorkspaceTarget(connection, record.remotePath, resolvedPath);
+    return { connectionId: connection.connectionId, path: resolvedPath, bound: true };
+  }
+
+  /**
+   * Make a workspace connection visibly usable in the right-side panel. A
+   * healthy transport without a live PTY is not enough: the operator must see
+   * the server the agent is reading or writing.
+   * @param {object} connection - live connection record.
+   * @param {{reused: boolean, previousActiveConnectionId: string|null}} state - rollback context.
+   * @returns {Promise<object>} the same connection after its terminal is open.
+   */
+  async revealRemoteWorkspaceConnection(connection, state) {
+    const connectionId = connection.id ?? connection.connectionId;
+    let openedSessionId = null;
+    const liveSession = [...connection.sessions].some((sessionId) => {
+      const session = this.sessions.get(sessionId);
+      return session !== undefined && session.exited === null && session.stream !== null;
+    });
+    const rollback = async (error) => {
+      if (!state.reused) await this.disconnect({ connectionId }).catch(() => {});
+      else if (openedSessionId !== null) await this.closeSession({ sessionId: openedSessionId }).catch(() => {});
+      this.activeConnectionId = state.previousActiveConnectionId;
+      throw new RemoteWorkspacePathError(error.message, REMOTE_WORKSPACE_OFFLINE);
+    };
+    if (!liveSession) {
+      const opened = await this.openSession({ connectionId, openedBy: "agent" });
+      if (!opened.ok) return rollback(opened.error);
+      openedSessionId = opened.value.sessionId;
+    }
+    const selected = await this.selectConnection({ connectionId });
+    if (!selected.ok) return rollback(selected.error);
+    connection.agentRevealId = randomUUID();
+    return connection;
+  }
+
+  /**
+   * The live connection a binding works through: reuse one that is already up,
+   * otherwise honor the binding's auto-connect flag — still inside the
+   * operator-wide agentAutoConnect switch, exactly like ssh_connect_profile.
+   * Either way the server becomes visible in the right-side panel, so the
+   * operator can always see whose files the agent is editing.
+   * @param {object} record - binding record.
+   * @returns {Promise<object>} live connection record.
+   * @throws {RemoteWorkspacePathError} when it cannot be brought up.
+   */
+  async requireRemoteWorkspaceConnection(record) {
+    const previousActiveConnectionId = this.activeConnectionId;
+    const reusable = findReusableProfileConnection([...this.connections.values()], record.profileId, { reuseExisting: true });
+    if (reusable !== null) {
+      return this.revealRemoteWorkspaceConnection(reusable, { reused: true, previousActiveConnectionId });
+    }
+    const profile = this.requireProfileTable().get(record.profileId);
+    if (profile === undefined) {
+      throw new RemoteWorkspacePathError(`the SSH resource bound to this workspace no longer exists`, REMOTE_WORKSPACE_OFFLINE);
+    }
+    if (record.autoConnect !== true) {
+      throw new RemoteWorkspacePathError(`remote workspace is offline: connect ${JSON.stringify(profile.name)} in the SSH panel, or enable auto-connect for this workspace`, REMOTE_WORKSPACE_OFFLINE);
+    }
+    if (!this.agentAutoConnect) {
+      throw new RemoteWorkspacePathError(t(AUTO_CONNECT_DISABLED_MESSAGE), REMOTE_WORKSPACE_OFFLINE);
+    }
+    const knownConnectionIds = new Set(this.connections.keys());
+    const connected = await this.profileConnect({ profileId: record.profileId, reuseExisting: true });
+    if (!connected.ok) {
+      throw new RemoteWorkspacePathError(`remote workspace is offline: ${connected.error.message}`, REMOTE_WORKSPACE_OFFLINE);
+    }
+    const connection = this.connections.get(connected.value.connectionId);
+    if (connection === undefined) {
+      throw new RemoteWorkspacePathError("remote workspace connection disappeared while connecting", REMOTE_WORKSPACE_OFFLINE);
+    }
+    return this.revealRemoteWorkspaceConnection(connection, {
+      reused: knownConnectionIds.has(connection.connectionId),
+      previousActiveConnectionId
+    });
+  }
+
+  /**
+   * The prompt paragraph for one Session, empty unless its directory is bound.
+   * @param {object|undefined} session - Session whose prompt is assembled.
+   * @returns {string} declaration of the remote root and the tools that reach it.
+   */
+  remoteWorkspacePromptFor(session) {
+    if (session === undefined || session === null || this.remoteWorkspaces === null) return "";
+    const directory = this.sessionDirectory(session);
+    const binding = this.remoteBindingFor(directory);
+    if (binding === undefined) return "";
+    const profile = this.requireProfileTable().get(binding.record.profileId);
+    if (profile === undefined) return "";
+    return remoteWorkspacePromptText({
+      workspacePath: binding.record.workspacePath,
+      remotePath: binding.record.remotePath,
+      resourceName: profile.name,
+      username: profile.username,
+      host: profile.host,
+      port: profile.port,
+      relative: binding.relative
+    });
+  }
+
+  /**
+   * Bindings the operator may edit, plus the workspace and resource choices to
+   * bind them to. Workspace candidates come from DSH's own registry, so the
+   * browser never guesses a canonical path.
+   */
+  async remoteWorkspaceList() {
+    if (this.remoteWorkspaces === null) return { ok: false, error: fail("storage-not-ready", "remote workspace storage is not ready") };
+    try {
+      const connectedProfileIds = new Set([...this.connections.values()].map((connection) => connection.profileId).filter(Boolean));
+      const bindings = [];
+      for (const record of this.remoteWorkspaces.list()) {
+        const profile = this.requireProfileTable().get(record.profileId);
+        bindings.push({
+          workspacePath: record.workspacePath,
+          remotePath: record.remotePath,
+          profileId: record.profileId,
+          profileName: profile?.name ?? "",
+          host: profile?.host ?? "",
+          port: profile?.port ?? 22,
+          username: profile?.username ?? "",
+          autoConnect: record.autoConnect === true,
+          connected: connectedProfileIds.has(record.profileId),
+          ...(profile === undefined ? { missingResource: true } : {})
+        });
+      }
+      const registry = this.ctx.get("workspaceRegistry");
+      const workspaces = (registry?.list?.() ?? []).map((workspace) => ({
+        path: workspace.path,
+        title: workspace.title ?? workspace.path
+      }));
+      return { ok: true, value: { bindings, workspaces } };
+    } catch (error) {
+      return { ok: false, error: fail("remote-workspace-list-failed", error.message) };
+    }
+  }
+
+  /**
+   * Create or replace one binding. The workspace path must be one DSH itself
+   * registered (a typo would otherwise bind a directory no session ever uses)
+   * and the resource must still exist.
+   */
+  async remoteWorkspaceSave(request) {
+    if (this.remoteWorkspaces === null) return { ok: false, error: fail("storage-not-ready", "remote workspace storage is not ready") };
+    try {
+      const profile = this.requireProfileTable().get(request.profileId);
+      if (profile === undefined) return { ok: false, error: fail("no-profile", `SSH resource "${request.profileId}" does not exist`) };
+      const registry = this.ctx.get("workspaceRegistry");
+      const known = new Set((registry?.list?.() ?? []).map((workspace) => workspace.path));
+      if (known.size > 0 && !known.has(request.workspacePath)) {
+        return { ok: false, error: fail("no-workspace", `workspace "${request.workspacePath}" is not registered in DSH`) };
+      }
+      let remotePath;
+      try {
+        remotePath = normalizeRemoteRoot(request.remotePath);
+      } catch (error) {
+        return { ok: false, error: fail(REMOTE_WORKSPACE_OUTSIDE, error.message) };
+      }
+      const record = await this.remoteWorkspaces.save({
+        workspacePath: request.workspacePath,
+        profileId: request.profileId,
+        remotePath,
+        autoConnect: request.autoConnect === true
+      });
+      return { ok: true, value: { binding: {
+        workspacePath: record.workspacePath,
+        remotePath: record.remotePath,
+        profileId: record.profileId,
+        profileName: profile.name,
+        host: profile.host,
+        port: profile.port,
+        username: profile.username,
+        autoConnect: record.autoConnect === true,
+        connected: [...this.connections.values()].some((connection) => connection.profileId === record.profileId)
+      } } };
+    } catch (error) {
+      return { ok: false, error: fail("remote-workspace-save-failed", error.message) };
+    }
+  }
+
+  /** Unbind one workspace. Unknown paths are an idempotent no-op. */
+  async remoteWorkspaceDelete(request) {
+    if (this.remoteWorkspaces === null) return { ok: false, error: fail("storage-not-ready", "remote workspace storage is not ready") };
+    try {
+      const removed = await this.remoteWorkspaces.remove(request.workspacePath);
+      return { ok: true, value: { removed } };
+    } catch (error) {
+      return { ok: false, error: fail("remote-workspace-delete-failed", error.message) };
+    }
   }
 
   // ── Remote methods ─────────────────────────────────────────────────────────
@@ -1500,6 +1914,14 @@ export default class SshOpsService extends TypertRemoteService {
         updatedAt: now
       };
       await table.put(profileId, record);
+      // Remember this username as the new-server default (issue #36 feedback):
+      // no manual knob — the next empty form simply starts where the last save
+      // ended. Best effort; a settings hiccup must not fail the save.
+      try {
+        this.defaultUsername = record.username;
+        const settings = this.settingsTable?.get(SETTINGS_ROW_ID) ?? {};
+        await this.settingsTable.put(SETTINGS_ROW_ID, { ...settings, defaultUsername: record.username });
+      } catch {}
       return {
         ok: true,
         value: {
@@ -1522,6 +1944,16 @@ export default class SshOpsService extends TypertRemoteService {
       // transport keeps running; deletion only forgets future quick-connect.
       await Promise.all([...Object.values(refs), ...Array.from({ length: 8 }, (_, index) => [profileJumpPasswordRef(request.profileId, index), profileJumpPrivateKeyRef(request.profileId, index), profileJumpPassphraseRef(request.profileId, index)]).flat()].map(async (ref) => await this.ctx.credentials.unset(credentialRef(ref))));
       await table.delete(request.profileId);
+      // A remote-workspace binding without its resource is unmanageable: the
+      // editor only lists bindings of an existing resource, so an orphan row
+      // would linger forever. Deleting the resource deletes its bindings.
+      if (this.remoteWorkspaces !== null) {
+        try {
+          for (const binding of this.remoteWorkspaces.list()) {
+            if (binding.profileId === request.profileId) await this.remoteWorkspaces.remove(binding.workspacePath);
+          }
+        } catch {}
+      }
       return { ok: true, value: { deleted: true } };
     } catch (error) {
       return { ok: false, error: fail("profile-delete-failed", error.message) };
@@ -1648,6 +2080,8 @@ export default class SshOpsService extends TypertRemoteService {
         // its checkboxes from here, and a tier of standard/allowAll must not
         // hand it an empty list that it would then save back over.
         execPolicyAllow: normalizeAllowList(this.execPolicyAllow),
+        // Username the panel prefills into its new-server form (null = "root").
+        defaultUsername: this.defaultUsername ?? null,
         // The category checklist the custom tier releases from, with its
         // display labels (i18n identifiers; the panel translates them).
         categories: ALL_CATEGORY_KEYS.map((key) => ({ key, label: CATEGORY_LABELS[key] }))
@@ -1667,6 +2101,12 @@ export default class SshOpsService extends TypertRemoteService {
     // overwriting the stored list with an empty one.
     const mode = normalizePolicy({ mode: request.execPolicy ?? this.execPolicy }).mode;
     const allow = normalizeAllowList(request.execPolicyAllow ?? this.execPolicyAllow);
+    // Optional like the policy fields: absent keeps whatever is stored. The
+    // panel normally never sends this — profileSave is what moves it — but the
+    // explicit path stays honest (null clears back to the root fallback).
+    const defaultUsername = request.defaultUsername === undefined
+      ? (this.defaultUsername ?? null)
+      : normalizeDefaultUsername(request.defaultUsername);
     try {
       const previous = this.settingsTable.get(SETTINGS_ROW_ID) ?? {};
       await this.settingsTable.put(SETTINGS_ROW_ID, {
@@ -1674,6 +2114,7 @@ export default class SshOpsService extends TypertRemoteService {
         agentAutoConnect,
         execPolicy: mode,
         execPolicyAllow: allow,
+        defaultUsername: defaultUsername ?? undefined,
         updatedAt: new Date().toISOString()
       });
     } catch (error) {
@@ -1682,12 +2123,14 @@ export default class SshOpsService extends TypertRemoteService {
     this.agentAutoConnect = agentAutoConnect;
     this.execPolicy = mode;
     this.execPolicyAllow = allow;
+    this.defaultUsername = defaultUsername;
     return {
       ok: true,
       value: {
         agentAutoConnect: this.agentAutoConnect,
         execPolicy: mode,
         execPolicyAllow: allow,
+        defaultUsername: this.defaultUsername ?? null,
         categories: ALL_CATEGORY_KEYS.map((key) => ({ key, label: CATEGORY_LABELS[key] }))
       }
     };
@@ -2024,6 +2467,10 @@ export default class SshOpsService extends TypertRemoteService {
       // Browser reads drain `buffer`. Retain a separate bounded capture for
       // an explicit ssh_read without coupling it to UI polling.
       captureBuffer: "",
+      // ssh_read "new" mode: the redacted capture already handed to the model.
+      // Keeping the complete redacted snapshot preserves patterns that span a
+      // read boundary instead of exposing their unredacted tail.
+      lastReadRedacted: undefined,
       lastPrompt: null,
       waiters: [],
       streamListeners: new Set(),
@@ -2106,13 +2553,9 @@ export default class SshOpsService extends TypertRemoteService {
     }
     try {
       if (text) {
-        // This path is interactive operator input and stays unguarded even
-        // while a confirmation card is pending: the card no longer prefills
-        // the terminal (that was removed in 0.2.14), so Enter cannot submit
-        // its command — the card's own Execute button is the only path.
-        // Blocking Enter or swallowing Ctrl-C here would instead break the
-        // standing boundary that a human's own keystrokes are never policed.
-        // Agent calls use writeToConnection()/execOnConnection().
+        // This path is interactive operator input and stays unguarded. The
+        // standing boundary is that a human's own keystrokes are never
+        // policed; agent calls use writeToConnection()/execOnConnection().
         session.stream.write(text);
         this.updateInputMirror(session, text);
       }
@@ -2132,7 +2575,7 @@ export default class SshOpsService extends TypertRemoteService {
     const ready = () => session && conn && this.sessions.get(request.sessionId) === session
       && !conn.dead && !conn.closing && session.exited === null && session.stream
       && session.inputKnown === true && session.inputLine === ""
-      && !this.hasPendingConfirmation(session.id) && conn.sessions.size === 1;
+      && conn.sessions.size === 1;
     if (!ready()) return { ok: false, error: fail("terminal-not-ready", t("请先结束前台程序、清空未提交输入，并仅保留一个交互终端")) };
     const revision = session.inputRevision ?? 0;
     const client = conn.client;
@@ -2168,7 +2611,7 @@ export default class SshOpsService extends TypertRemoteService {
     const ready = () => session && conn && this.sessions.get(request.sessionId) === session
       && !conn.dead && !conn.closing && session.exited === null && session.stream
       && session.inputKnown === true && session.inputLine === ""
-      && !this.hasPendingConfirmation(session.id) && conn.sessions.size === 1;
+      && conn.sessions.size === 1;
     if (!ready()) return { ok: false, error: fail("terminal-not-ready", t("请先结束前台程序、清空未提交输入，并仅保留一个交互终端")) };
     try {
       if (!posixLoginShell(await this.resolveLoginShell(conn))) {
@@ -2344,15 +2787,43 @@ export default class SshOpsService extends TypertRemoteService {
     return session.outputJournal;
   }
 
-  pendingConfirmationList() {
-    return {
-      ok: true,
-      value: {
-        confirmations: [...this.pendingConfirmations.values()]
-          .map((item) => this.publicPendingConfirmation(item))
-          .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-      }
-    };
+  /**
+   * Record a grant from the operator approval channel for one execution. The
+   * tools/pre-execute gate calls this after the host's approval UI answered
+   * "allow"; the tool body consumes it below. TTL-bounded (5 minutes) purely
+   * as a leak valve — a live execution consumes its grant immediately.
+   */
+  recordOperatorApproval(callId, connectionId, command) {
+    if (callId === undefined) return;
+    // Partially-constructed instances in unit tests never initialized the map.
+    if (this.operatorApprovals === undefined) this.operatorApprovals = new Map();
+    const previous = this.operatorApprovals.get(callId);
+    if (previous?.timer !== undefined) clearTimeout(previous.timer);
+    const ttl = this.operatorApprovalTtlMs ?? OPERATOR_APPROVAL_TTL_MS;
+    const expiresAt = Date.now() + ttl;
+    const timer = setTimeout(() => {
+      const current = this.operatorApprovals?.get(callId);
+      if (current?.expiresAt === expiresAt) this.operatorApprovals.delete(callId);
+    }, ttl);
+    timer.unref?.();
+    this.operatorApprovals.set(callId, { connectionId, command, expiresAt, timer });
+  }
+
+  /**
+   * Consume the approval voucher for one execution: exactly once, only for
+   * the same connection and command the operator actually saw and allowed.
+   * A mismatched or stale (TTL 5 min) voucher is silently not a grant — the
+   * inner gate then denies as if no approval existed.
+   */
+  consumeOperatorApproval(callId, connectionId, command) {
+    const approvals = this.operatorApprovals;
+    if (callId === undefined || approvals === undefined) return false;
+    const voucher = approvals.get(callId);
+    if (voucher === undefined) return false;
+    approvals.delete(callId);
+    if (voucher.timer !== undefined) clearTimeout(voucher.timer);
+    if (Date.now() >= voucher.expiresAt) return false;
+    return voucher.connectionId === connectionId && voucher.command === command;
   }
 
   batchPlan(request) {
@@ -2413,111 +2884,6 @@ export default class SshOpsService extends TypertRemoteService {
     return { ok: true, value: { cancelled } };
   }
 
-  async pendingConfirmationApprove(request) {
-    const pending = this.pendingConfirmations.get(request.confirmationId);
-    if (!pending) return { ok: false, error: fail("confirmation-missing", t("待确认命令不存在或已处理")) };
-    const session = this.sessions.get(pending.sessionId);
-    if (!session || session.exited !== null || session.stream === null) {
-      this.removePendingConfirmation(pending.confirmationId);
-      return { ok: false, error: fail("confirmation-session-closed", t("终端已关闭，无法执行待确认命令")) };
-    }
-    if (pending.trashScript) {
-      // The approved command runs as the reversible trash move on the exec
-      // channel when that is possible. When it is not (connection gone, or a
-      // non-POSIX login shell that cannot anchor relative paths), execution
-      // falls through to the historical PTY path below — exactly what the
-      // operator approved before this safety net existed. The card, the
-      // notices and the terminal output are identical either way; the only
-      // difference is whether a rollback copy exists.
-      const conn = this.connections.get(pending.connectionId);
-      if (conn) {
-        const shell = await this.resolveLoginShell(conn);
-        if (posixLoginShell(shell)) {
-          this.removePendingConfirmation(pending.confirmationId);
-          const result = await this.runPreparedExec(pending.connectionId, pending.trashScript, pending.command, true, 30000, false);
-          if (!result.ok) {
-            this.appendTerminalNotice(session, t(`回收站移动未能执行：${result.error.message}。命令未执行。`));
-            return { ok: true, value: { executed: false } };
-          }
-          return { ok: true, value: { executed: true } };
-        }
-      }
-    }
-    if (pending.prefilled && (!session.inputKnown || session.inputLine !== pending.command)) {
-      this.removePendingConfirmation(pending.confirmationId);
-      return { ok: false, error: fail("confirmation-modified", t("终端命令已变化，待确认项已作废")) };
-    }
-    try {
-      this.removePendingConfirmation(pending.confirmationId);
-      // Clear any text the operator may have typed, then send the command +
-      // Enter.  Without the line-kill the command would concatenate onto
-      // unsaved input and produce a garbled, unsafe shell line.
-      session.stream.write(`\x15${pending.command}\r`);
-      session.inputLine = "";
-      session.inputKnown = true;
-      return { ok: true, value: { executed: true } };
-    } catch (error) {
-      return { ok: false, error: fail("confirmation-execute-failed", error.message) };
-    }
-  }
-
-  pendingConfirmationCancel(request) {
-    const pending = this.pendingConfirmations.get(request.confirmationId);
-    if (!pending) return { ok: false, error: fail("confirmation-missing", t("待确认命令不存在或已处理")) };
-    const session = this.sessions.get(pending.sessionId);
-    this.removePendingConfirmation(pending.confirmationId);
-    if (pending.prefilled && session && session.exited === null && session.stream !== null) {
-      try { session.stream.write("\x15"); } catch {}
-      session.inputLine = "";
-      session.inputKnown = true;
-    }
-    return { ok: true, value: { cancelled: true } };
-  }
-
-  /**
-   * Whether this terminal is waiting on a dangerous-command confirmation card
-   * right now — the state every "is this terminal free?" guard needs.
-   *
-   * The predicate this replaced also demanded `pending.prefilled`, a flag no
-   * card has carried since terminal prefill was removed in 0.2.14: it answered
-   * "nothing pending" for every card in existence, so each guard built on it
-   * was dead code (the CLI path's serialization gate, `ready()`, and the
-   * terminal Enter gate).
-   */
-  hasPendingConfirmation(sessionId) {
-    // Partially-constructed instances in unit tests never initialized the map.
-    const pendingConfirmations = this.pendingConfirmations;
-    if (pendingConfirmations === undefined) return false;
-    for (const pending of pendingConfirmations.values()) {
-      if (pending.sessionId === sessionId) return true;
-    }
-    return false;
-  }
-
-  removePendingConfirmation(confirmationId) {
-    this.pendingConfirmations.delete(confirmationId);
-  }
-
-  removePendingForSession(sessionId) {
-    for (const [confirmationId, pending] of this.pendingConfirmations) {
-      if (pending.sessionId === sessionId) this.pendingConfirmations.delete(confirmationId);
-    }
-  }
-
-  publicPendingConfirmation(pending) {
-    return {
-      confirmationId: pending.confirmationId,
-      connectionId: pending.connectionId,
-      sessionId: pending.sessionId,
-      ...(pending.name ? { name: pending.name } : {}),
-      host: pending.host,
-      command: pending.command,
-      reason: pending.reason,
-      createdAt: pending.createdAt,
-      prefilled: pending.prefilled
-    };
-  }
-
   async resize(request) {
     const session = this.sessions.get(request.sessionId);
     if (session === void 0) return { ok: false, error: fail("no-session", `session "${request.sessionId}" does not exist`) };
@@ -2537,7 +2903,6 @@ export default class SshOpsService extends TypertRemoteService {
     const session = this.sessions.get(request.sessionId);
     if (session === void 0) return { ok: false, error: fail("no-session", `session "${request.sessionId}" does not exist`) };
     this.sessions.delete(request.sessionId);
-    this.removePendingForSession(request.sessionId);
     const conn = this.connections.get(session.connectionId);
     if (conn) conn.sessions.delete(request.sessionId);
     if (session.exited === null && session.stream !== null) {
@@ -2561,7 +2926,6 @@ export default class SshOpsService extends TypertRemoteService {
       const session = this.sessions.get(sessionId);
       if (session) {
         this.sessions.delete(sessionId);
-        this.removePendingForSession(sessionId);
         if (session.exited === null && session.stream !== null) {
           try { session.stream.end(); } catch {}
           session.exited = { code: 0 };
@@ -2886,23 +3250,38 @@ export default class SshOpsService extends TypertRemoteService {
     return conn.loginShellProbe.then(() => conn.loginShell);
   }
 
-  async execOnConnection(connectionId, command, timeoutMs = 30000, retried = false) {
+  async execOnConnection(connectionId, command, timeoutMs = 30000, retried = false, approvalToken) {
     const policy = this.resolveExecPolicy(connectionId);
     const decision = assessShellCommand(command, policy);
+    // Dangerous commands are never replayed after an ambiguous transport loss:
+    // the first dispatch may already have taken effect. Apply this to released
+    // destructive categories too, not only to ask-approved calls.
+    const retryOnTransportLoss = decision.ok && assessShellCommand(command).ok;
+    let trashScript = null;
     if (!decision.ok) {
-      // A simple, fully-literal rm/unlink/rmdir still goes through the
-      // operator's confirmation card — but approving it performs the
-      // reversible trash move, not a real deletion. The card carries the
-      // prepared script; real `rm` only ever happens when the operator types
-      // it in their own terminal.
-      let trashScript = null;
+      // A simple, fully-literal rm/unlink/rmdir is executed as the reversible
+      // trash move, never as a real deletion — whether the operator approved
+      // the ask or no approval exists at all. Real `rm` only ever happens
+      // when the operator types it in their own terminal.
       if (decision.category === CATEGORY_DELETE_FILES) {
         const parsed = parseSimpleDeleteCommand(command);
         if (parsed) trashScript = buildTrashCommand(parsed.targets);
       }
-      // The card, the reason and every notice stay byte-for-byte what they
-      // always were — the trash is a silent rollback margin, never a new UX.
-      return this.prefillBlockedResult(connectionId, command, t(decision.category ?? decision.reason), trashScript, policy);
+      // The tools/pre-execute gate asked through the host approval channel
+      // and, on "allow", recorded a voucher for THIS call. It is consumed
+      // here exactly once and only for the same connection+command. Without
+      // a valid grant the command stays blocked — as a structured result,
+      // with no queue: the ask suspends the tool call itself, so there is
+      // nothing left for a panel to approve after the fact.
+      if (!(approvalToken !== undefined && this.consumeOperatorApproval(approvalToken, connectionId, command))) {
+        return this.blockedExecResult(connectionId, command, t(decision.category ?? decision.reason), policy);
+      }
+      if (trashScript) {
+        // Approved simple delete: the reversible trash move is what actually
+        // runs on the exec channel; the agent sees its output like any exec.
+        return await this.runPreparedExec(connectionId, trashScript, command, true, timeoutMs, retried, false);
+      }
+      // Approved non-trash command: fall through and run it as written.
     }
     // Network-CLI routing (#33): a connection whose exec probe timed out
     // without a byte back has no POSIX exec channel (VRP, Comware, IOS…).
@@ -2915,7 +3294,7 @@ export default class SshOpsService extends TypertRemoteService {
     if (conn !== void 0 && conn.execStalled && !posixLoginShell(conn.loginShell)) {
       return this.cliExecOnConnection(conn, command, timeoutMs);
     }
-    const result = await this.runPreparedExec(connectionId, command, command, false, timeoutMs, retried);
+    const result = await this.runPreparedExec(connectionId, command, command, false, timeoutMs, retried, retryOnTransportLoss);
     if (result.ok && !result.value.timedOut) {
       // An exec that settled on its own proves the channel works, so a stall
       // remembered from an earlier slow/silent timeout is cleared here — the
@@ -2973,13 +3352,9 @@ export default class SshOpsService extends TypertRemoteService {
    * The command appears in the operator's terminal — intentional: the
    * operator sees what the agent typed. The destructive-command deny-list
    * has already run for this command in execOnConnection; this path adds the
-   * format gate and its own serialization (one CLI query per connection, and
-   * never while a confirmation card is pending on that terminal).
+   * format gate and its own serialization (one CLI query per connection).
    */
   async cliExecOnSession(conn, session, command, timeoutMs = 30000) {
-    if (this.hasPendingConfirmation(session.id)) {
-      return { ok: false, error: fail("cli-confirmation-pending", t("该终端存在待确认的危险命令卡片，请先处理（执行或撤销），再执行网络设备查询")) };
-    }
     if (conn.cliBusy) {
       return { ok: false, error: fail("cli-busy", t("该网络设备的上一条查询尚未完成，请稍候再试")) };
     }
@@ -3075,7 +3450,7 @@ export default class SshOpsService extends TypertRemoteService {
     }
   }
 
-  async runPreparedExec(connectionId, prepared, displayCommand, trashRun, timeoutMs = 30000, retried = false) {
+  async runPreparedExec(connectionId, prepared, displayCommand, trashRun, timeoutMs = 30000, retried = false, retryOnTransportLoss = true) {
     const conn = this.connections.get(connectionId);
     if (conn === void 0) return { ok: false, error: fail("no-connection", `connection "${connectionId}" does not exist`) };
     if (!(await this.ensureAlive(conn))) {
@@ -3085,9 +3460,9 @@ export default class SshOpsService extends TypertRemoteService {
     // interactive shell may be somewhere else entirely. When the login shell
     // is POSIX-family, prepend the interactive-cwd prologue (see exec-cwd.js)
     // so the command runs where the operator's terminal is, and the resolved
-    // directory comes back on a stripped marker line. (The trash move is only
-    // ever dispatched through pendingConfirmationApprove, which refuses to
-    // run it when the shell family cannot anchor relative paths.)
+    // directory comes back on a stripped marker line. Trash moves and other
+    // destructive commands opt out of the transparent transport-loss retry so
+    // one operator grant can never dispatch the same dangerous action twice.
     const shell = await this.resolveLoginShell(conn);
     const sent = posixLoginShell(shell) ? buildCwdAwareCommand(prepared) : prepared;
     const commandId = randomUUID();
@@ -3098,9 +3473,10 @@ export default class SshOpsService extends TypertRemoteService {
       state = await this.collectExecOutput(conn.client, sent, timeoutMs);
     } catch (error) {
       // The transport may have died between the liveness check and the exec.
-      // Wait for the self-healing reconnect and retry once transparently.
-      if (!retried && conn.dead && (await this.ensureAlive(conn))) {
-        return this.runPreparedExec(connectionId, prepared, displayCommand, trashRun, timeoutMs, true);
+      // Safe/idempotent calls may retry; destructive calls must report an
+      // unknown outcome because the first dispatch may already have run.
+      if (retryOnTransportLoss && !retried && conn.dead && (await this.ensureAlive(conn))) {
+        return this.runPreparedExec(connectionId, prepared, displayCommand, trashRun, timeoutMs, true, retryOnTransportLoss);
       }
       return { ok: false, error: fail("exec-failed", error.message) };
     }
@@ -3160,60 +3536,12 @@ export default class SshOpsService extends TypertRemoteService {
   }
 
   /**
-   * Prefill a blocked command into the first live interactive terminal session
-   * of a connection WITHOUT submitting it (no Enter). Returns whether the
-   * command was actually prefilled (false when no live session is open or the
-   * command contains control characters that would be unsafe to send to a PTY).
-   * The operator — never the agent — is the one who presses Enter.
+   * Build the ssh_exec result for a blocked destructive command that carried
+   * no valid operator approval voucher. Since the ask flow replaced the
+   * confirmation cards this is a pure deny path — nothing is queued anywhere;
+   * the agent is expected to stop retrying and let the operator act.
    */
-  prefillBlockedCommand(connectionId, command, reason = null, trashScript = null) {
-    // The default reason is translated per call: module-level t() would freeze
-    // whatever language happened to be active at import time.
-    const effectiveReason = reason ?? t(DANGEROUS_DEFAULT_REASON);
-    // Agent tools commonly omit connection_id to mean the selected right-side
-    // server. Resolve it here so safety confirmations follow exactly the same
-    // current-connection semantics as ssh_exec and the other SFTP tools.
-    const effectiveConnectionId = connectionId ?? this.activeConnectionId;
-    const conn = this.connections?.get(effectiveConnectionId);
-    if (!conn) return { queued: false, prefilled: false };
-    for (const sessionId of conn.sessions ?? []) {
-      const session = this.sessions.get(sessionId);
-      if (session && session.exited === null && session.stream !== null) {
-        if (isPrefillable(command)) {
-          // The command is queued for confirmation but NOT written to the
-          // terminal input line.  This avoids the contradiction of a visible
-          // command that Enter cannot submit — the only execution path is the
-          // panel's Execute button, which sends the full command + Enter.
-          // For a simple delete the card also carries the prepared trash
-          // script: approving performs the reversible move, never a real rm.
-          const confirmation = {
-            confirmationId: randomUUID(),
-            connectionId: effectiveConnectionId,
-            sessionId: session.id,
-            name: conn.name,
-            host: conn.host,
-            command,
-            reason: effectiveReason,
-            createdAt: new Date().toISOString(),
-            prefilled: false,
-            ...(trashScript ? { trashScript } : {})
-          };
-          this.pendingConfirmations.set(confirmation.confirmationId, confirmation);
-          this.appendTerminalNotice(session, t(`危险命令已被拦截并弹出确认卡片，请在右侧 SSH 面板点击“执行”或“撤销”：${command}`));
-          return { queued: true, prefilled: false, confirmationId: confirmation.confirmationId };
-        }
-        return { queued: false, prefilled: false };
-      }
-    }
-    return { queued: false, prefilled: false };
-  }
-
-  /**
-   * Build the ssh_exec result for a blocked destructive command: prefilled into
-   * the terminal when possible, otherwise a copyable command card.
-   */
-  prefillBlockedResult(connectionId, command, reason, trashScript = null, policy = null) {
-    const pending = this.prefillBlockedCommand(connectionId, command, reason, trashScript);
+  blockedExecResult(connectionId, command, reason, policy = null) {
     const now = new Date().toISOString();
     return {
       blocked: true,
@@ -3231,8 +3559,6 @@ export default class SshOpsService extends TypertRemoteService {
         blocked: true,
         reason,
         command,
-        prefilled: pending.prefilled,
-        queued: pending.queued,
         // The tier that produced this rejection, so the agent can tell the
         // operator what to relax instead of retrying blindly.
         ...(policy ? { policy: policy.mode, policySource: policy.source } : {})
@@ -3299,14 +3625,36 @@ export default class SshOpsService extends TypertRemoteService {
   }
 
   /** Current buffered text of a connection's first live shell session. */
-  readConnectionOutput(connectionId) {
+  readConnectionOutput(connectionId, mode) {
     const conn = this.connections.get(connectionId);
     if (conn === void 0) return { ok: false, error: fail("no-connection", `connection "${connectionId}" does not exist`) };
     const first = [...conn.sessions].map((id) => this.sessions.get(id)).find((s) => s !== void 0 && s.exited === null);
     if (first === void 0) {
       return { ok: true, value: { data: "", hasSession: false, truncated: false, redacted: false } };
     }
-    const redaction = redactForModel(first.captureBuffer);
+    // Default "new": hand back only what arrived since the previous read —
+    // re-sending the whole tail would make the model re-pay for output it
+    // already holds. "tail" keeps the legacy full-capture behavior.
+    let data = first.captureBuffer;
+    if (mode !== "tail") {
+      // The capture is tail-capped. Once the head has been dropped the cursor
+      // can no longer be trusted (the buffer may even stay at the cap length
+      // forever, so length alone cannot detect the drop) — latch the invalid
+      // state and fall back to returning the whole tail from then on.
+      if (Buffer.byteLength(first.captureBuffer, "utf8") >= this.config.maxCaptureBytes) {
+        first.captureEverTruncated = true;
+      }
+      // Redact the complete rolling capture before intersecting it with the
+      // previous model-visible snapshot. Redacting a raw slice can split a
+      // credential pattern across two reads and expose the tail of the secret.
+      const complete = redactForModel(first.captureBuffer).text;
+      const previous = first.lastReadRedacted;
+      data = !first.captureEverTruncated && typeof previous === "string" && complete.startsWith(previous)
+        ? complete.slice(previous.length)
+        : complete;
+      first.lastReadRedacted = complete;
+    }
+    const redaction = redactForModel(data);
     return {
       ok: true,
       value: {
@@ -4561,7 +4909,7 @@ export default class SshOpsService extends TypertRemoteService {
   async executeCommand(request) {
     const selected = this.resolveConnection(request.connectionId);
     if (!selected.ok) return selected;
-    const result = await this.execOnConnection(selected.connectionId, request.command, request.timeoutMs);
+    const result = await this.execOnConnection(selected.connectionId, request.command, request.timeoutMs, false, request.approvalToken);
     if (result.blocked) {
       return {
         ok: true,
@@ -4601,7 +4949,7 @@ export default class SshOpsService extends TypertRemoteService {
   readCurrentConnection(request) {
     const selected = this.resolveConnection(request.connectionId);
     if (!selected.ok) return selected;
-    const result = this.readConnectionOutput(selected.connectionId);
+    const result = this.readConnectionOutput(selected.connectionId, request.mode);
     if (!result.ok) return result;
     return {
       ok: true,
@@ -4709,7 +5057,6 @@ export default class SshOpsService extends TypertRemoteService {
     if (session.exited !== null) return;
     session.exited = exit;
     try { void this.sessionLogStore()?.end(session.id, { exitCode: exit?.code ?? null }); } catch { /* best-effort */ }
-    this.removePendingForSession(session.id);
     // A naturally-exited shell must no longer count as an open terminal:
     // drop it from the connection's live-session set so list() reports only
     // live PTYs and the panel can offer to open a fresh one on that tab.

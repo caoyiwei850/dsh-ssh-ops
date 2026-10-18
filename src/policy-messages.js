@@ -18,5 +18,5 @@ export const UNVERIFIED_LINE_REASON =
 /** Prefix of the notice appended to the terminal buffer on a policy block. */
 export const POLICY_NOTICE_PREFIX = "[DSH SSH 安全策略]"; // i18n-identifier
 
-/** Default reason for the blocked-command confirmation card. */
+/** Default reason carried by a blocked dangerous command. */
 export const DANGEROUS_DEFAULT_REASON = "危险操作"; // i18n-identifier

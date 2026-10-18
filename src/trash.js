@@ -12,7 +12,7 @@
  *
  * Only fully literal, single-command deletions are rewritten: anything with
  * pipelines, redirection, command substitution, globs, expansions, exotic
- * flags or unknown programs keeps the original confirmation-card flow. The
+ * flags or unknown programs keeps the original operator-approval flow. The
  * generated script contains the word `rm` itself (the purge step), so it must
  * never be re-fed through assessShellCommand — callers rewrite before the
  * gate or keep the rewritten command inside the prepared-exec path.
@@ -26,7 +26,7 @@ export const TRASH_MANIFEST = "manifest.tsv";
 const DELETE_PROGRAMS = new Set(["rm", "unlink", "rmdir"]);
 // Bundles of these short flags are understood; anything else (long options,
 // -p for rmdir, -i prompts whose semantics a move cannot reproduce) falls
-// back to the confirmation card.
+// back to the operator-approval path.
 const RM_FLAGS = new Set(["r", "R", "f", "v", "d", "i"]);
 const RMDIR_FLAGS = new Set(["v"]);
 // Characters that make a command line "not a simple delete": operators,
@@ -41,7 +41,7 @@ const UNSAFE_CHARS = new Set([";", "&", "|", "<", ">", "`", "$", "*", "?", "[", 
  * inside quotes, because tilde expansion only happens for an unquoted `~` —
  * `rm '~/x'` and `rm ~/x` mean different directories. Returns null whenever
  * anything ambiguous or dynamic is present — the caller then keeps the
- * conservative card flow.
+ * conservative approval flow.
  */
 function tokenizeLiteralCommand(command) {
   const tokens = [];
@@ -116,7 +116,7 @@ function tokenizeLiteralCommand(command) {
  * Returns `{ targets }` (each `{ kind: "plain"|"home", path }`) when the whole
  * line is one rm/unlink/rmdir invocation with recognized flags and explicit
  * literal paths; null otherwise, meaning the caller must keep the
- * confirmation-card flow.
+ * operator-approval flow.
  */
 export function parseSimpleDeleteCommand(command) {
   if (typeof command !== "string") return null;
@@ -141,7 +141,7 @@ export function parseSimpleDeleteCommand(command) {
     // A lone "-" is a stdin convention, not a path we can move.
     if (token === "-" || token.length === 0) return null;
     // A tab/newline inside a quoted path would corrupt the TSV manifest —
-    // such targets keep the confirmation-card flow instead.
+    // such targets keep the operator-approval flow instead.
     if (/[\t\n\r\0]/.test(token)) return null;
     if (token === "/" || token === "." || token === "..") return null;
     if (token.startsWith("~")) {

@@ -94,12 +94,14 @@ export class SshApi {
     return this.call("agentSettingsGet", {});
   }
 
-  agentSettingsSave(agentAutoConnect, execPolicy, execPolicyAllow) {
+  agentSettingsSave(agentAutoConnect, execPolicy, execPolicyAllow, defaultUsername) {
     const request = { agentAutoConnect };
     // Policy fields are optional so existing callers (tests, older panes)
-    // keep saving just the auto-connect switch.
+    // keep saving just the auto-connect switch. defaultUsername: undefined
+    // keeps the stored value, null clears it back to "root".
     if (execPolicy !== undefined) request.execPolicy = execPolicy;
     if (execPolicyAllow !== undefined) request.execPolicyAllow = execPolicyAllow;
+    if (defaultUsername !== undefined) request.defaultUsername = defaultUsername;
     return this.call("agentSettingsSave", request);
   }
 
@@ -125,6 +127,18 @@ export class SshApi {
 
   profileSave(input) {
     return this.call("profileSave", input);
+  }
+
+  remoteWorkspaceList() {
+    return this.call("remoteWorkspaceList", {});
+  }
+
+  remoteWorkspaceSave(input) {
+    return this.call("remoteWorkspaceSave", input);
+  }
+
+  remoteWorkspaceDelete(workspacePath) {
+    return this.call("remoteWorkspaceDelete", { workspacePath });
   }
 
   profileDelete(profileId) {
@@ -161,18 +175,6 @@ export class SshApi {
 
   async write(sessionId, text) {
     await this.call("write", { sessionId, data: encodeBase64(text) });
-  }
-
-  pendingConfirmationList() {
-    return this.call("pendingConfirmationList", {});
-  }
-
-  pendingConfirmationApprove(confirmationId) {
-    return this.call("pendingConfirmationApprove", { confirmationId });
-  }
-
-  pendingConfirmationCancel(confirmationId) {
-    return this.call("pendingConfirmationCancel", { confirmationId });
   }
 
   batchPlan(command, timeoutMs) {

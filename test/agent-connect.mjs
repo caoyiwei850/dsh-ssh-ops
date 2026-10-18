@@ -4,7 +4,7 @@
 // instead of a bare `connection "dev" does not exist`.
 import assert from "node:assert/strict";
 import { validateJsonSchemaValue } from "@deepseek-ai/dsh-tools";
-import SshOpsService from "../src/index.js";
+import SshOpsService, { loadSettingsRecord, normalizeDefaultUsername } from "../src/index.js";
 import { registerSshSessionTools } from "../src/tools/ssh-session.js";
 import { resolveProfileRef, noConnectionGuidance, formatSavedResources, AUTO_CONNECT_DISABLED_MESSAGE } from "../src/agent-connect.js";
 import { agentSettingsGetRequestSchema, agentSettingsSaveRequestSchema, agentSettingsResultSchema, listResultSchema } from "../src/schemas.js";
@@ -160,6 +160,86 @@ function connection(id, overrides = {}) {
   assert.equal(agentSettingsResultSchema.safeParse({ ok: true, value: wire }).success, true);
   assert.equal(agentSettingsGetRequestSchema.safeParse({}).success, true);
   assert.equal(agentSettingsSaveRequestSchema.safeParse({ agentAutoConnect: true }).success, true);
+}
+
+// ── default username for new servers (issue #36) ────────────────────────────
+{
+  // Hardening: trim, blank/absent/non-string → null, capped at 128 chars.
+  assert.equal(normalizeDefaultUsername("  deploy "), "deploy");
+  assert.equal(normalizeDefaultUsername(""), null);
+  assert.equal(normalizeDefaultUsername("   "), null);
+  assert.equal(normalizeDefaultUsername(undefined), null);
+  assert.equal(normalizeDefaultUsername(42), null);
+  assert.equal(normalizeDefaultUsername("x".repeat(200)).length, 128);
+  assert.equal(loadSettingsRecord({ defaultUsername: " ubuntu " }).defaultUsername, "ubuntu");
+  assert.equal(loadSettingsRecord({}).defaultUsername, null, "records from older builds load as 'no preference'");
+
+  const service = makeService();
+  assert.equal((await service.agentSettingsGet()).value.defaultUsername, null, "unset reads as null, never as an empty string");
+
+  const set = await service.agentSettingsSave({ agentAutoConnect: false, defaultUsername: " ubuntu " });
+  assert.equal(set.ok, true);
+  assert.equal(set.value.defaultUsername, "ubuntu");
+  assert.equal(service.settingsTable.stored.defaultUsername, "ubuntu", "the preference survives a host restart via storage");
+  assert.equal((await service.agentSettingsGet()).value.defaultUsername, "ubuntu");
+
+  // A save that omits the field (older panes, the policy pill) keeps it.
+  const kept = await service.agentSettingsSave({ agentAutoConnect: true });
+  assert.equal(kept.value.defaultUsername, "ubuntu");
+  assert.equal(service.settingsTable.stored.defaultUsername, "ubuntu");
+  assert.equal(kept.value.agentAutoConnect, true);
+
+  // Explicit null (or blank) clears it back to the root fallback.
+  const cleared = await service.agentSettingsSave({ agentAutoConnect: true, defaultUsername: "   " });
+  assert.equal(cleared.value.defaultUsername, null);
+  assert.equal(service.settingsTable.stored.defaultUsername, undefined);
+  assert.equal(service.defaultUsername, null);
+
+  assert.equal(agentSettingsSaveRequestSchema.safeParse({ agentAutoConnect: true, defaultUsername: "deploy" }).success, true);
+  assert.equal(agentSettingsSaveRequestSchema.safeParse({ agentAutoConnect: true, defaultUsername: null }).success, true, "null is the wire form of 'clear'");
+  assert.equal(agentSettingsSaveRequestSchema.safeParse({ agentAutoConnect: true, defaultUsername: "x".repeat(129) }).success, false);
+  const wire = JSON.parse(JSON.stringify(set.value));
+  assert.equal(agentSettingsResultSchema.safeParse({ ok: true, value: wire }).success, true);
+}
+
+// ── profileSave auto-remembers the last-used username (issue #36 feedback) ──
+{
+  const profiles = [];
+  const service = makeService();
+  service.profileTable = {
+    get: (id) => profiles.find((profile) => profile.profileId === id),
+    entries: () => profiles.map((profile) => [profile.profileId, profile])[Symbol.iterator](),
+    values: () => profiles[Symbol.iterator](),
+    put: async (id, record) => { profiles.push({ profileId: id, ...record }); }
+  };
+  service.requireCredentialTable = () => ({ get: () => undefined });
+  service.requireGroupTable = () => ({ get: () => undefined });
+  service.profilePublic = async (id, record) => ({ ...record, profileId: id });
+
+  const saved = await service.profileSave({ name: "web", host: "10.0.0.9", port: 22, username: "  deploy  ", authKind: "password" });
+  assert.equal(saved.ok, true);
+  assert.equal(service.settingsTable.stored.defaultUsername, "deploy", "the last saved username becomes the next new-server default");
+  assert.equal(service.defaultUsername, "deploy");
+  assert.equal((await service.agentSettingsGet()).value.defaultUsername, "deploy");
+
+  // 编辑另一台换成别的用户名 → 默认跟随最近一次保存。
+  await service.profileSave({ name: "db", host: "10.0.0.8", port: 22, username: "postgres", authKind: "password" });
+  assert.equal(service.settingsTable.stored.defaultUsername, "postgres");
+
+  // settingsTable 缺失（桩场景/存储异常）：保存本身不受影响。
+  const bare = makeService();
+  bare.profileTable = {
+    get: () => undefined,
+    entries: () => [][Symbol.iterator](),
+    values: () => [][Symbol.iterator](),
+    put: async () => {}
+  };
+  bare.requireCredentialTable = () => ({ get: () => undefined });
+  bare.requireGroupTable = () => ({ get: () => undefined });
+  bare.profilePublic = async (id, record) => ({ ...record, profileId: id });
+  bare.settingsTable = undefined;
+  const ok = await bare.profileSave({ name: "x", host: "10.0.0.1", port: 22, username: "root", authKind: "password" });
+  assert.equal(ok.ok, true, "a missing settings table must not fail the profile save");
 }
 
 // ── agentConnectProfile: gated, resolving, and visible ──────────────────────

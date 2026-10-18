@@ -161,13 +161,17 @@ export const agentSettingsResultSchema = resultSchema(z.object({
   agentAutoConnect: z.boolean(),
   execPolicy: execPolicyModeSchema.optional(),
   execPolicyAllow: execPolicyAllowSchema.optional(),
+  // Username the panel prefills into its new-server form; null = "root".
+  defaultUsername: z.string().max(128).nullable().optional(),
   // The custom tier's checklist as served by the host (single source of truth).
   categories: z.array(z.object({ key: z.string(), label: z.string() })).optional()
 }));
 export const agentSettingsSaveRequestSchema = z.object({
   agentAutoConnect: z.boolean(),
   execPolicy: execPolicyModeSchema.optional(),
-  execPolicyAllow: execPolicyAllowSchema.optional()
+  execPolicyAllow: execPolicyAllowSchema.optional(),
+  // Optional: absent keeps the stored value, null clears it back to "root".
+  defaultUsername: z.string().max(128).nullable().optional()
 });
 
 // ── execution policy (session-scoped switching; operator-only RPC) ──────────
@@ -304,6 +308,48 @@ export const profileListResultSchema = resultSchema(
   z.object({ profiles: z.array(profileInfoSchema) })
 );
 
+// ── remote workspaces (issue #38) ───────────────────────────────────────────
+//
+// A workspace stays a host directory; only its *file work* is redirected to a
+// saved SSH resource. `workspacePath` is the canonical directory DSH stores for
+// the Workspace, so it doubles as the row identity.
+export const remoteWorkspaceBindingSchema = z.object({
+  workspacePath: z.string().min(1),
+  remotePath: z.string().min(1),
+  profileId: profileIdSchema,
+  profileName: z.string(),
+  host: z.string(),
+  port: z.number().int(),
+  username: z.string(),
+  autoConnect: z.boolean(),
+  // Whether the bound resource currently holds a live connection.
+  connected: z.boolean(),
+  // The binding points at a resource that was deleted.
+  missingResource: z.boolean().optional()
+});
+
+export const remoteWorkspaceCandidateSchema = z.object({
+  path: z.string().min(1),
+  title: z.string()
+});
+
+export const remoteWorkspaceListRequestSchema = z.object({});
+export const remoteWorkspaceListResultSchema = resultSchema(z.object({
+  bindings: z.array(remoteWorkspaceBindingSchema),
+  workspaces: z.array(remoteWorkspaceCandidateSchema)
+}));
+
+export const remoteWorkspaceSaveRequestSchema = z.object({
+  workspacePath: z.string().min(1),
+  profileId: profileIdSchema,
+  remotePath: z.string().min(1),
+  autoConnect: z.boolean().optional()
+});
+export const remoteWorkspaceSaveResultSchema = resultSchema(z.object({ binding: remoteWorkspaceBindingSchema }));
+
+export const remoteWorkspaceDeleteRequestSchema = z.object({ workspacePath: z.string().min(1) });
+export const remoteWorkspaceDeleteResultSchema = resultSchema(z.object({ removed: z.boolean() }));
+
 export const profileDeleteRequestSchema = z.object({ profileId: profileIdSchema });
 export const profileDeleteResultSchema = resultSchema(z.object({ deleted: z.boolean() }));
 
@@ -400,34 +446,6 @@ export const writeResultSchema = resultSchema(
   z.object({ written: z.number() })
 );
 
-// ── agent-originated dangerous command confirmations ──────────────────────
-
-export const pendingConfirmationSchema = z.object({
-  confirmationId: z.string().uuid(),
-  connectionId: z.string(),
-  sessionId: z.string(),
-  name: z.string().optional(),
-  host: z.string(),
-  command: z.string(),
-  reason: z.string(),
-  createdAt: z.string(),
-  prefilled: z.boolean()
-});
-
-export const pendingConfirmationListRequestSchema = z.object({});
-export const pendingConfirmationListResultSchema = resultSchema(
-  z.object({ confirmations: z.array(pendingConfirmationSchema) })
-);
-
-export const pendingConfirmationActionRequestSchema = z.object({
-  confirmationId: z.string().uuid()
-});
-export const pendingConfirmationApproveResultSchema = resultSchema(
-  z.object({ executed: z.literal(true) })
-);
-export const pendingConfirmationCancelResultSchema = resultSchema(
-  z.object({ cancelled: z.literal(true) })
-);
 
 // ── known-hosts management (operator only) ──────────────────────────────────
 

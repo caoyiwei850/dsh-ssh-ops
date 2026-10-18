@@ -40,9 +40,6 @@ function makeService() {
   service.connections = new Map();
   service.sessions = new Map();
   service.exitedSessions = new Map();
-  // Real card bookkeeping, not a stub: the serialization guard must be
-  // exercised against the shape the service actually creates (prefilled:false).
-  service.pendingConfirmations = new Map();
   return service;
 }
 
@@ -159,7 +156,7 @@ const VRP_TAIL = "Info: The max number of VTY users is 10.\r\n<S12712>";
   assert.equal(stream.writes.filter((w) => w === " ").length, 0, "the retained tail still recognises the prompt: no paging loop");
 }
 
-// ── guards: busy mutex, pending card, unknown prompt, no terminal ───────────
+// ── guards: busy mutex, unknown prompt, no terminal ─────────────────────────
 {
   const service = makeService();
   const stream = fakeDeviceStream(() => null);
@@ -172,18 +169,6 @@ const VRP_TAIL = "Info: The max number of VTY users is 10.\r\n<S12712>";
   const busy = await service.cliExecOnSession(conn, session, "display clock");
   assert.equal(busy.error.code, "cli-busy");
   conn.cliBusy = false;
-
-  // A card created the way the service creates them: `prefilled:false`, which
-  // is every card since terminal prefill was removed in 0.2.14. The guard used
-  // to require `prefilled === true`, so it never fired in production.
-  service.pendingConfirmations.set("card-1", {
-    confirmationId: "card-1", sessionId: session.id, command: "reboot", prefilled: false
-  });
-  assert.equal(service.hasPendingConfirmation(session.id), true, "a non-prefilled card still counts as pending");
-  const pending = await service.cliExecOnSession(conn, session, "display clock");
-  assert.equal(pending.error.code, "cli-confirmation-pending", "a pending card blocks CLI typing");
-  service.pendingConfirmations.delete("card-1");
-  assert.equal(service.hasPendingConfirmation(session.id), false, "no card left means the terminal is free");
 
   const bare = makeSession("random scrolling output\r\nnothing prompt-like");
   bare.stream = fakeDeviceStream(() => null);

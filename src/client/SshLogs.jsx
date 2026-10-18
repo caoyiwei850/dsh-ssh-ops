@@ -5,8 +5,9 @@
  */
 import * as React from "react";
 import { readableLine, toReadableText } from "../terminal-text.js";
+import { classifyLogLine, segmentLogText } from "./log-highlight.js";
 import { t } from "../i18n/core.js";
-const { useEffect, useState, useRef } = React;
+const { useEffect, useMemo, useState, useRef } = React;
 
 const PAGE_BYTES = 48 * 1024;
 
@@ -22,6 +23,14 @@ function formatWhen(iso) {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return iso;
   return date.toLocaleString();
+}
+
+/** 搜索命中行复用与正文一致的行级着色。 */
+function hitStyle(line) {
+  const kind = classifyLogLine(line);
+  if (kind === "error") return { color: "#ff8a8a" };
+  if (kind === "warning") return { color: "#d97706" };
+  return {};
 }
 
 export function SshLogs({ api }) {
@@ -41,6 +50,8 @@ export function SshLogs({ api }) {
   const [selection, setSelection] = useState(() => new Set());
   // Guard against a slow earlier response overwriting a newer selection.
   const loadSeq = useRef(0);
+  // warning/error 行高亮（issue #36）：分段结果随内容缓存，渲染只做映射。
+  const logSegments = useMemo(() => segmentLogText(content), [content]);
 
   const refresh = async () => {
     setError(null);
@@ -319,13 +330,21 @@ export function SshLogs({ api }) {
                     <button
                       key={`${hit.offset}-${index}`}
                       onClick={() => openLog(selected, { offset: hit.offset })}
-                      style={styles.hitRow}
+                      style={{ ...styles.hitRow, ...hitStyle(hit.line) }}
                       title={t(`跳到 offset ${hit.offset}`)}
                     >{hit.line}</button>
                   ))}
                 </div>
               )}
-              <pre style={styles.pre}>{content}{content === "" ? t("（空）") : ""}</pre>
+              <pre style={styles.pre}>
+                {content === ""
+                  ? t("（空）")
+                  : logSegments.map((segment, index) => (
+                    segment.kind === null
+                      ? <React.Fragment key={index}>{segment.text}</React.Fragment>
+                      : <span key={index} style={segment.kind === "error" ? styles.lineError : styles.lineWarning}>{segment.text}</span>
+                  ))}
+              </pre>
               <div style={styles.viewerFoot}>
                 <span style={styles.hint}>{formatBytes(nextOffset)} / {formatBytes(size)}{eof ? t(" · 已到末尾") : ""}</span>
                 {!eof && (
@@ -400,5 +419,7 @@ const styles = {
     color: "var(--dsw-alias-label-primary, #d7dbe2)", fontSize: 11, lineHeight: 1.45,
     fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", whiteSpace: "pre-wrap", wordBreak: "break-all"
   },
+  lineError: { background: "rgba(248,81,73,.18)", color: "#ff8a8a", borderRadius: 3, padding: "0 2px" },
+  lineWarning: { background: "rgba(217,119,6,.16)", color: "#d97706", borderRadius: 3, padding: "0 2px" },
   viewerFoot: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flex: "none" }
 };

@@ -47,6 +47,11 @@ export const DESCRIPTORS = [
   def("profileList", S.profileListRequestSchema, "SshProfileListRequest", S.profileListResultSchema, "SshProfileListResult"),
   def("profileSave", S.profileSaveRequestSchema, "SshProfileSaveRequest", S.profileSaveResultSchema, "SshProfileSaveResult"),
   def("profileDelete", S.profileDeleteRequestSchema, "SshProfileDeleteRequest", S.profileDeleteResultSchema, "SshProfileDeleteResult"),
+  // Remote workspaces (issue #38): panel-only RPCs. Binding never changes
+  // DSH's own workspace model, so there are deliberately no agent tools here.
+  def("remoteWorkspaceList", S.remoteWorkspaceListRequestSchema, "SshRemoteWorkspaceListRequest", S.remoteWorkspaceListResultSchema, "SshRemoteWorkspaceListResult"),
+  def("remoteWorkspaceSave", S.remoteWorkspaceSaveRequestSchema, "SshRemoteWorkspaceSaveRequest", S.remoteWorkspaceSaveResultSchema, "SshRemoteWorkspaceSaveResult"),
+  def("remoteWorkspaceDelete", S.remoteWorkspaceDeleteRequestSchema, "SshRemoteWorkspaceDeleteRequest", S.remoteWorkspaceDeleteResultSchema, "SshRemoteWorkspaceDeleteResult"),
   def("profileDisconnect", S.profileDisconnectRequestSchema, "SshProfileDisconnectRequest", S.profileDisconnectResultSchema, "SshProfileDisconnectResult"),
   def("profileConnect", S.profileConnectRequestSchema, "SshProfileConnectRequest", S.profileConnectResultSchema, "SshProfileConnectResult"),
   def("cancelProfileConnect", S.cancelProfileConnectRequestSchema, "SshCancelProfileConnectRequest", S.cancelProfileConnectResultSchema, "SshCancelProfileConnectResult"),
@@ -69,9 +74,6 @@ export const DESCRIPTORS = [
   def("changeDirectory", S.changeDirectoryRequestSchema, "SshChangeDirectoryRequest", S.writeResultSchema, "SshWriteResult"),
   def("enableShellIntegration", S.enableShellIntegrationRequestSchema, "EnableShellIntegrationRequest", S.enableShellIntegrationResultSchema, "EnableShellIntegrationResult"),
   def("write", S.writeRequestSchema, "SshWriteRequest", S.writeResultSchema, "SshWriteResult"),
-  def("pendingConfirmationList", S.pendingConfirmationListRequestSchema, "PendingConfirmationListRequest", S.pendingConfirmationListResultSchema, "PendingConfirmationListResult"),
-  def("pendingConfirmationApprove", S.pendingConfirmationActionRequestSchema, "PendingConfirmationActionRequest", S.pendingConfirmationApproveResultSchema, "PendingConfirmationApproveResult"),
-  def("pendingConfirmationCancel", S.pendingConfirmationActionRequestSchema, "PendingConfirmationActionRequest", S.pendingConfirmationCancelResultSchema, "PendingConfirmationCancelResult"),
   def("read", S.readRequestSchema, "SshReadRequest", S.readResultSchema, "SshReadResult"),
   def("terminalStream", S.terminalStreamRequestSchema, "SshTerminalStreamRequest", S.readResultSchema, "SshReadResult", { stream: true }),
   def("resize", S.resizeRequestSchema, "SshResizeRequest", S.resizeResultSchema, "SshResizeResult"),

@@ -12,7 +12,7 @@ import { EXEC_CWD_MARKER } from '../src/exec-cwd.js';
 import { readResultSchema, terminalStreamRequestSchema, changeDirectoryRequestSchema } from '../src/schemas.js';
 const svc = Object.create(SshOpsService.prototype);
 svc.config = {streamHeartbeatMs:10,maxBufferBytes:1024,maxCaptureBytes:1024};
-svc.sessions=new Map();svc.connections=new Map();svc.pendingConfirmations=new Map();
+svc.sessions=new Map();svc.connections=new Map();
 const session={id:'s',connectionId:'c',buffer:'',captureBuffer:'',waiters:[],streamListeners:new Set(),exited:null,inputKnown:true,inputLine:''};
 const writes=[];session.stream={write(text){writes.push(text);}};
 const conn={sessions:new Set(['s']),client:{},loginShell:'bash'};

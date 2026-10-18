@@ -10,7 +10,6 @@ function makeService(heartbeatMs = 40) {
   service.connections = new Map();
   service.sessions = new Map();
   service.exitedSessions = new Map();
-  service.pendingConfirmations = new Map();
   return service;
 }
 

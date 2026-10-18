@@ -198,7 +198,6 @@ function makeService(t) {
   service.connections = new Map();
   service.sessions = new Map();
   service.exitedSessions = new Map();
-  service.pendingConfirmations = new Map();
   service.activeConnectionId = null;
   service.ctx = { logger: { warn: () => {}, info: () => {}, debug: () => {} } };
   // Tested against null (`!== null`), so null — not undefined — disables TOFU.

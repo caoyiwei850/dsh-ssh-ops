@@ -4,6 +4,8 @@
  * right-side panel shows; `service` is the SshOpsService instance.
  */
 import { defineTool } from "@deepseek-ai/dsh-tools";
+import { assessShellCommand, CATEGORY_DELETE_FILES } from "../safety.js";
+import { parseSimpleDeleteCommand } from "../trash.js";
 import { t } from "../i18n/core.js";
 
 /** Human name for an execution-policy tier, for agent-facing notices. */
@@ -13,7 +15,71 @@ export function execPolicyLabel(mode) {
   return t("标准");
 }
 
+/**
+ * Ask the operator through the host's approval channel. Returns the raw
+ * outcome ("allowed-once" | "rejected" | "cancelled" | "unavailable") so the
+ * gate can grant precisely, and degrades to "unavailable" whenever the host
+ * composes no approval service, exposes none to plugins, or the call has no
+ * agent to route the prompt to — fail-closed in every direction.
+ */
+export async function askOperatorApproval(ctx, execution, reason) {
+  let approval;
+  try { approval = ctx.get("approval"); } catch { approval = undefined; }
+  if (approval === undefined || execution?.agent === undefined || execution?.callId === undefined) {
+    return { outcome: "unavailable" };
+  }
+  try {
+    const outcome = await approval.request({
+      agent: execution.agent,
+      toolName: execution.name,
+      callId: execution.callId,
+      reason,
+      signal: execution.signal
+    });
+    return { outcome: typeof outcome === "string" ? outcome : "unavailable" };
+  } catch {
+    return { outcome: "unavailable" };
+  }
+}
+
 export function registerSshSessionTools(ctx, service) {
+  // Dangerous-command gate for ssh_exec: the tools/pre-execute waterfall
+  // evaluates the exact policy the exec path will enforce and, when the
+  // command is deny-listed, suspends the whole call on the host's approval
+  // channel — the agent cannot act, retry, or route around while the
+  // operator decides. On "allow" a one-shot voucher (callId -> connection +
+  // command) is recorded for the tool body to consume past the inner gate.
+  // No approval channel at all degrades to deny, never to execute.
+  if (typeof ctx.on === "function") ctx.on("tools/pre-execute", (execution, next) => {
+    if (execution?.name !== "ssh_exec") return typeof next === "function" ? next() : undefined;
+    return (async () => {
+      const command = typeof execution.arguments?.command === "string" ? execution.arguments.command : "";
+      const selected = service.resolveConnection(execution.arguments?.connection_id);
+      if (!selected.ok) return typeof next === "function" ? next() : undefined; // no target: let the tool report the honest error
+      const policy = service.resolveExecPolicy(selected.connectionId);
+      const decision = assessShellCommand(command, policy);
+      if (decision.ok) return typeof next === "function" ? next() : undefined;
+      let trashNote = "";
+      if (decision.category === CATEGORY_DELETE_FILES && parseSimpleDeleteCommand(command)) {
+        trashNote = t("（批准后实际执行的是移入回收站的可逆操作，不会真删）");
+      }
+      const host = selected.connection.host ?? "";
+      const reason = t(`AI 请求在 ${host} 上执行危险命令，已被执行策略（${execPolicyLabel(policy.mode)}）拦截：\n${command}\n风险类别：${t(decision.category ?? decision.reason)}${trashNote}\n批准=本次执行；拒绝=命令不会运行。`);
+      const { outcome } = await askOperatorApproval(ctx, execution, reason);
+      if (outcome === "allowed-once") {
+        service.recordOperatorApproval(execution.callId, selected.connectionId, command);
+        return typeof next === "function" ? next() : undefined;
+      }
+      if (outcome === "rejected") {
+        return { kind: "deny", reason: t(`操作者拒绝了该危险命令（${command}）。请勿重试或换写法绕行；如确需执行，请让操作者自行在终端运行，或请其调整右侧面板的执行策略。`) };
+      }
+      if (outcome === "cancelled") {
+        return { kind: "deny", reason: t("危险命令的确认被取消，命令未执行。请勿重试；如确需执行请与操作者确认。") };
+      }
+      return { kind: "deny", reason: t(`该命令属于危险操作（${t(decision.category ?? decision.reason)}），必须由操作者确认，但当前宿主没有可用的审批通道，命令未执行。请勿重试或绕行；请操作者直接在终端手动执行。`) };
+    })();
+  });
+
   ctx.tools.register(defineTool({
     name: "ssh_shell_integration",
     description: "Enable shell integration (OSC 133 markers) in an open SSH terminal's bash/zsh shell. Afterwards ssh_terminal_context reports the shell's current directory, the last command's exit code and whether it sits at a prompt — far more reliable than guessing from output text. Requires an idle, single interactive shell; the session must be one from ssh_terminal_sessions.",
@@ -214,7 +280,7 @@ export function registerSshSessionTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "ssh_exec",
-    description: "Run a normal SSH command on the server currently open in the right-side SSH terminal and return its output. Omit connection_id when the user means the current server; do not call ssh_list first. On Linux with one identifiable idle POSIX terminal shell, the dedicated exec channel starts in that shell's verified current directory. A busy, ambiguous, or inaccessible terminal directory rejects the command instead of guessing; when no terminal shell is detectable, the normal login directory is used and cwd is null. SSH configuration, package changes, service reloads, and config edits are allowed and remain subject to DSH permissions. Explicitly destructive or irreversible operations are not run: a confirmation popup appears in the right-side SSH panel, where only the operator can execute or cancel them. The command and output are also shown in the terminal panel.",
+    description: "Run a normal SSH command on the server currently open in the right-side SSH terminal and return its output. This runs one non-interactive command and returns when it finishes. Tasks that need terminal interaction — switching users (sudo -i / su), entering a container (docker exec -it), or connecting onward to another machine (ssh) — do not fit here; run those with ssh_write in the interactive terminal instead. Omit connection_id when the user means the current server; do not call ssh_list first. On Linux with one identifiable idle POSIX terminal shell, the dedicated exec channel starts in that shell's verified current directory. A busy, ambiguous, or inaccessible terminal directory rejects the command instead of guessing; when no terminal shell is detectable, the normal login directory is used and cwd is null. SSH configuration, package changes, service reloads, and config edits are allowed and remain subject to DSH permissions. Explicitly destructive or irreversible commands suspend this call until the operator answers the host's confirmation prompt in the conversation: approving runs the command once, rejecting denies it — never retry or route around a rejection. The command and output are also shown in the terminal panel.",
     parameters: {
       connection_id: { type: "string", description: "Optional. Omit to target the current right-side SSH connection." },
       command: { type: "string", required: true, description: "The shell command to execute." },
@@ -241,22 +307,16 @@ export function registerSshSessionTools(ctx, service) {
           blocked: { type: "boolean" },
           reason: { type: "string" },
           command: { type: "string" },
-          prefilled: { type: "boolean" },
-          queued: { type: "boolean" },
           policy: { type: "string" },
           policySource: { type: "string" }
         }
       },
       render(args, value) {
         if (value.blocked) {
-          const where = value.queued
-            ? t("命令未执行；右侧 SSH 终端面板已弹出确认卡片，等待操作员点击“执行”或“撤销”：")
-            : t("命令未执行，无法预填，请粘贴到右侧终端执行：");
-          const whereRuns = t("确认执行（或粘贴执行）发生在右侧交互 shell 内，跟随终端当前目录；与 ssh_exec 的 exec 通道目录无关。命令里的相对路径请按此理解。");
           const tierNote = value.policy
             ? "\n" + t(`当前连接执行策略：${execPolicyLabel(value.policy)}${value.policySource === "session" ? t("（操作者本次会话内切换）") : ""}。若操作者希望放开此类命令，请其自行在右侧面板的策略开关中调整；请勿重试。`)
             : "";
-          return [{ type: "text", text: t(`⚠️ 已拦截：${value.reason ?? ""}\n${where}\n\`\`\`bash\n${value.command ?? ""}\n\`\`\`\n${whereRuns}\n请勿重试/绕行，由人工确认执行。`) + tierNote }];
+          return [{ type: "text", text: t(`⚠️ 已拦截：${value.reason ?? ""}\n命令未执行。危险命令必须由操作者确认，本次调用没有获得批准（操作者拒绝，或宿主没有可用的审批通道）。\n\`\`\`bash\n${value.command ?? ""}\n\`\`\`\n请勿重试或换写法绕行；把命令交给操作者自行执行，或请其调整执行策略。`) + tierNote }];
         }
         const out = value.stdout ?? "";
         const err = value.stderr ?? "";
@@ -278,11 +338,14 @@ export function registerSshSessionTools(ctx, service) {
         return [{ type: "text", text: `${cwdNote}\n${body}` }];
       }
     },
-    async execute(args) {
+    async execute(args, exec) {
       const result = await service.executeCommand({
         connectionId: args.connection_id,
         command: args.command,
-        timeoutMs: args.timeout_ms ?? 30000
+        timeoutMs: args.timeout_ms ?? 30000,
+        // The pre-execute gate records its voucher under the execution id;
+        // the inner gate consumes it so an operator-approved command runs.
+        approvalToken: exec?.callId
       });
       if (!result.ok) throw new Error(`ssh_exec failed: ${result.error.message}`);
       return result.value;
@@ -291,9 +354,10 @@ export function registerSshSessionTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "ssh_read",
-    description: "Read buffered output from the current right-side SSH terminal. Omit connection_id for the current server; do not call ssh_list first. Useful after ssh_write or when the user typed something in the panel.",
+    description: "Read output from the current right-side SSH terminal. Omit connection_id for the current server; do not call ssh_list first. By default only output that arrived since your previous ssh_read on this connection is returned — results you already received are not repeated, so read again after ssh_write without re-paying for old output. Pass mode \"tail\" for the full recent terminal capture instead (e.g. output that predates your first read, or something that scrolled past). Also useful when the user typed something in the panel.",
     parameters: {
-      connection_id: { type: "string", description: "Optional. Omit to target the current right-side SSH connection." }
+      connection_id: { type: "string", description: "Optional. Omit to target the current right-side SSH connection." },
+      mode: { type: "string", enum: ["new", "tail"], description: "'new' (default) returns only output that arrived since the previous ssh_read on this connection; 'tail' returns the whole recent terminal capture. Use 'tail' sparingly — it repeats output you likely already have." }
     },
     output: {
       schema: {
@@ -311,7 +375,7 @@ export function registerSshSessionTools(ctx, service) {
       render(args, value) {
         const body = !value.hasSession
           ? "(no open shell session on this connection)"
-          : value.data || "(no output yet)";
+          : value.data || (args.mode === "tail" ? "(no output yet)" : "(no new output since the previous read)");
         const notes = [
           value.truncated ? "[terminal capture truncated]" : "",
           value.redacted ? "[sensitive values redacted]" : ""
@@ -320,7 +384,7 @@ export function registerSshSessionTools(ctx, service) {
       }
     },
     async execute(args) {
-      const result = service.readCurrentConnection({ connectionId: args.connection_id });
+      const result = service.readCurrentConnection({ connectionId: args.connection_id, mode: args.mode });
       if (!result.ok) throw new Error(`ssh_read failed: ${result.error.message}`);
       return result.value;
     }
