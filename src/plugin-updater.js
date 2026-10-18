@@ -3,19 +3,27 @@
  * the npm registry plus a trusted one-click install.
  *
  * Adapted from @michengai/dsh-archive-manager's plugin-updater (Apache-2.0) —
- * same trust model (loopback + same-origin + plugin header), same desktop
- * pnpm / dsh-CLI install channels, messages routed through our i18n t().
+ * same trust model (loopback + same-origin + plugin header), messages routed
+ * through our i18n t(). Runtime resolution upgraded to 1.0.20: the official
+ * desktop host is recognized from argv[1] (…/dsh-desktop-host/…), the profile
+ * comes from the profileContext service or argv instead of a blind "web"
+ * guess, and installs walk the desktopPnpm → argv-pnpm (--expose-internals +
+ * ELECTRON_RUN_AS_NODE) → pluginManager.installBundle → dsh-CLI channel
+ * chain — the argv-pnpm channel is what makes one-click updates work inside
+ * the official desktop app, where neither the pnpm service nor the CLI entry
+ * is reachable the old way.
  *
  * GET  → { packageName, currentVersion, latestVersion?, latestCheckFailed,
  *          updateAvailable, profileName, canAutoUpdate }
  * POST → runs the install (only from the trusted page), then reports
- *        { ..., updatedVersion, restartRequired: true, autoReload }.
+ *        { ..., updatedVersion, restartRequired: true, autoReload,
+ *          restartDesktop? }.
  */
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, resolve } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { t } from "./i18n/core.js";
 
@@ -75,14 +83,14 @@ function isDshCliEntry(entry, manifest, packageRoot) {
 }
 
 /** Walk up from the running entry to find the dsh CLI bin, if we are it. */
-function cliEntry() {
-  const value = process.argv[1];
+function cliEntry(argv = process.argv, cwd = process.cwd(), exists = existsSync) {
+  const value = argv[1];
   if (value === undefined || value === "") return undefined;
-  const entry = value.startsWith("file:") ? fileURLToPath(value) : resolve(process.cwd(), value);
-  if (!existsSync(entry)) return undefined;
+  const entry = value.startsWith("file:") ? fileURLToPath(value) : resolve(cwd, value);
+  if (!exists(entry)) return undefined;
   for (let directory = dirname(entry);;) {
     const manifestPath = resolve(directory, "package.json");
-    if (existsSync(manifestPath)) {
+    if (exists(manifestPath)) {
       try {
         if (isDshCliEntry(entry, JSON.parse(readFileSync(manifestPath, "utf8")), directory)) return entry;
       } catch {}
@@ -93,26 +101,120 @@ function cliEntry() {
   }
 }
 
-/** Where this profile lives and which install channel it supports. */
-function runtime(ctx) {
-  const profiles = ctx.get?.("desktopProfiles");
-  const desktopPnpm = ctx.get?.("desktopPnpm");
+function optionalService(ctx, name) {
+  try {
+    return typeof ctx.get === "function" ? ctx.get(name) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The official desktop host's main script lives under a dsh-desktop-host dir. */
+function isOfficialDesktopHostEntry(entry) {
+  if (entry === undefined || entry === "") return false;
+  return entry.replaceAll("\\", "/").includes("/dsh-desktop-host/");
+}
+
+function stringEnvironment(value) {
+  if (value === null || typeof value !== "object") return undefined;
+  const env = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (typeof item === "string") env[key] = item;
+  }
+  return Object.keys(env).length === 0 ? undefined : env;
+}
+
+function packageManagerFrom(value) {
+  if (value === null || typeof value !== "object") return undefined;
+  if (typeof value.command !== "string" || value.command === "") return undefined;
+  if (!Array.isArray(value.args) || !value.args.every((arg) => typeof arg === "string")) return undefined;
+  const env = stringEnvironment(value.env);
+  return { command: value.command, args: value.args, ...(env === undefined ? {} : { env }) };
+}
+
+/**
+ * Inside the official desktop host the pnpm CLI is parked at argv[5]; run it
+ * with the same Electron binary as plain Node. This is the channel that
+ * sidesteps the host's own install path (and its already-installed clash).
+ */
+function packageManagerFromArgv(argv, exists, execPath, pathEnv) {
+  if (!isOfficialDesktopHostEntry(argv[1])) return undefined;
+  const pnpm = argv[5];
+  if (typeof pnpm !== "string" || !isAbsolute(pnpm) || !exists(pnpm)) return undefined;
+  const bin = argv[6];
+  const path = typeof bin === "string" && bin !== "" ? `${bin}${delimiter}${pathEnv ?? ""}` : pathEnv;
+  return {
+    command: execPath,
+    args: ["--expose-internals", pnpm],
+    env: { ELECTRON_RUN_AS_NODE: "1", ...(typeof path === "string" && path !== "" ? { PATH: path } : {}) }
+  };
+}
+
+function pluginManagerFrom(value) {
+  if (value === null || typeof value !== "object" || typeof value.installBundle !== "function") return undefined;
+  return value;
+}
+
+/**
+ * Where this profile lives and which install channels it supports.
+ * Priority: desktopProfiles (desktop app exposing its services) →
+ * profileContext / official-desktop argv → dsh CLI entry → web fallback.
+ */
+export function resolveUpdateRuntime(ctx, options = {}) {
+  const argv = options.argv ?? process.argv;
+  const env = options.env ?? process.env;
+  const cwd = options.cwd ?? process.cwd();
+  const home = options.homeDir ?? homedir();
+  const exists = options.exists ?? existsSync;
+  const execPath = options.execPath ?? process.execPath;
+  const profiles = optionalService(ctx, "desktopProfiles");
+  const desktopPnpm = optionalService(ctx, "desktopPnpm");
   if (profiles?.current !== undefined) {
     const current = profiles.current;
-    if (!validProfileName(current.name) || typeof current.dir !== "string" || !isAbsolute(current.dir)) {
+    if (!validProfileName(current?.name) || typeof current.dir !== "string" || !isAbsolute(current.dir)) {
       throw new Error(t("当前 Desktop Profile 信息无效，请重启后重试。"));
     }
+    const runnable = typeof desktopPnpm?.runPlugin === "function";
     return {
       profileName: current.name,
       profileDir: resolve(current.dir),
-      ...(typeof desktopPnpm?.runPlugin === "function" ? { desktopPnpm } : {})
+      officialDesktop: false,
+      canAutoUpdate: runnable,
+      ...(runnable ? { desktopPnpm } : {})
     };
   }
-  const profileDir = resolve(process.env.DSH_PROFILE_DIR ?? resolve(homedir(), ".dsh", "profiles", "web"));
-  const selected = profileNameFromArgv(process.argv);
-  const profileName = validProfileName(selected) ? selected : validProfileName(basename(profileDir)) ? basename(profileDir) : "web";
-  const entry = cliEntry();
-  return { profileName, profileDir, ...(entry === undefined ? {} : { cliEntry: entry }) };
+  const launched = optionalService(ctx, "profileContext");
+  const official = isOfficialDesktopHostEntry(argv[1]) || launched?.name === "desktop";
+  const launchedDir = typeof launched?.dir === "string" && isAbsolute(launched.dir) ? resolve(launched.dir) : undefined;
+  const projectDir = official && typeof argv[3] === "string" && isAbsolute(argv[3]) ? resolve(argv[3]) : undefined;
+  const cwdProfile = official && exists(resolve(cwd, "package.json")) ? resolve(cwd) : undefined;
+  const profileDir = launchedDir ?? projectDir ?? cwdProfile
+    ?? resolve(env.DSH_PROFILE_DIR ?? resolve(home, ".dsh", "profiles", "web"));
+  const selected = profileNameFromArgv(argv);
+  const profileName = validProfileName(launched?.name) ? launched.name
+    : official ? "desktop"
+      : validProfileName(selected) ? selected
+        : validProfileName(basename(profileDir)) ? basename(profileDir) : "web";
+  const packageManager = official
+    ? packageManagerFrom(launched?.packageManager) ?? packageManagerFromArgv(argv, exists, execPath, env.PATH)
+    : undefined;
+  const pluginManager = official && packageManager === undefined ? pluginManagerFrom(optionalService(ctx, "pluginManager")) : undefined;
+  const entry = official ? undefined : cliEntry(argv, cwd, exists);
+  return {
+    profileName,
+    profileDir,
+    officialDesktop: official,
+    canAutoUpdate: packageManager !== undefined || pluginManager !== undefined || entry !== undefined,
+    ...(packageManager === undefined ? {} : { packageManager }),
+    ...(pluginManager === undefined ? {} : { pluginManager }),
+    ...(entry === undefined ? {} : { cliEntry: entry })
+  };
+}
+
+/** Web hosts started by a parent that applies updates itself (IPC contract). */
+export function shouldNotifyParent(target, send = process.send) {
+  return target.officialDesktop !== true && target.desktopPnpm === undefined
+    && target.packageManager === undefined && typeof send === "function";
 }
 
 function parseSemver(value) {
@@ -185,19 +287,18 @@ async function status(options, target) {
     latestCheckFailed: latest === undefined,
     updateAvailable: latest !== undefined && isNewerVersion(current, latest),
     profileName: target.profileName,
-    canAutoUpdate: target.desktopPnpm !== undefined || target.cliEntry !== undefined
+    canAutoUpdate: target.canAutoUpdate
   };
 }
 
-async function runCliInstall(target, packageSpec) {
-  if (target.cliEntry === undefined) throw new Error(t("当前环境不支持自动更新，请使用手动更新命令。"));
-  const entry = target.cliEntry;
+/** Run one bounded installer process and preserve its useful stderr/stdout tail. */
+async function runInstallProcess(command, args, { cwd, env }) {
   await new Promise((resolvePromise, reject) => {
-    const child = spawn(process.execPath, [entry, "plugin", "--profile", target.profileName, "add", "--config.minimumReleaseAge=0", packageSpec, "--registry=https://registry.npmjs.org/"], {
-      cwd: target.profileDir,
+    const child = spawn(command, args, {
+      cwd,
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, NO_COLOR: "1" }
+      env
     });
     let detail = "";
     child.stdout?.on("data", (chunk) => { detail = (detail + String(chunk)).slice(-4000); });
@@ -215,11 +316,45 @@ async function runCliInstall(target, packageSpec) {
   });
 }
 
-async function install(target, packageSpec) {
-  if (target.desktopPnpm === undefined) return runCliInstall(target, packageSpec);
-  const handle = target.desktopPnpm.runPlugin(["add", "--config.minimumReleaseAge=0", packageSpec, "--registry=https://registry.npmjs.org/"], target.profileDir);
-  const result = await handle.done;
-  if (result.exitCode !== 0) throw new Error(t(`更新进程退出码 ${result.exitCode}`));
+async function runCliInstall(target, packageSpec) {
+  if (target.cliEntry === undefined) throw new Error(t("当前环境不支持自动更新，请使用手动更新命令。"));
+  const entry = target.cliEntry;
+  return runInstallProcess(
+    process.execPath,
+    [entry, "plugin", "--profile", target.profileName, "add", "--config.minimumReleaseAge=0", packageSpec, "--registry=https://registry.npmjs.org/"],
+    { cwd: target.profileDir, env: { ...process.env, NO_COLOR: "1" } }
+  );
+}
+
+async function runPackageManagerInstall(target, packageSpec) {
+  const manager = target.packageManager;
+  if (manager === undefined) throw new Error(t("当前环境不支持自动更新，请使用手动更新命令。"));
+  return runInstallProcess(
+    manager.command,
+    [...manager.args, "add", "--config.minimumReleaseAge=0", packageSpec, "--registry=https://registry.npmjs.org/"],
+    { cwd: target.profileDir, env: { ...process.env, ...manager.env, NO_COLOR: "1" } }
+  );
+}
+
+async function runPluginManagerInstall(target, packageSpec) {
+  const manager = target.pluginManager;
+  if (manager === undefined) throw new Error(t("当前环境不支持自动更新，请使用手动更新命令。"));
+  const result = await manager.installBundle(packageSpec);
+  if (result.application === "applied" || result.application === "restart-required" || result.application === "overridden") return;
+  throw new Error(result.error?.message || result.packageResult?.output || t("更新失败，请查看服务端日志。"));
+}
+
+/** Install channels, in priority order. */
+export async function install(target, packageSpec) {
+  if (target.desktopPnpm !== undefined) {
+    const handle = target.desktopPnpm.runPlugin(["add", "--config.minimumReleaseAge=0", packageSpec, "--registry=https://registry.npmjs.org/"], target.profileDir);
+    const result = await handle.done;
+    if (result.exitCode !== 0) throw new Error(t(`更新进程退出码 ${result.exitCode}`));
+    return;
+  }
+  if (target.packageManager !== undefined) return runPackageManagerInstall(target, packageSpec);
+  if (target.pluginManager !== undefined) return runPluginManagerInstall(target, packageSpec);
+  return runCliInstall(target, packageSpec);
 }
 
 function json(response, statusCode, value) {
@@ -244,7 +379,7 @@ export function registerPluginUpdater(ctx, options) {
     path: options.endpoint,
     handler: async (request, response) => {
       try {
-        const target = runtime(ctx);
+        const target = resolveUpdateRuntime(ctx);
         if (request.method === "GET" || request.method === "HEAD") {
           const payload = await status(options, target);
           response.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
@@ -279,9 +414,15 @@ export function registerPluginUpdater(ctx, options) {
         } finally {
           installing = false;
         }
-        const notifyParent = target.desktopPnpm === undefined && typeof process.send === "function";
+        const notifyParent = shouldNotifyParent(target);
         const autoReload = target.desktopPnpm !== undefined || notifyParent;
-        json(response, 200, { ...before, updatedVersion: before.latestVersion, restartRequired: true, autoReload });
+        json(response, 200, {
+          ...before,
+          updatedVersion: before.latestVersion,
+          restartRequired: true,
+          autoReload,
+          ...(target.officialDesktop ? { restartDesktop: true } : {})
+        });
         if (notifyParent) setTimeout(() => { process.send?.(UPDATE_IPC); }, 150).unref?.();
       } catch (error) {
         ctx.logger?.warn?.(`plugin updater failed: ${String(error)}`);
