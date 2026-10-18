@@ -45,88 +45,123 @@ export async function apply(ctx) {
     if (typeof dispose === "function") disposers.push(dispose);
     return dispose;
   };
+  /**
+   * Unwind every tracked disposer in reverse. One throwing disposer must not
+   * strand the ones after it, and in the failure path it must not mask the
+   * error that triggered the unwind (issue #37).
+   */
+  const unwind = async () => {
+    let failure = null;
+    for (const dispose of disposers.reverse()) {
+      try {
+        await dispose();
+      } catch (error) {
+        failure ??= error;
+      }
+    }
+    disposers.length = 0;
+    if (failure) throw failure;
+  };
+  /**
+   * The whole registration sequence is guarded as one unit (issue #37): the
+   * host retries a FAILED plugin by running apply() again WITHOUT a teardown
+   * in between, so anything left registered by a mid-apply throw turns every
+   * later retry into a misleading duplicate-registration error that buries
+   * the original cause. On any failure, roll back everything registered so
+   * far and rethrow the real error; a retry then re-reports that same real
+   * error — or succeeds outright when the cause was transient.
+   */
   try {
     const dispose = await ctx.remote.$mount(TYPERT_REMOTE);
     own(dispose);
+
+    const api = createSshApi(ctx);
+
+    // Agent-connected servers must surface even while the SSH tab is closed
+    // (issue #25 real-machine feedback): ssh_connect_profile opens transport +
+    // session host-side, and without a poll nobody reveals the tab — the user
+    // had to find the terminal by hand, and a second server never appeared
+    // beside the first. The plugin root is always mounted, so it owns the
+    // slow poll; the panel's own refresh is the fast path while it is open.
+    own(startAgentConnectionPoll(api, sshUiAnnounceAgentConnections));
+
+    own(ctx.locale.register(NS, {
+      zh: {
+        settingsSectionLabel: "SSH 资源", // i18n-ignore: host locale entry
+        sidebarTabTitle: "SSH 终端", // i18n-ignore: host locale entry
+        openSidebarTab: "打开或聚焦 SSH 终端标签", // i18n-ignore: host locale entry
+        guideTitle: "SSH 终端", // i18n-ignore: host locale entry
+        guideDescription: "连接服务器，使用终端、远程文件、转发、快捷命令与数据库工具" // i18n-ignore: host locale entry
+      },
+      en: {
+        settingsSectionLabel: "SSH Resources",
+        sidebarTabTitle: "SSH Terminal",
+        openSidebarTab: "Open or focus the SSH terminal tab",
+        guideTitle: "SSH Terminal",
+        guideDescription: "Connect to servers with a terminal, remote files, tunnels, snippets, and database tools"
+      }
+    }));
+
+    const hostT = ctx.locale.bind(NS);
+
+    // Follow the host's language before any surface paints. An explicit
+    // combobox choice sticks; otherwise (follow mode) the plugin adopts
+    // whatever DSH Settings → Language shows now and on every later change the
+    // locale face reports, writing it back so the host half (agent-visible
+    // messages) speaks the same language after the next restart.
+    own(syncLanguageWithHost(api, ctx));
+
+    // The Sidebar's service faces may be provided after this bundle is
+    // evaluated; register through the delayed lifecycle instead of a one-time
+    // ctx.get() snapshot that would permanently miss them. There is no fallback
+    // surface anymore — if the Sidebar path fails, the error is only reported.
+    own(activateSidebarWhenAvailable(ctx, {
+      registerSidebar: (sidebarCtx) => applySidebarRegistrations(sidebarCtx, { api, hostT }),
+      onSidebarError: (error) => {
+        console.error("[dsh-ssh-ops] sidebar tab registration failed; no terminal surface available:", error);
+      }
+    }));
+
+    // The settings nav glyph: the host's section slot has no icon field (its
+    // navIcon table falls back to the gear), so paint our terminal mark over
+    // the gear on our own row — same DOM-marker technique as dshmarket.
+    try {
+      own(installSettingsNavIcon(ctx, () => hostT("settingsSectionLabel")));
+    } catch (error) {
+      // Purely cosmetic: a stylesheet hiccup must not fail the whole plugin.
+      console.error("[dsh-ssh-ops] settings nav icon install failed (non-fatal):", error);
+    }
+
+    // SSH resources are a first-class settings section, beside General and
+    // Models. Keeping them under Settings → Plugins made an operational
+    // inventory look like implementation detail and forced an extra tab click.
+    // The header SSH button remains only a terminal visibility toggle.
+    own(ctx.slots.inject("settings.section", () =>
+      ctx.slots.register(
+        {
+          name: "settings.section",
+          id: "ssh-ops-resources",
+          order: 35,
+          label: () => hostT("settingsSectionLabel"), // getter: the host menu re-renders it per language change
+          icon: "terminal",
+          locale: NS,
+          inject: () => ({ api, credentials: ctx.remote?.credentials })
+        },
+        SshResources
+      )
+    ));
+
+    return async () => {
+      await unwind();
+    };
   } catch (error) {
-    for (const d of disposers.reverse()) await d();
+    try {
+      await unwind();
+    } catch (cleanupError) {
+      console.error("[dsh-ssh-ops] apply failed and its cleanup failed too:", cleanupError);
+    }
     throw error;
   }
-
-  const api = createSshApi(ctx);
-
-  // Agent-connected servers must surface even while the SSH tab is closed
-  // (issue #25 real-machine feedback): ssh_connect_profile opens transport +
-  // session host-side, and without a poll nobody reveals the tab — the user
-  // had to find the terminal by hand, and a second server never appeared
-  // beside the first. The plugin root is always mounted, so it owns the
-  // slow poll; the panel's own refresh is the fast path while it is open.
-  own(startAgentConnectionPoll(api, sshUiAnnounceAgentConnections));
-
-  own(ctx.locale.register(NS, {
-    zh: {
-      settingsSectionLabel: "SSH 资源", // i18n-ignore: host locale entry
-      sidebarTabTitle: "SSH 终端", // i18n-ignore: host locale entry
-      openSidebarTab: "打开或聚焦 SSH 终端标签", // i18n-ignore: host locale entry
-      guideTitle: "SSH 终端", // i18n-ignore: host locale entry
-      guideDescription: "连接服务器，使用终端、远程文件、转发、快捷命令与数据库工具" // i18n-ignore: host locale entry
-    },
-    en: {
-      settingsSectionLabel: "SSH Resources",
-      sidebarTabTitle: "SSH Terminal",
-      openSidebarTab: "Open or focus the SSH terminal tab",
-      guideTitle: "SSH Terminal",
-      guideDescription: "Connect to servers with a terminal, remote files, tunnels, snippets, and database tools"
-    }
-  }));
-
-  const hostT = ctx.locale.bind(NS);
-
-  // Follow the host's language before any surface paints. An explicit
-  // combobox choice sticks; otherwise (follow mode) the plugin adopts
-  // whatever DSH Settings → Language shows now and on every later change the
-  // locale face reports, writing it back so the host half (agent-visible
-  // messages) speaks the same language after the next restart.
-  own(syncLanguageWithHost(api, ctx));
-
-  // The Sidebar's service faces may be provided after this bundle is
-  // evaluated; register through the delayed lifecycle instead of a one-time
-  // ctx.get() snapshot that would permanently miss them. There is no fallback
-  // surface anymore — if the Sidebar path fails, the error is only reported.
-  own(activateSidebarWhenAvailable(ctx, {
-    registerSidebar: (sidebarCtx) => applySidebarRegistrations(sidebarCtx, { api, hostT }),
-    onSidebarError: (error) => {
-      console.error("[dsh-ssh-ops] sidebar tab registration failed; no terminal surface available:", error);
-    }
-  }));
-
-  // The settings nav glyph: the host's section slot has no icon field (its
-  // navIcon table falls back to the gear), so paint our terminal mark over
-  // the gear on our own row — same DOM-marker technique as dshmarket.
-  own(installSettingsNavIcon(ctx, () => hostT("settingsSectionLabel")));
-
-  // SSH resources are a first-class settings section, beside General and
-  // Models. Keeping them under Settings → Plugins made an operational
-  // inventory look like implementation detail and forced an extra tab click.
-  // The header SSH button remains only a terminal visibility toggle.
-  own(ctx.slots.inject("settings.section", () =>
-    ctx.slots.register(
-      {
-        name: "settings.section",
-        id: "ssh-ops-resources",
-        order: 35,
-        label: () => hostT("settingsSectionLabel"), // getter: the host menu re-renders it per language change
-        icon: "terminal",
-        locale: NS,
-        inject: () => ({ api, credentials: ctx.remote?.credentials })
-      },
-      SshResources
-    )
-  ));
-
-  return async () => {
-    for (const d of disposers.reverse()) await d();
-  };
 }
 
 /** Official Sidebar registrations: both stages live under one disposable scope. */
@@ -364,7 +399,9 @@ function syncLanguageWithHost(api, ctx) {
       api.languageSave(host).catch(() => {});
       return;
     }
-    if (stored?.language !== null) setLanguage(stored.language);
+    // `stored` is null when the languageGet RPC is unavailable, so the pin
+    // check must be nullish: `!== null` alone dereferences null here.
+    if (stored?.language != null) setLanguage(stored.language);
   };
   void applyFollow();
   // Best-effort live follow: the documented face exposes subscribe; older
