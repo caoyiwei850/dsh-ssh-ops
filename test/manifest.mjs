@@ -27,6 +27,10 @@ assert.ok(manifest.files.includes("lib"), "the npm package keeps generated runti
 assert.ok(manifest.files.includes("scripts"), "the npm package keeps its declared install helper");
 assert.ok(!manifest.files.includes("src") && !manifest.files.includes("assets"),
   "source and documentation screenshots stay in Git/GitHub release archives, not the runtime npm package");
+assert.ok(manifest.files.includes("docs/product-guide.md") && manifest.files.includes("docs/product-guide.en.md"),
+  "README links to both product guides, so the npm tarball must carry those Markdown files");
+assert.ok(manifest.files.includes("CHANGELOG.md"),
+  "the product guides link to CHANGELOG.md, so it must ship beside them");
 // #29: the entry files under lib/ are build artifacts excluded from git, so
 // git-channel installs (github: tarballs) depend on the prepare hook to build
 // them at install time. Removing it resurrects ERR_MODULE_NOT_FOUND with an
@@ -87,11 +91,14 @@ const end = stdout.lastIndexOf("]");
 assert.ok(start !== -1 && end > start, `npm pack produced no JSON manifest; stdout was: ${stdout.slice(0, 400)}`);
 const packedFiles = JSON.parse(stdout.slice(start, end + 1))[0].files.map((f) => f.path).sort();
 const expectedPackedFiles = [
+  "CHANGELOG.md",
   "INSTALL.md",
   "LICENSE",
   "README.en.md",
   "README.md",
   "cordis.patch.yml",
+  "docs/product-guide.en.md",
+  "docs/product-guide.md",
   "icon.svg",
   "lib/client.js",
   "lib/index.js",

@@ -1,6 +1,7 @@
 /**
- * Release helper: sync the hardcoded version strings in README.md and
- * README.en.md (badge, install commands, release links) with package.json.
+ * Release helper: sync the hardcoded version strings in both READMEs and the
+ * two product guides (badges, install commands, release links, document
+ * footer) with package.json.
  * Run as part of the release bump: node scripts/bump-readme.mjs
  */
 import { readFileSync, writeFileSync } from "node:fs";
@@ -17,11 +18,15 @@ const VERSIONED = [
   /dsh-ssh-ops@\d+\.\d+\.\d+(?![-.])/g,          // npm install / npx targets, not host prerelease badges
   /dsh-ssh-ops-\d+\.\d+\.\d+\.(?:tgz|zip)/g,    // release asset names/links
   /dsh-ssh-ops#v\d+\.\d+\.\d+/g,                // GitHub tag install ref
-  /releases\/tag\/v\d+\.\d+\.\d+/g              // GitHub release links
+  /releases\/tag\/v\d+\.\d+\.\d+/g,             // GitHub release links
+  /\*\*版本 \d+\.\d+\.\d+\*\*/g,                // Chinese product-guide header
+  /\*\*Version \d+\.\d+\.\d+\*\*/g,             // English product-guide header
+  /文档对应版本 v\d+\.\d+\.\d+/g,                // Chinese product-guide footer
+  /This document matches v\d+\.\d+\.\d+/g       // English product-guide footer
 ];
 
 let changed = 0;
-for (const doc of ["README.md", "README.en.md"]) {
+for (const doc of ["README.md", "README.en.md", "docs/product-guide.md", "docs/product-guide.en.md"]) {
   const path = join(root, doc);
   let text;
   try {
@@ -37,4 +42,4 @@ for (const doc of ["README.md", "README.en.md"]) {
     console.log(`${doc}: version strings synced to ${version}`);
   }
 }
-if (changed === 0) console.log(`READMEs already at ${version}`);
+if (changed === 0) console.log(`release documentation already at ${version}`);
