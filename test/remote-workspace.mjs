@@ -59,6 +59,12 @@ test("resolveRemotePath joins relative input and pins absolute input to the root
   assert.equal(resolveRemotePath("/srv/app", "/srv/app/deep/file"), "/srv/app/deep/file");
   // An absolute path outside the root is the escape this module exists to stop.
   assert.throws(() => resolveRemotePath("/srv/app", "/etc/passwd"), /escapes the remote workspace root/);
+  assert.equal(
+    resolveRemotePath("/srv/app/sub", "/srv/app/config.yml", "/srv/app"),
+    "/srv/app/config.yml",
+    "absolute paths are checked against the workspace root even when relative paths use a subdirectory"
+  );
+  assert.throws(() => resolveRemotePath("/srv/app/sub", "/srv/app-other/file", "/srv/app"), /escapes the remote workspace root/);
   assert.throws(() => resolveRemotePath("/srv/app", "../../etc/passwd"), /escapes the remote workspace root/);
   assert.throws(() => resolveRemotePath("/srv/app", ""), /must not be empty/);
   assert.throws(() => resolveRemotePath("/srv/app", "bad\nname"), /control characters/);

@@ -3,7 +3,7 @@ import SshOpsService from "../src/index.js";
 
 // ssh_read 增量读（issue #36-4）：默认（mode "new"）只返回上次读取之后
 // 新到达的输出——上下文里已有的历史不重复吐；"tail" 保留旧行为且不推进
-// 游标（旁观性回看）；capture 被 tail-cap 丢头后游标失效，退化为尾部全量。
+// 游标（旁观性回看）；漏读超过 pending 上限时只恢复一次尾部，之后继续增量。
 
 const service = Object.create(SshOpsService.prototype);
 service.config = {
@@ -70,15 +70,47 @@ function wireSession() {
 }
 
 {
-  // tail-cap 丢头后游标指向缓冲之外：退化为尾部全量而非空串。
+  // captureBuffer 滚动后仍只返回新输出，不重复整段尾部。
   const session = wireSession();
   service.appendSessionOutput(session, "x".repeat(600));
   assert.ok(session.captureBuffer.length < 600, "capture 应已被 tail-cap 截短");
-  service.readCurrentConnection({ connectionId: "conn1" });
+  const initial = service.readCurrentConnection({ connectionId: "conn1" });
+  assert.equal(initial.value.truncated, true);
   service.appendSessionOutput(session, "y".repeat(400));
-  const capped = service.readCurrentConnection({ connectionId: "conn1" });
-  assert.equal(capped.value.truncated, true);
-  assert.equal(capped.value.data, session.captureBuffer, "游标失效时必须回落为尾部全量");
+  const incremental = service.readCurrentConnection({ connectionId: "conn1" });
+  assert.equal(incremental.value.truncated, false);
+  assert.equal(incremental.value.data, "y".repeat(400));
+  service.appendSessionOutput(session, "z".repeat(20));
+  const afterRollover = service.readCurrentConnection({ connectionId: "conn1" });
+  assert.equal(afterRollover.value.data, "z".repeat(20), "滚动缓冲区后续仍应保持增量");
+
+  // Redaction also spans reads after the raw baseline itself has rolled.
+  service.appendSessionOutput(session, "\nPASSWORD=top-se");
+  const secretPrefix = service.readCurrentConnection({ connectionId: "conn1" });
+  assert.doesNotMatch(secretPrefix.value.data, /top-se/);
+  service.appendSessionOutput(session, "cret\n");
+  const secretSuffix = service.readCurrentConnection({ connectionId: "conn1" });
+  assert.equal(secretSuffix.value.data, "\n");
+  assert.doesNotMatch(secretPrefix.value.data + secretSuffix.value.data, /top-secret/);
+
+  // 如果两次读取之间丢失的输出超过 pending 上限，尾部只补发一次。
+  service.appendSessionOutput(session, "q".repeat(700));
+  const recovered = service.readCurrentConnection({ connectionId: "conn1" });
+  assert.equal(recovered.value.truncated, true);
+  assert.equal(recovered.value.data, session.captureBuffer);
+  service.appendSessionOutput(session, "r".repeat(10));
+  const recoveredIncremental = service.readCurrentConnection({ connectionId: "conn1" });
+  assert.equal(recoveredIncremental.value.truncated, false);
+  assert.equal(recoveredIncremental.value.data, "r".repeat(10));
+}
+
+{
+  // 精确达到上限但没有丢字节，不应误报 truncated。
+  const session = wireSession();
+  service.appendSessionOutput(session, "a".repeat(512));
+  const exactLimit = service.readCurrentConnection({ connectionId: "conn1" });
+  assert.equal(exactLimit.value.data, "a".repeat(512));
+  assert.equal(exactLimit.value.truncated, false);
 }
 
 {

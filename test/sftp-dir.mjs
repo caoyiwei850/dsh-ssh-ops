@@ -125,6 +125,16 @@ function makeFakeSftp() {
     createReadStream(path) {
       const data = files.get(path);
       return Readable.from(data === undefined ? [] : [data]);
+    },
+    rename(from, to, cb) {
+      if (!files.has(from)) return cb(new Error("not found"));
+      files.set(to, files.get(from));
+      files.delete(from);
+      cb(null);
+    },
+    unlink(path, cb) {
+      files.delete(path);
+      cb(null);
     }
   };
   return sftp;
@@ -162,6 +172,71 @@ test("sftpUploadDir creates the remote tree and reports per-file failures", asyn
     assert.ok(value.directories >= 2, "root and sub are counted");
     assert.deepEqual(fakeSftp.files.get("/opt/app/a.txt").toString(), "alpha");
     assert.equal(fakeSftp.files.get("/opt/app/sub/big.bin").length, 600 * 1024);
+  } finally {
+    await rm(localRoot, { recursive: true, force: true });
+  }
+});
+
+test("cancelled upload preserves an existing remote target", async () => {
+  const localRoot = await mkdtemp(join(tmpdir(), "dsh-up-cancel-"));
+  try {
+    const localFile = join(localRoot, "a.txt");
+    await writeFile(localFile, "replacement");
+    const fakeSftp = makeFakeSftp();
+    fakeSftp.files.set("/a.txt", Buffer.from("original"));
+    const service = makeService(fakeSftp);
+    const controller = new AbortController();
+    controller.abort(new Error("cancelled"));
+    await assert.rejects(service.sftpUploadFile({ sftp: fakeSftp }, localFile, "/a.txt", controller.signal));
+    assert.equal(fakeSftp.files.get("/a.txt").toString(), "original");
+    assert.deepEqual([...fakeSftp.files.keys()], ["/a.txt"]);
+  } finally {
+    await rm(localRoot, { recursive: true, force: true });
+  }
+});
+
+test("cancelled file transfer waits for partial-file cleanup", async () => {
+  const service = makeService(makeFakeSftp());
+  const controller = new AbortController();
+  const source = Readable.from([Buffer.from("partial")]);
+  const target = new Writable({ write() {} });
+  let finishCleanup;
+  const cleanup = new Promise((resolve) => { finishCleanup = resolve; });
+  let settled = false;
+  const transfer = service.pipeSftpFile(source, target, controller.signal, () => cleanup)
+    .finally(() => { settled = true; });
+  controller.abort(new Error("cancelled"));
+  await sleep(10);
+  assert.equal(settled, false, "transfer must wait until cleanup finishes");
+  finishCleanup();
+  await assert.rejects(transfer, /cancelled/);
+});
+
+test("sftpUploadDir validates every bound destination before creating or uploading anything", async () => {
+  const localRoot = await mkdtemp(join(tmpdir(), "dsh-up-bound-"));
+  try {
+    await mkdir(join(localRoot, "vendor"), { recursive: true });
+    await writeFile(join(localRoot, "vendor", "payload.txt"), "must stay inside the workspace");
+    const fakeSftp = makeFakeSftp();
+    const service = makeService(fakeSftp);
+    const checked = [];
+    service.assertRemoteWorkspaceTarget = async (_connection, root, target) => {
+      checked.push(target);
+      if (target === "/srv/app/vendor") {
+        throw new Error(`path resolves outside the remote workspace root ${root} through a symbolic link`);
+      }
+    };
+
+    const result = await service.sftpUploadDir({
+      connectionId: "c1",
+      localPath: localRoot,
+      remotePath: "/srv/app",
+      remoteWorkspaceRoot: "/srv/app"
+    });
+    assert.equal(result.ok, false, "a rejected nested destination aborts the batch");
+    assert.deepEqual(checked, ["/srv/app", "/srv/app/vendor"], "root and nested directories are checked before transfer");
+    assert.deepEqual([...fakeSftp.dirs], ["/"], "preflight failure does not create the remote root");
+    assert.equal(fakeSftp.files.size, 0, "preflight failure does not upload any file");
   } finally {
     await rm(localRoot, { recursive: true, force: true });
   }

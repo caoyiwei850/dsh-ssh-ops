@@ -262,7 +262,13 @@ export function registerSftpTools(ctx, service) {
     },
     async execute(args, exec) {
       const target = await resolveTarget(exec, args.connection_id, args.remote_path);
-      const result = await service.sftpUploadDir({ connectionId: target.connectionId, localPath: args.local_path, remotePath: target.path });
+      const result = await service.sftpUploadDir({
+        connectionId: target.connectionId,
+        localPath: args.local_path,
+        remotePath: target.path,
+        signal: exec?.signal,
+        ...(target.bound ? { remoteWorkspaceRoot: target.workspaceRoot } : {})
+      });
       if (!result.ok) throw new Error(`sftp_upload_dir failed: ${result.error.message}`);
       return result.value;
     }
@@ -298,7 +304,12 @@ export function registerSftpTools(ctx, service) {
     },
     async execute(args, exec) {
       const target = await resolveTarget(exec, args.connection_id, args.remote_path);
-      const result = await service.sftpDownloadDir({ connectionId: target.connectionId, remotePath: target.path, localPath: args.local_path });
+      const result = await service.sftpDownloadDir({
+        connectionId: target.connectionId,
+        remotePath: target.path,
+        localPath: args.local_path,
+        signal: exec?.signal
+      });
       if (!result.ok) throw new Error(`sftp_download_dir failed: ${result.error.message}`);
       return result.value;
     }

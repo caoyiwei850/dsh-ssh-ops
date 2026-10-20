@@ -643,6 +643,8 @@ export const en = {
   "跟随全局设置": "Follow the global setting",
   "覆盖全局 AI 命令拦截档位；生产机保持「跟随全局设置」即可": "Overrides the global AI command gate tier; keep “Follow the global setting” for production machines",
   "远程工作区": "Remote workspace",
+  "该工作区已绑定到其他 SSH 资源：${x}；请先在原资源中解除绑定": "This workspace is already bound to another SSH resource: ${x}; unbind it there first",
+  "已绑定到其他 SSH 资源：${x}": "Bound to another SSH resource: ${x}",
   "sftp_* 默认落在这个目录；原生 read/write/glob/grep 与本地 bash 不变": "sftp_* lands in this directory; the native read/write/glob/grep and the local bash are unchanged",
   "远端绝对路径，例如 /srv/app": "Absolute remote path, e.g. /srv/app",
   "远端绝对路径": "Absolute remote path",

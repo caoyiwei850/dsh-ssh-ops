@@ -102,6 +102,10 @@ function withDirectory(service, fallback) {
   assert.equal(saved.value.binding.profileName, "web-prod");
   assert.equal(saved.value.binding.connected, false);
   assert.equal(remoteWorkspaceSaveResultSchema.safeParse(saved).success, true, "save satisfies the strict wire schema");
+  const crossResourceRebind = await service.remoteWorkspaceSave({ workspacePath: "/Users/me/work/app", profileId: OTHER_ID, remotePath: "/srv/other" });
+  assert.equal(crossResourceRebind.ok, true, "saving the workspace on another resource replaces its binding");
+  assert.equal(service.remoteWorkspaces.get("/Users/me/work/app").profileId, OTHER_ID);
+  assert.equal(service.remoteWorkspaces.get("/Users/me/work/app").remotePath, "/srv/other");
 
   const listed = await service.remoteWorkspaceList();
   assert.equal(listed.value.bindings.length, 1);
@@ -131,8 +135,13 @@ function withDirectory(service, fallback) {
   assert.deepEqual(unbound, { connectionId: undefined, path: "/etc/hosts", bound: false }, "an unbound session keeps historical behavior");
 
   const relative = await service.resolveRemoteToolPath({ path: "config/app.yml" }, exec("/Users/me/work/app"));
-  assert.deepEqual(relative, { connectionId: "c1", path: "/srv/app/config/app.yml", bound: true });
+  assert.deepEqual(relative, { connectionId: "c1", path: "/srv/app/config/app.yml", bound: true, workspaceRoot: "/srv/app" });
   assert.equal((await service.resolveRemoteToolPath({ path: "." }, exec("/Users/me/work/app/sub"))).path, "/srv/app/sub", "the session subdirectory maps 1:1 under the root");
+  assert.equal(
+    (await service.resolveRemoteToolPath({ path: "/srv/app/config.yml" }, exec("/Users/me/work/app/sub"))).path,
+    "/srv/app/config.yml",
+    "an absolute path elsewhere under the workspace root remains reachable from a subdirectory"
+  );
 
   const fallback = makeService({ connections: [["c1", connection("c1", PROFILE_ID)]] });
   await fallback.remoteWorkspaceSave({ workspacePath: "/Users/me/work/app", profileId: PROFILE_ID, remotePath: "/srv/app" });
@@ -163,6 +172,31 @@ function withDirectory(service, fallback) {
     (error) => error.code === REMOTE_WORKSPACE_OUTSIDE && /symbolic link/.test(error.message),
     "an intermediate symlink cannot redirect a write outside the real root"
   );
+}
+
+// An explicit connection to another resource must be rejected before the
+// binding can auto-connect or reveal its own server.
+{
+  const service = withDirectory(makeService({ connections: [["other", connection("other", OTHER_ID)]] }), "/Users/me/work/app");
+  await service.remoteWorkspaceSave({ workspacePath: "/Users/me/work/app", profileId: PROFILE_ID, remotePath: "/srv/app", autoConnect: true });
+  let connectCalls = 0;
+  service.profileConnect = async () => { connectCalls += 1; throw new Error("must not connect"); };
+  await assert.rejects(
+    service.resolveRemoteToolPath({ path: "a.txt", connectionId: "other" }, exec("/Users/me/work/app")),
+    (error) => error.code === REMOTE_WORKSPACE_OFFLINE
+  );
+  assert.equal(connectCalls, 0);
+  assert.equal(service.activeConnectionId, null);
+}
+
+{
+  const service = withDirectory(makeService({ connections: [
+    ["c1", connection("c1", PROFILE_ID)],
+    ["c2", connection("c2", PROFILE_ID)]
+  ] }), "/Users/me/work/app");
+  await service.remoteWorkspaceSave({ workspacePath: "/Users/me/work/app", profileId: PROFILE_ID, remotePath: "/srv/app" });
+  const resolved = await service.resolveRemoteToolPath({ path: "a.txt", connectionId: "c2" }, exec("/Users/me/work/app"));
+  assert.equal(resolved.connectionId, "c2", "an explicit live connection to the bound resource is honored");
 }
 
 // ── offline binding: reuse, auto-connect gate, operator switch ──────────────

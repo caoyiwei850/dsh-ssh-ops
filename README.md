@@ -8,13 +8,14 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.4.0-blue)
+![version](https://img.shields.io/badge/version-0.4.1-blue)
 [![dsh.so risk](https://www.dsh.so/badge/dsh-ssh-ops.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![dsh.so install · dsh 0.2.0-rc.2](https://www.dsh.so/badge/install/dsh-ssh-ops@0.2.0-rc.2.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/caoyiwei850/dsh-ssh-ops)
 
 📖 **第一次使用？请从[产品文档](./docs/product-guide.md)开始**——十分钟上手、功能详解、安全模型与场景配方。
 
+> **v0.4.1**：远程工作区相对路径改以会话当前远端目录为基（`cd` 子目录后 `sftp_*` 相对路径跟随，越界仍锁绑定根）；ssh_read 增量读在缓冲翻滚后依然增量；SFTP 目录传输支持取消、空闲死线与半成品清理；工作区绑定下拉可改绑他人已绑工作区。
 > **v0.4.0**：危险命令确认整体迁移到**宿主原生会话内审批**——`ssh_exec` 与 `sftp_delete` 在操作者答复前挂起，一次性批准绑定命令与服务器，拒绝、取消或无审批通道一律 fail-closed；同时包含**远程工作区**（把 DSH 工作区绑定到已保存服务器的远端目录，`sftp_*` 自动使用绑定根与服务端）、`ssh_read` 增量读取、终端 Ctrl+滚轮缩放与选中即复制、日志 warning/error 高亮、最近用户名自动记忆；修复客户端 apply 重试残留、zsh/NAS 自定义登录 shell 的 `ssh_exec` 目录探测、官方 Desktop 一键更新通道，并加固远端路径符号链接边界与跨读取脱敏。
 > **v0.3.22**：新增 **AI 命令执行策略三档**——右侧终端左下角新增档位贴片（**标准 / 自定义放行 / 全部放行**，默认收缩为贴边色点、悬停展开；往松切需确认、切换只对本次会话生效，资源「高级选项」可按服务器覆盖，设置页第三页签管全局默认与放行类目）；**Agent 永远无法自行放宽**——档位切换是操作者专属 RPC，被拦时 Agent 只会拿到结构化拒绝与指引，多机批量的操作者勾选闸门也不受档位影响；被放行的命令按原样执行（删除不再进回收站，警示文案明示）。修复 **#33**——网络设备（华为 VRP / 华三 Comware）上 `ssh_exec` 15 秒静默卡顿后返回空输出：exec 通道超时改为**先本地结算再关闭**（对端不响应 CHANNEL_CLOSE 也不再挂死调用方），探测超时且零字节返回即判定为网络 CLI 设备、**自动改走交互终端路径**并以提示符回归为完成信号（首次调用当场降级；提示符识别覆盖 VRP/Comware/Cisco，分页自动推进，识别失败给人话错误而非空超时）。修复 **SOCKS5 动态转发（`ssh -D`）三缺陷**（外部排查报告核实后修复）：握手解析器在 CONNECT 应答后退役——转发流量不再无界累积（实测 48 MiB 转发常驻 +204 MiB 降回零）、管线化载荷不再丢失（握手窗口内残余先 flush 再 pipe）、连接计数不再双减；顺带修复 `git clean -fd`（最常见写法）因正则尾部写错**从未被拦截**的既有漏洞。
 > **v0.3.21**：修复 [#32](https://github.com/caoyiwei850/dsh-ssh-ops/issues/32) 报告的**宿主闪退**（Windows 真机，未捕获异常直接击穿 DSH 进程）——① ssh2 的 `forwardOut` 在传输断开时**同步 throw 而不走 callback**（`Not connected`），断线后隧道 listener 仍监听、迟到接入即崩宿主：三处调用点（本地隧道 / SOCKS5 / DB 隧道）全部捕获，失败只牺牲该连接；② 隧道 socket/channel 无 `error` 监听，本地 RST（`ECONNRESET`）零监听即崩：双向互相拆链 + 迟到 channel 丢弃 + 竞态接入拒绝；③ 传输丢失、显式断开、插件卸载三条路径统一关闭隧道 listener 并**同步退役依附该 SSH 连接的 DB 隧道**（事务回退、redis 断连一并处理），不再留幽灵监听；④ 顺手修复隧道面板列表渲染的 `TypeError: t2 is not a function`（渲染回调参数遮蔽了 i18n 翻译函数 `t`，0.3.10 起潜伏，隧道列表非空即崩 tab）。
@@ -109,7 +110,7 @@ Agent 命中上述黑名单时不会被静默拒绝：整个工具调用会在�
 ### 从 GitHub 安装（推荐）
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.0
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.1
 ```
 
 git 渠道装的是源码，安装期由 `prepare` 钩子自动执行 `npm run build` 生成入口 `lib/`，无需手动构建。**注意：pnpm ≥ 10 默认拦截依赖包的构建脚本**——若重启后 SSH 标签未出现，按 [INSTALL.md](INSTALL.md) 第 3 步检查 `node_modules/dsh-ssh-ops/lib/`：缺失说明构建被拦，进入该包目录执行 `npm install && npm run build`（或在该 profile 的 pnpm 配置 `onlyBuiltDependencies` 中放行 `dsh-ssh-ops`）后重启即可。
@@ -124,14 +125,14 @@ dsh web
 
 ### 从发布压缩包安装
 
-从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.4.0) 下载 `dsh-ssh-ops-0.4.0.tgz` 后：
+从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.4.1) 下载 `dsh-ssh-ops-0.4.1.tgz` 后：
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.4.0.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.4.1.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.4.0.zip` 适用于离线审阅或二次开发；解压后在目录中执行 `npm install`（构建自动完成）。
+`dsh-ssh-ops-0.4.1.zip` 适用于离线审阅或二次开发；解压后在目录中执行 `npm install`（构建自动完成）。
 
 ## 使用方式
 
@@ -245,8 +246,8 @@ npm run pack:release
 
 生成物位于 `release/`：
 
-- `dsh-ssh-ops-0.4.0.tgz`：可直接被 DSH 安装。
-- `dsh-ssh-ops-0.4.0.zip`：完整离线源码包。
+- `dsh-ssh-ops-0.4.1.tgz`：可直接被 DSH 安装。
+- `dsh-ssh-ops-0.4.1.zip`：完整离线源码包。
 
 ## 贡献者
 

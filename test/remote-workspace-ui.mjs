@@ -46,6 +46,8 @@ assert.match(workspaces, /read\/write\/glob\/grep/, "the hint names the native t
 assert.match(workspaces, /本地 bash/, "the hint warns that bash is still local");
 assert.match(workspaces, /自动连接/, "auto-connect is an explicit, labelled choice");
 assert.match(workspaces, /已连接/, "a binding shows whether its server is live");
+assert.match(workspaces, /setAllBindings\(all\)/, "the editor sees bindings owned by other SSH resources too");
+assert.doesNotMatch(workspaces, /disabled=\{bindingByPath\.has\(workspace\.path\)/, "a workspace bound to another resource can be selected for replacement");
 assert.match(workspaces, /远端绝对路径/, "the remote root must be absolute");
 assert.doesNotMatch(workspaces, /绑定后该工作区里的 sftp_/, "the long explainer paragraph is gone");
 // The two fields keep separate meanings, but the operator never retypes the

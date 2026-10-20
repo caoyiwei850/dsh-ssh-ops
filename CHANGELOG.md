@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.1 - 2026-10-18
+
+- **改进：远程工作区相对路径以会话当前远端目录为基**：`resolveRemotePath` 拆分「相对基」（会话当前目录）与「包含边界」（绑定根）两个概念——绑定会话里 `cd /srv/app/sub` 后，`sftp_*` 的相对路径落在子目录（与本地工作区语义一致）；绝对路径仍对绑定根做包含校验（子目录为基时 `/srv/app-other` 一类兄弟路径照样拒绝），解析结果携带 `workspaceRoot`。显式 `connection_id` 从「必须省略」放宽为「传该绑定资源的活连接即可」（复用不重连并照常在右侧面板 reveal）。
+- **改进：ssh_read 增量读在 capture 翻滚后依然增量**：0.4.0 的实现一旦 captureBuffer 发生 tail-cap 截断就永久回落「整段尾部全量」；现在改为「上次读取的 raw 基线 + 其后新增缓冲」双段维护（`lastReadRaw` + `capturePendingBuffer`，基线自身有界），翻滚后仍只回增量、`truncated` 只报真实丢弃；两次读取之间丢失超过 pending 上限时尾部只补发一次、之后继续增量；脱敏仍在基线+增量整体上先做再切分，跨读取边界的密钥模式在基线翻滚后同样不漏。
+- **修复：SFTP 目录传输的取消/挂死/半成品**：AbortSignal 贯穿任务队列与文件流（取消即中止）；每文件 60 秒空闲死线（对端无进度不再永久挂住）；失败或取消时清理远端半成品文件（unlink 带 2 秒超时、ENOENT 容忍）；大文件拷贝改 `streamPipeline` 接信号。
+- **UI：工作区绑定下拉不再禁用他人已绑工作区**——显示「已绑定到其他 SSH 资源：xxx」，允许选中改绑（重复绑定即覆盖的既有语义不变）。
+- 测试 153 绿：`test/ssh-read-incremental.mjs`（翻滚后仍增量、基线翻滚后跨边界脱敏、超限补发一次后继续增量）、`test/remote-workspace.mjs`（子目录基 + 绝对路径仍锁根 + 兄弟路径拒绝）、`test/sftp-dir.mjs`（取消传播/空闲死线/半成品清理）、`test/remote-workspace-service.mjs`（显式连接复用）同步扩充。
+
 ## 0.4.0 - 2026-10-18
 
 - **新增：危险命令确认整体迁移到宿主原生审批通道（ask 替换确认卡片）**：0.3.x 的确认模型是「agent 立即拿到拦截结果不阻塞 + 命令在面板排队成卡片 + 操作者从容点执行/撤销」，本版按操作者裁定整体换成 **`tools/pre-execute` 钩子 + 宿主 `approval` 通道的就地审批**：agent 撞上 deny-list 危险命令时，**整个工具调用挂起**，宿主在会话内弹出确认（完整命令 + 所在主机 + 风险类别 + 批准/拒绝）——等待期间 agent 无法重试、换写法绕行或并行推进其它操作，人不在场按拒绝处理（**fail-closed**）；批准**一次性生效**且与「刚才那条命令 + 那台机器」绑定，工具体经 `exec.callId` 消费凭证过内层闸（`consumeOperatorApproval` 校验连接与命令一致、5 分钟 TTL、用完即焚），杜绝「过期卡片被误批」。行为面：`ssh_exec` 与 `sftp_delete` 的危险路径全部迁移（sftp_delete 为无条件 ask，批准后优先执行移入回收站的可逆删除）；`rm`→回收站可逆化语义原样保留（批准=跑回收站脚本，agent 能看到移动输出）；`ssh_write` 行级闸与批量多机勾选确认不变；面板的卡片列表/全视口模态/1 秒轮询与 `pendingConfirmationList/Approve/Cancel` 三个面板 RPC 整体拆除（descriptors/schemas/typert 同步）；宿主没有审批通道（或调用无 agent 可路由）时诚实拒绝并明示「请操作者在终端手动执行」，绝不静默放行。实现面：`src/index.js` 的 `recordOperatorApproval`/`consumeOperatorApproval`/`blockedExecResult`（取代 `pendingConfirmations` 全家）+ `execOnConnection` 凭证消费与批准路径；`src/tools/ssh-session.js` 的 `askOperatorApproval` 助手与 ssh_exec 闸门钩子（评估用与执行路径同一份 `assessShellCommand`+`resolveExecPolicy`，拒绝理由带档位与指引）；`src/tools/sftp.js` 的 sftp_delete 闸门钩子。测试 `test/ask-gate.mjs`（安全命令不问 / 批准→凭证→内层消费→回收站脚本真跑 / 拒绝与取消的 deny 理由 / 无审批通道 fail-closed / sftp_delete 全链路）+ `test/safety.mjs`（无凭证拒绝、凭证绑定命令与连接、一次性消费、批准的 rm 实跑回收站脚本且 PTY 永远看不到 rm、复合命令批准=原命令执行）+ `test/network-cli.mjs`（卡片串线闸门随卡片拆除）同步。

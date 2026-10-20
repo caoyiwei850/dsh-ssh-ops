@@ -18,6 +18,7 @@ const { useEffect, useState } = React;
 
 export function ResourceWorkspaces({ api, profileId, projectPath }) {
   const [bindings, setBindings] = useState(null);
+  const [allBindings, setAllBindings] = useState([]);
   const [workspaces, setWorkspaces] = useState([]);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -28,11 +29,13 @@ export function ResourceWorkspaces({ api, profileId, projectPath }) {
       setError(null);
       const value = await api.remoteWorkspaceList();
       const all = Array.isArray(value?.bindings) ? value.bindings : [];
+      setAllBindings(all);
       setBindings(all.filter((binding) => binding.profileId === profileId));
       setWorkspaces(Array.isArray(value?.workspaces) ? value.workspaces : []);
     } catch (cause) {
       setError(cause?.message ?? String(cause));
       setBindings([]);
+      setAllBindings([]);
     }
   };
 
@@ -75,6 +78,7 @@ export function ResourceWorkspaces({ api, profileId, projectPath }) {
 
   const titleOf = (path) => workspaces.find((workspace) => workspace.path === path)?.title ?? path;
   const boundPaths = new Set((bindings ?? []).map((binding) => binding.workspacePath));
+  const bindingByPath = new Map(allBindings.map((binding) => [binding.workspacePath, binding]));
   // Only offered when it would actually change the field.
   const projectSuggestion = typeof projectPath === "string" ? projectPath.trim() : "";
   const suggestion = projectSuggestion.length > 0 && projectSuggestion !== form.remotePath.trim() ? projectSuggestion : null;
@@ -115,8 +119,13 @@ export function ResourceWorkspaces({ api, profileId, projectPath }) {
         >
           <option value="">{t("选择工作区…")}</option>
           {workspaces.map((workspace) => (
-            <option key={workspace.path} value={workspace.path} disabled={boundPaths.has(workspace.path) && workspace.path !== form.workspacePath}>
-              {workspace.title ? `${workspace.title} — ${workspace.path}` : workspace.path}
+            <option
+              key={workspace.path}
+              value={workspace.path}
+            >
+              {bindingByPath.has(workspace.path) && !boundPaths.has(workspace.path)
+                ? `${workspace.title ?? workspace.path} — ${t(`已绑定到其他 SSH 资源：${bindingByPath.get(workspace.path).profileName || bindingByPath.get(workspace.path).profileId}`)}`
+                : workspace.title ? `${workspace.title} — ${workspace.path}` : workspace.path}
             </option>
           ))}
         </select>

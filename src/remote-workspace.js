@@ -98,18 +98,20 @@ export function isRemotePathInside(root, candidate) {
 }
 
 /**
- * Resolve one model-supplied path against the bound remote root: a relative
- * value joins the root, an absolute value is taken as-is, and the result must
- * stay inside the root — the remote analogue of the local workspace-write
+ * Resolve one model-supplied path against the current remote directory: a
+ * relative value joins that directory, an absolute value is taken as-is, and
+ * the result must stay inside the bound workspace root — the remote analogue of the local workspace-write
  * sandbox. Rejecting the escape here (rather than after the write) is what
  * keeps `sftp_write ../../etc/passwd` from being a policy bypass.
- * @param {string} root - normalized absolute remote root.
+ * @param {string} base - normalized absolute directory for relative inputs.
  * @param {string} input - model-supplied path, absolute or root-relative.
+ * @param {string} [workspaceRoot=base] - normalized absolute containment root.
  * @returns {string} the normalized absolute remote path inside the root.
  * @throws {RemoteWorkspacePathError} when the value escapes the root.
  */
-export function resolveRemotePath(root, input) {
-  const base = normalizeRemoteRoot(root);
+export function resolveRemotePath(basePath, input, workspaceRoot = basePath) {
+  const base = normalizeRemoteRoot(basePath);
+  const boundary = normalizeRemoteRoot(workspaceRoot);
   if (typeof input !== "string" || input.trim().length === 0) {
     throw new RemoteWorkspacePathError("path must not be empty", REMOTE_WORKSPACE_OUTSIDE);
   }
@@ -117,8 +119,8 @@ export function resolveRemotePath(root, input) {
   const raw = input.trim();
   const joined = raw.startsWith("/") ? raw : posix.join(base, raw);
   const normalized = posix.normalize(joined);
-  if (!isRemotePathInside(base, normalized)) {
-    throw new RemoteWorkspacePathError(`path escapes the remote workspace root ${JSON.stringify(base)}: ${JSON.stringify(raw)}`, REMOTE_WORKSPACE_OUTSIDE);
+  if (!isRemotePathInside(boundary, normalized)) {
+    throw new RemoteWorkspacePathError(`path escapes the remote workspace root ${JSON.stringify(boundary)}: ${JSON.stringify(raw)}`, REMOTE_WORKSPACE_OUTSIDE);
   }
   return normalized;
 }

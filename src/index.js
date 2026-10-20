@@ -35,8 +35,9 @@ import { SessionLogStore } from "./session-log.js";
 import { SHELL_FAMILY_PROBE, ShellIntegrationTracker, parseShellFamilyProbe, shellIntegrationCommand } from "./shell-integration.js";
 import { homedir } from "node:os";
 import { join as joinPath, dirname as dirnamePath, relative as relativePath, posix } from "node:path";
-import { mkdir as fsMkdir, readdir as fsReaddir, stat as fsStat } from "node:fs/promises";
+import { mkdir as fsMkdir, readdir as fsReaddir, stat as fsStat, unlink as fsUnlink } from "node:fs/promises";
 import { createReadStream, createWriteStream } from "node:fs";
+import { pipeline as streamPipeline } from "node:stream/promises";
 import { runTransferTasks, joinRemotePath, splitRemotePath } from "./sftp-dir.js";
 import {
   KnownHosts,
@@ -72,6 +73,7 @@ const MAX_CAPTURE_BYTES = 128 * 1024;
 const READ_TIMEOUT_MS = 300;
 const MAX_SESSIONS = 64;
 const OPERATOR_APPROVAL_TTL_MS = 5 * 60 * 1000;
+const SFTP_DIR_FILE_IDLE_TIMEOUT_MS = 60 * 1000;
 // ssh2 disables keepalives by default; without them NATs and cloud firewalls
 // silently drop idle connections and every later operation fails on a dead
 // transport. Keep the mapping alive and detect a truly dead link fast.
@@ -782,19 +784,30 @@ export default class SshOpsService extends TypertRemoteService {
     const base = subdirectory === null || subdirectory === "" ? record.remotePath : `${record.remotePath}/${subdirectory}`;
     let resolvedPath;
     try {
-      resolvedPath = resolveRemotePath(base, request.path);
+      resolvedPath = resolveRemotePath(base, request.path, record.remotePath);
     } catch (error) {
       throw new RemoteWorkspacePathError(error.message, REMOTE_WORKSPACE_OUTSIDE);
     }
-    const connection = await this.requireRemoteWorkspaceConnection(record);
-    if (request.connectionId !== undefined && request.connectionId !== connection.connectionId) {
-      throw new RemoteWorkspacePathError(
-        `this workspace is bound to ${record.remotePath} on another server; omit connection_id or pass ${connection.connectionId}`,
-        REMOTE_WORKSPACE_OFFLINE
-      );
+    let connection;
+    if (request.connectionId === undefined) {
+      connection = await this.requireRemoteWorkspaceConnection(record);
+    } else {
+      const selected = this.connections.get(request.connectionId);
+      const reusable = selected === undefined ? null
+        : findReusableProfileConnection([selected], record.profileId, { reuseExisting: true });
+      if (reusable === null) {
+        throw new RemoteWorkspacePathError(
+          `this workspace is bound to ${record.remotePath} on another server; omit connection_id or pass a live connection to its saved SSH resource`,
+          REMOTE_WORKSPACE_OFFLINE
+        );
+      }
+      connection = await this.revealRemoteWorkspaceConnection(reusable, {
+        reused: true,
+        previousActiveConnectionId: this.activeConnectionId
+      });
     }
     await this.assertRemoteWorkspaceTarget(connection, record.remotePath, resolvedPath);
-    return { connectionId: connection.connectionId, path: resolvedPath, bound: true };
+    return { connectionId: connection.connectionId, path: resolvedPath, bound: true, workspaceRoot: record.remotePath };
   }
 
   /**
@@ -2467,10 +2480,14 @@ export default class SshOpsService extends TypertRemoteService {
       // Browser reads drain `buffer`. Retain a separate bounded capture for
       // an explicit ssh_read without coupling it to UI polling.
       captureBuffer: "",
-      // ssh_read "new" mode: the redacted capture already handed to the model.
-      // Keeping the complete redacted snapshot preserves patterns that span a
-      // read boundary instead of exposing their unredacted tail.
+      captureHasDropped: false,
+      // ssh_read "new" keeps a bounded raw baseline plus output received since
+      // the last read. Redacting baseline + pending together preserves secrets
+      // that span read boundaries, even while captureBuffer rolls over.
+      lastReadRaw: undefined,
       lastReadRedacted: undefined,
+      capturePendingBuffer: "",
+      capturePendingTruncated: false,
       lastPrompt: null,
       waiters: [],
       streamListeners: new Set(),
@@ -3636,23 +3653,27 @@ export default class SshOpsService extends TypertRemoteService {
     // re-sending the whole tail would make the model re-pay for output it
     // already holds. "tail" keeps the legacy full-capture behavior.
     let data = first.captureBuffer;
+    let truncated = first.captureHasDropped === true;
     if (mode !== "tail") {
-      // The capture is tail-capped. Once the head has been dropped the cursor
-      // can no longer be trusted (the buffer may even stay at the cap length
-      // forever, so length alone cannot detect the drop) — latch the invalid
-      // state and fall back to returning the whole tail from then on.
-      if (Buffer.byteLength(first.captureBuffer, "utf8") >= this.config.maxCaptureBytes) {
-        first.captureEverTruncated = true;
-      }
-      // Redact the complete rolling capture before intersecting it with the
-      // previous model-visible snapshot. Redacting a raw slice can split a
-      // credential pattern across two reads and expose the tail of the secret.
-      const complete = redactForModel(first.captureBuffer).text;
       const previous = first.lastReadRedacted;
-      data = !first.captureEverTruncated && typeof previous === "string" && complete.startsWith(previous)
+      const baseline = first.lastReadRaw;
+      const pending = first.capturePendingBuffer ?? "";
+      const canContinue = typeof baseline === "string" && !first.capturePendingTruncated;
+      // Rebuild the unread view from the previous raw snapshot and bounded new
+      // output. This remains incremental after captureBuffer has rolled over.
+      // Redact before slicing so credentials spanning reads cannot leak.
+      const raw = canContinue ? baseline + pending : first.captureBuffer;
+      const complete = redactForModel(raw).text;
+      data = canContinue && typeof previous === "string" && complete.startsWith(previous)
         ? complete.slice(previous.length)
         : complete;
-      first.lastReadRedacted = complete;
+      truncated = !canContinue && (first.capturePendingTruncated || first.captureHasDropped === true);
+      // Keep the baseline bounded even if the prior snapshot and pending
+      // output together exceed the rolling capture limit.
+      first.lastReadRaw = tailCapped(raw, this.config.maxCaptureBytes);
+      first.lastReadRedacted = redactForModel(first.lastReadRaw).text;
+      first.capturePendingBuffer = "";
+      first.capturePendingTruncated = false;
     }
     const redaction = redactForModel(data);
     return {
@@ -3660,7 +3681,7 @@ export default class SshOpsService extends TypertRemoteService {
       value: {
         data: redaction.text,
         hasSession: true,
-        truncated: Buffer.byteLength(first.captureBuffer, "utf8") >= this.config.maxCaptureBytes,
+        truncated,
         redacted: redaction.redacted
       }
     };
@@ -4468,27 +4489,94 @@ export default class SshOpsService extends TypertRemoteService {
     }
   }
 
-  /** Upload one local file into a remote SFTP write stream. */
-  sftpUploadFile(sftp, localFile, remoteFile) {
+  /** Pipe one directory-transfer file with cancellation, an idle deadline, and partial-file cleanup. */
+  async pipeSftpFile(source, target, signal, cleanupPartial) {
+    const controller = new AbortController();
+    let timer;
+    const abortFromCaller = () => controller.abort(signal.reason ?? new Error("SFTP directory transfer cancelled"));
+    const resetIdleTimer = () => {
+      if (controller.signal.aborted) return;
+      clearTimeout(timer);
+      timer = setTimeout(() => controller.abort(new Error(`SFTP file transfer made no progress for ${SFTP_DIR_FILE_IDLE_TIMEOUT_MS} ms`)), SFTP_DIR_FILE_IDLE_TIMEOUT_MS);
+      timer.unref?.();
+    };
+    const onProgress = () => resetIdleTimer();
+    source.on("data", onProgress);
+    signal?.addEventListener("abort", abortFromCaller, { once: true });
+    resetIdleTimer();
+    if (signal?.aborted) abortFromCaller();
+    try {
+      await streamPipeline(source, target, { signal: controller.signal });
+    } catch (error) {
+      source.destroy();
+      target.destroy();
+      if (controller.signal.aborted) {
+        const reason = controller.signal.reason instanceof Error ? controller.signal.reason : error;
+        try { await cleanupPartial(); } catch (cleanupError) {
+          throw new AggregateError([reason, cleanupError], `SFTP transfer cancelled but partial-file cleanup failed: ${cleanupError.message}`);
+        }
+        throw reason;
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+      source.removeListener("data", onProgress);
+      signal?.removeEventListener("abort", abortFromCaller);
+    }
+  }
+
+  /** Remove a temporary remote upload without waiting forever on a dead server. */
+  removeSftpPartial(sftp, path) {
     return new Promise((resolve, reject) => {
-      const source = createReadStream(localFile);
-      const target = sftp.sftp.createWriteStream(remoteFile);
-      source.on("error", (error) => { target.destroy(); reject(error); });
-      target.on("error", (error) => { source.destroy(); reject(error); });
-      target.on("close", () => resolve());
-      source.pipe(target);
+      const timer = setTimeout(() => reject(new Error(`cleanup timed out for ${path}`)), 2000);
+      timer.unref?.();
+      try {
+        sftp.sftp.unlink(path, (error) => {
+          clearTimeout(timer);
+          if (error && error.code !== 2 && error.code !== "ENOENT") reject(error);
+          else resolve();
+        });
+      } catch (error) {
+        clearTimeout(timer);
+        reject(error);
+      }
     });
   }
 
+  /** Upload through a unique sibling file, then commit only a completed transfer. */
+  async sftpUploadFile(sftp, localFile, remoteFile, signal) {
+    const partial = `${remoteFile}.dsh-upload-${randomUUID()}.tmp`;
+    const source = createReadStream(localFile);
+    const target = sftp.sftp.createWriteStream(partial);
+    try {
+      await this.pipeSftpFile(source, target, signal, () => {});
+      if (signal?.aborted) throw signal.reason ?? new Error("SFTP directory transfer cancelled");
+      if (typeof sftp.sftp.ext_openssh_rename === "function") {
+        try {
+          await this.sftpCall(sftp, (cb) => sftp.sftp.ext_openssh_rename(partial, remoteFile, cb));
+          return;
+        } catch (error) {
+          if (error.message !== "Server does not support this extended request") throw error;
+        }
+      }
+      await this.sftpCall(sftp, (cb) => sftp.sftp.rename(partial, remoteFile, cb));
+    } catch (error) {
+      // A failed commit or cancellation leaves only our unique sibling file.
+      try { await this.removeSftpPartial(sftp, partial); } catch (cleanupError) {
+        throw new AggregateError([error, cleanupError], `SFTP upload failed and partial-file cleanup failed: ${cleanupError.message}`);
+      }
+      throw error;
+    }
+  }
+
   /** Download one remote SFTP file into a local write stream. */
-  sftpDownloadFile(sftp, remoteFile, localFile) {
-    return new Promise((resolve, reject) => {
-      const source = sftp.sftp.createReadStream(remoteFile);
-      const target = createWriteStream(localFile);
-      source.on("error", (error) => { target.destroy(); reject(error); });
-      target.on("error", (error) => { source.destroy(); reject(error); });
-      target.on("close", () => resolve());
-      source.pipe(target);
+  sftpDownloadFile(sftp, remoteFile, localFile, signal) {
+    const source = sftp.sftp.createReadStream(remoteFile);
+    const target = createWriteStream(localFile);
+    return this.pipeSftpFile(source, target, signal, async () => {
+      try { await fsUnlink(localFile); } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+      }
     });
   }
 
@@ -4525,7 +4613,6 @@ export default class SshOpsService extends TypertRemoteService {
       if (!rootStat.isDirectory()) {
         return { ok: false, error: fail("sftp-upload-dir-failed", `${localPath} is not a directory`) };
       }
-      await this.ensureRemoteDir(sftp, remotePath);
       const entries = [];
       const walk = async (dir) => {
         for (const entry of await fsReaddir(dir, { withFileTypes: true })) {
@@ -4541,7 +4628,12 @@ export default class SshOpsService extends TypertRemoteService {
       await walk(localPath);
       const tasks = entries.map(({ full, size }) => {
         const rel = relativePath(localPath, full).split("\\").join("/");
-        return { path: rel, size, run: () => this.sftpUploadFile(sftp, full, joinRemotePath(remotePath, rel)) };
+        const destination = joinRemotePath(remotePath, rel);
+        return {
+          path: rel,
+          size,
+          run: (signal) => this.sftpUploadFile(sftp, full, destination, signal)
+        };
       });
       // Every ancestor directory of every file, deduplicated, created shallow
       // first so each mkdir sees its parent already in place.
@@ -4554,10 +4646,50 @@ export default class SshOpsService extends TypertRemoteService {
         }
       }
       const sortedDirs = [...remoteDirs].sort((a, b) => a.length - b.length);
-      for (const dir of sortedDirs) {
-        await this.ensureRemoteDir(sftp, joinRemotePath(remotePath, dir));
+      if (request.remoteWorkspaceRoot !== undefined) {
+        // Validate every destination before the first mkdir/write. Checking
+        // only the selected root misses a pre-existing remote symlink such as
+        // `root/vendor -> /etc`, which could redirect a nested upload outside
+        // the binding. Individual transfer steps can still fail later, but an
+        // unsafe tree never starts transferring.
+        await this.assertRemoteWorkspaceTarget(selected.connection, request.remoteWorkspaceRoot, remotePath);
+        for (const dir of sortedDirs) {
+          await this.assertRemoteWorkspaceTarget(
+            selected.connection,
+            request.remoteWorkspaceRoot,
+            joinRemotePath(remotePath, dir)
+          );
+        }
+        for (const task of tasks) {
+          await this.assertRemoteWorkspaceTarget(
+            selected.connection,
+            request.remoteWorkspaceRoot,
+            joinRemotePath(remotePath, task.path)
+          );
+        }
       }
-      const { files, bytes, failures } = await runTransferTasks(tasks);
+      if (request.remoteWorkspaceRoot !== undefined) {
+        await this.assertRemoteWorkspaceTarget(selected.connection, request.remoteWorkspaceRoot, remotePath);
+      }
+      await this.ensureRemoteDir(sftp, remotePath);
+      for (const dir of sortedDirs) {
+        const destination = joinRemotePath(remotePath, dir);
+        if (request.remoteWorkspaceRoot !== undefined) {
+          await this.assertRemoteWorkspaceTarget(selected.connection, request.remoteWorkspaceRoot, destination);
+        }
+        await this.ensureRemoteDir(sftp, destination);
+      }
+      if (request.remoteWorkspaceRoot !== undefined) {
+        for (const task of tasks) {
+          const destination = joinRemotePath(remotePath, task.path);
+          const originalRun = task.run;
+          task.run = async (signal) => {
+            await this.assertRemoteWorkspaceTarget(selected.connection, request.remoteWorkspaceRoot, destination);
+            await originalRun(signal);
+          };
+        }
+      }
+      const { files, bytes, failures } = await runTransferTasks(tasks, { signal: request.signal });
       return {
         ok: true,
         value: { source: localPath, target: remotePath, directories: remoteDirs.size + 1, files, bytes, failed: failures }
@@ -4591,13 +4723,13 @@ export default class SshOpsService extends TypertRemoteService {
       const tasks = entries.filter((e) => !e.isDirectory).map((entry) => ({
         path: entry.rel,
         size: entry.size,
-        run: async () => {
+        run: async (signal) => {
           const local = joinPath(localPath, entry.rel);
           await fsMkdir(dirnamePath(local), { recursive: true });
-          await this.sftpDownloadFile(sftp, entry.path, local);
+          await this.sftpDownloadFile(sftp, entry.path, local, signal);
         }
       }));
-      const { files, bytes, failures } = await runTransferTasks(tasks);
+      const { files, bytes, failures } = await runTransferTasks(tasks, { signal: request.signal });
       return {
         ok: true,
         value: { source: remotePath, target: localPath, directories: directories + 1, files, bytes, failed: failures }
@@ -5023,7 +5155,16 @@ export default class SshOpsService extends TypertRemoteService {
     // Legacy poll readers retain their independent destructive buffer.
     session.buffer = tailCapped((session.buffer ?? "") + text, this.config.maxBufferBytes);
     if (capture) {
-      session.captureBuffer = tailCapped((session.captureBuffer ?? "") + text, this.config.maxCaptureBytes);
+      const captured = session.captureBuffer ?? "";
+      if (Buffer.byteLength(captured, "utf8") + Buffer.byteLength(text, "utf8") > this.config.maxCaptureBytes) {
+        session.captureHasDropped = true;
+      }
+      session.captureBuffer = tailCapped(captured + text, this.config.maxCaptureBytes);
+      const pending = session.capturePendingBuffer ?? "";
+      if (Buffer.byteLength(pending, "utf8") + Buffer.byteLength(text, "utf8") > this.config.maxCaptureBytes) {
+        session.capturePendingTruncated = true;
+      }
+      session.capturePendingBuffer = tailCapped(pending + text, this.config.maxCaptureBytes);
     }
     if (observePrompt) {
       const prompt = promptFromTerminalData(text);

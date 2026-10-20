@@ -29,16 +29,24 @@ export const SFTP_DIR_BIG_FILE_BYTES = 512 * 1024;
  */
 export async function runTransferTasks(tasks, {
   smallConcurrency = SFTP_DIR_SMALL_CONCURRENCY,
-  bigFileBytes = SFTP_DIR_BIG_FILE_BYTES
+  bigFileBytes = SFTP_DIR_BIG_FILE_BYTES,
+  signal
 } = {}) {
   const small = [];
   const big = [];
   let files = 0;
   let bytes = 0;
   const failures = [];
+  const throwIfAborted = () => {
+    if (!signal?.aborted) return;
+    const error = signal.reason instanceof Error ? signal.reason : new Error("SFTP directory transfer cancelled");
+    if (!(signal.reason instanceof Error)) error.name = "AbortError";
+    throw error;
+  };
   const runOne = async (task) => {
+    throwIfAborted();
     try {
-      await task.run();
+      await task.run(signal);
       files += 1;
       bytes += task.size;
     } catch (error) {
@@ -71,7 +79,10 @@ export async function runTransferTasks(tasks, {
     await Promise.all(workers);
   })();
 
-  await Promise.all([bigLane, smallLane]);
+  const laneResults = await Promise.allSettled([bigLane, smallLane]);
+  const rejectedLane = laneResults.find((result) => result.status === "rejected");
+  if (rejectedLane !== undefined) throw rejectedLane.reason;
+  throwIfAborted();
   return { files, bytes, failures };
 }
 
