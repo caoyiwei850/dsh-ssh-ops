@@ -245,22 +245,6 @@ Artifacts are written to `release/`:
 - `dsh-ssh-ops-0.4.2.tgz`: installable directly by DSH.
 - `dsh-ssh-ops-0.4.2.zip`: full offline source archive.
 
-## Contributors
-
-<table>
-  <tr>
-    <td align="center">
-      <a href="https://github.com/alexeyfadeev">
-        <img src="https://github.com/alexeyfadeev.png?size=72" width="72" alt="alexeyfadeev" /><br />
-        <sub><b>alexeyfadeev</b></sub>
-      </a><br />
-      <sub>bilingual engine 💻 · English translation 🌍 · design 💡</sub>
-    </td>
-  </tr>
-</table>
-
-The bilingual engine and the English translation base come from alexeyfadeev's [PR #26](https://github.com/caoyiwei850/dsh-ssh-ops/pull/26) (shipped in v0.3.16 after dictionary inversion and host adaptation); the self-updater is adapted from [@michengai/dsh-archive-manager](https://github.com/MichengAI/dsh-archive-manager) (Apache-2.0).
-
 ## License
 
 [MIT](LICENSE)

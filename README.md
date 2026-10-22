@@ -250,22 +250,6 @@ npm run pack:release
 - `dsh-ssh-ops-0.4.2.tgz`：可直接被 DSH 安装。
 - `dsh-ssh-ops-0.4.2.zip`：完整离线源码包。
 
-## 贡献者
-
-<table>
-  <tr>
-    <td align="center">
-      <a href="https://github.com/alexeyfadeev">
-        <img src="https://github.com/alexeyfadeev.png?size=72" width="72" alt="alexeyfadeev" /><br />
-        <sub><b>alexeyfadeev</b></sub>
-      </a><br />
-      <sub>双语引擎 💻 · 英文翻译 🌍 · 方案 💡</sub>
-    </td>
-  </tr>
-</table>
-
-双语界面的模式引擎与其英文译词典底稿出自 alexeyfadeev 的 [PR #26](https://github.com/caoyiwei850/dsh-ssh-ops/pull/26)（经词典反转与宿主适配后随 v0.3.16 发布）；自更新条适配自 [@michengai/dsh-archive-manager](https://github.com/MichengAI/dsh-archive-manager)（Apache-2.0）。
-
 ## 许可
 
 [MIT](LICENSE)
