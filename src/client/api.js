@@ -269,6 +269,27 @@ export class SshApi {
     return this.call("sftpWriteFile", { connectionId, path, data: encodeBase64Bytes(bytes) });
   }
 
+  /** Stream a browser File and report bytes sent to the host. Resolves after SFTP closes. */
+  sftpUploadFile(connectionId, path, file, onProgress) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      const query = new URLSearchParams({ connectionId, path });
+      xhr.open("PUT", `/ssh-ops/stream/file?${query}`);
+      xhr.upload.onprogress = (event) => onProgress?.(event.loaded, file.size);
+      xhr.upload.onload = () => onProgress?.(file.size, file.size);
+      xhr.onerror = () => reject(new SshApiError("upload-network", "Upload connection failed"));
+      xhr.onabort = () => reject(new SshApiError("upload-cancelled", "Upload cancelled"));
+      xhr.onload = () => {
+        let reply;
+        try { reply = JSON.parse(xhr.responseText); } catch {}
+        if (xhr.status === 200 && reply?.ok === true) resolve(reply.value);
+        else if (xhr.status === 404 && !reply) reject(new SshApiError("stream-unavailable", "Streaming upload is unavailable"));
+        else reject(new SshApiError(reply?.error?.code ?? "upload-failed", reply?.error?.message ?? `Upload failed (HTTP ${xhr.status})`));
+      };
+      xhr.send(file);
+    });
+  }
+
   async scpReadFile(connectionId, path, maxBytes) {
     const value = await this.call("scpReadFile", { connectionId, path, maxBytes });
     return { ...value, data: decodeBase64Bytes(value.data) };

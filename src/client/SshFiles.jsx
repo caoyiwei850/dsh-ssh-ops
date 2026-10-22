@@ -41,6 +41,8 @@ export function SshFiles({ api, connectionId, onCd, initialPath = "/" }) {
   const [editing, setEditing] = useState(null);
   const [editorBusy, setEditorBusy] = useState(false);
   const [dragActive, setDragActive] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(null);
+  const [uploadNotice, setUploadNotice] = useState(null);
   // Monotonic sequence: only the latest issued directory listing may commit
   // state, so a slow earlier response cannot overwrite a newer directory.
   const loadSeq = React.useRef(0);
@@ -154,6 +156,9 @@ export function SshFiles({ api, connectionId, onCd, initialPath = "/" }) {
     if (files.length === 0) return;
     setBusy(true);
     setError(null);
+    setUploadNotice(null);
+    const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
+    let completedBytes = 0;
     try {
       for (const file of files) {
         // Preserve relative path for directory uploads (webkitRelativePath).
@@ -164,13 +169,25 @@ export function SshFiles({ api, connectionId, onCd, initialPath = "/" }) {
         if (dirPart !== "/" && dirPart !== cwd) {
           await ensureRemoteDir(dirPart);
         }
-        const bytes = new Uint8Array(await file.arrayBuffer());
-        await api.sftpWriteFile(connectionId, remotePath, bytes);
+        setUploadProgress({ name: file.name, sent: completedBytes, total: totalBytes, writing: false });
+        try {
+          await api.sftpUploadFile(connectionId, remotePath, file, (sent) => {
+            setUploadProgress({ name: file.name, sent: completedBytes + sent, total: totalBytes, writing: sent >= file.size });
+          });
+        } catch (error) {
+          if (error?.code !== "stream-unavailable") throw error;
+          const bytes = new Uint8Array(await file.arrayBuffer());
+          setUploadProgress({ name: file.name, sent: completedBytes, total: totalBytes, writing: true });
+          await api.sftpWriteFile(connectionId, remotePath, bytes);
+        }
+        completedBytes += file.size;
       }
+      setUploadNotice(t("上传完成"));
       load(cwdRef.current);
     } catch (err) {
       setError(t(`上传失败：${err?.message ?? String(err)}`));
     } finally {
+      setUploadProgress(null);
       setBusy(false);
     }
   };
@@ -433,6 +450,11 @@ export function SshFiles({ api, connectionId, onCd, initialPath = "/" }) {
       )}
 
       {error && <div style={filesStyles.error}>{error}</div>}
+      {uploadProgress && <div style={filesStyles.uploadProgress} role="status">
+        <span>{uploadProgress.writing ? t("远端写入中") : t("正在上传")} · {uploadProgress.name} · {uploadProgress.sent}/{uploadProgress.total} B</span>
+        <progress value={uploadProgress.sent} max={Math.max(uploadProgress.total, 1)} style={{ width: "100%" }} />
+      </div>}
+      {uploadNotice && <div style={filesStyles.uploadNotice} role="status">{uploadNotice}</div>}
 
       {renaming && selected && (
         <div style={filesStyles.inlineForm}>
@@ -615,6 +637,8 @@ const filesStyles = {
   favoriteRemove: { background: "transparent", border: "none", color: "var(--dsw-alias-label-secondary, #8b93a1)", cursor: "pointer", fontSize: 12, padding: "0 4px" },
   listDrop: { outline: "1px dashed var(--dsw-alias-button-primary-fill, #2d6cdf)", outlineOffset: -4, borderRadius: 6 },
   dropHint: { fontSize: 12, color: "var(--dsw-alias-label-secondary, #8b93a1)", padding: "4px 8px" },
+  uploadProgress: { display: "grid", gap: 4, fontSize: 12, color: "var(--dsw-alias-label-secondary, #8b93a1)" },
+  uploadNotice: { fontSize: 12, color: "var(--dsw-alias-label-positive, #4ea66a)" },
   editorBackdrop: {
     position: "fixed", inset: 0, background: "rgba(0,0,0,.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 60
   },

@@ -6,7 +6,7 @@
 
 > 在 DSH 主对话里指挥服务器干活，右侧始终留着一台真实交互终端——外加文件管理、端口转发、数据库操作与多机批量执行，全部在一个插件里。
 
-**版本 0.4.1** · MIT 协议 · [GitHub 仓库](https://github.com/caoyiwei850/dsh-ssh-ops) · [Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases)
+**版本 0.4.2** · MIT 协议 · [GitHub 仓库](https://github.com/caoyiwei850/dsh-ssh-ops) · [Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases)
 
 ---
 
@@ -62,7 +62,7 @@
 **GitHub 渠道（推荐）**：
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.1
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.2
 ```
 
 装的是源码，安装期自动构建。注意 pnpm ≥ 10 默认拦截依赖构建脚本——若重启后 SSH 标签没出现，进 `node_modules/dsh-ssh-ops/` 手动执行 `npm install && npm run build` 后再重启（详见 [INSTALL.md](../INSTALL.md)）。
@@ -263,4 +263,4 @@ AI 会把命令下发到当前连接的服务器，**命令和回显实时出现
 
 ---
 
-*文档对应版本 v0.4.1，功能细节以 [README](../README.md) 与 [CHANGELOG](../CHANGELOG.md) 为准。*
+*文档对应版本 v0.4.2，功能细节以 [README](../README.md) 与 [CHANGELOG](../CHANGELOG.md) 为准。*

@@ -3829,8 +3829,11 @@ export default class SshOpsService extends TypertRemoteService {
       const stream = sftp.sftp.createReadStream(request.path);
       const done = new Promise((resolve, reject) => {
         stream.on("data", (chunk) => {
+          const remaining = maxBytes - total;
+          if (remaining > 0) {
+            chunks.push(chunk.length <= remaining ? chunk : chunk.subarray(0, remaining));
+          }
           total += chunk.length;
-          if (total <= maxBytes) chunks.push(chunk);
         });
         stream.on("end", resolve);
         stream.on("error", reject);
@@ -4055,9 +4058,9 @@ export default class SshOpsService extends TypertRemoteService {
   /**
    * PUT /ssh-ops/stream/file?connectionId&path[&overwrite=false][&onCancel=keep]
    * — unbounded raw-byte upload with OS-level backpressure. Cancel = request
-   * socket closing before the body ends: the SFTP write stream is destroyed
-   * (servers drop pending writes when the handle closes) and the partial file
-   * is removed by default — deterministic policy; onCancel=keep preserves it.
+   * socket closing before the body ends: destroy the temporary SFTP stream
+   * and remove only that temporary file. The destination is replaced only
+   * after the complete upload closes and its rename succeeds.
    */
   async streamUploadFile(req, res, url, connectionId) {
     const remotePath = url.searchParams.get("path");
@@ -4067,6 +4070,7 @@ export default class SshOpsService extends TypertRemoteService {
     }
     const overwrite = url.searchParams.get("overwrite") !== "false";
     const keepPartial = url.searchParams.get("onCancel") === "keep";
+    const partialPath = `${remotePath}.dsh-upload-${randomUUID()}.tmp`;
     const prepared = await this.streamPrepareSftp(res, connectionId);
     if (prepared === null) return;
     if (!overwrite) {
@@ -4078,10 +4082,14 @@ export default class SshOpsService extends TypertRemoteService {
         return;
       }
     }
-    const out = prepared.sftp.createWriteStream(remotePath, { highWaterMark: STREAM_HIGH_WATER_MARK });
+    const out = prepared.sftp.createWriteStream(partialPath, { highWaterMark: STREAM_HIGH_WATER_MARK });
     const openError = await this.streamAwaitOpen(out);
     if (openError !== null) {
       out.destroy();
+      try { await this.removeSftpPartial(prepared, partialPath); } catch (cleanupError) {
+        this.streamJson(res, 502, "sftp-cleanup-failed", `${partialPath}: ${cleanupError.message}`);
+        return;
+      }
       this.streamJson(res, 502, "sftp-write-failed", `${remotePath}: ${openError.message}`);
       return;
     }
@@ -4107,26 +4115,24 @@ export default class SshOpsService extends TypertRemoteService {
       } catch {}
       this.untrackStreamUpload(connectionId, registryEntry);
     };
-    const discard = (reason) => {
+    const discard = async (reason) => {
       if (settled || discarded) return;
       discarded = true;
       finalizeIo();
       try { req.pause(); } catch {}
       out.destroy();
       if (!keepPartial) {
-        // Deterministic partial policy: remove the half-written file. unlink
-        // succeeds while the handle is still open (POSIX); servers drop the
-        // pending writes as the handle closes, so the size never grows after.
-        // After connection teardown the session is dead and this is a no-op —
-        // the consumer-side cleanup (Workbench backend) owns the final delete.
-        prepared.sftp.unlink(remotePath, () => {});
+        try { await this.removeSftpPartial(prepared, partialPath); } catch (cleanupError) {
+          this.streamJson(res, 502, "sftp-cleanup-failed", `${partialPath}: ${cleanupError.message}`);
+          return;
+        }
       }
       this.streamJson(res, 502, "upload-cancelled", `${remotePath}: ${reason}`);
     };
     // Zombie-upload backstop 2: connection teardown sweeps in-flight uploads
     // (destroy the SFTP write stream + 502 reply), so no paused handler
     // outlives the SSH connection that carried it.
-    const registryEntry = { path: remotePath, cancel: (reason) => discard(reason) };
+    const registryEntry = { path: remotePath, cancel: (reason) => { void discard(reason); } };
     this.trackStreamUpload(connectionId, registryEntry);
     if (prepared.connection.streamUploadSweepClient !== prepared.connection.client) {
       prepared.connection.streamUploadSweepClient = prepared.connection.client;
@@ -4144,15 +4150,47 @@ export default class SshOpsService extends TypertRemoteService {
     res.on("close", () => {
       if (!settled && !res.writableEnded) discard("client disconnected before completion");
     });
-    out.on("error", (error) => {
+    out.on("error", async (error) => {
       if (settled || discarded) return;
       settled = true;
       finalizeIo();
       try { req.destroy(); } catch {}
+      try { await this.removeSftpPartial(prepared, partialPath); } catch (cleanupError) {
+        this.streamJson(res, 502, "sftp-cleanup-failed", `${partialPath}: ${cleanupError.message}`);
+        return;
+      }
       this.streamJson(res, 502, "sftp-write-failed", `${remotePath}: ${error.message}`);
     });
-    out.on("close", () => {
+    out.on("close", async () => {
       if (settled || discarded) return;
+      try {
+        if (!ended || !out.writableFinished) throw new Error("SFTP write stream closed before upload completed");
+        if (!overwrite) {
+          const existing = await new Promise((resolve) => {
+            prepared.sftp.stat(remotePath, (error, attrs) => resolve(error ? null : attrs));
+          });
+          if (existing !== null) throw new Error("target appeared during upload (overwrite=false)");
+        }
+        if (typeof prepared.sftp.ext_openssh_rename === "function") {
+          try {
+            await this.sftpCall(prepared, (cb) => prepared.sftp.ext_openssh_rename(partialPath, remotePath, cb));
+          } catch (error) {
+            if (error.message !== "Server does not support this extended request") throw error;
+            await this.sftpCall(prepared, (cb) => prepared.sftp.rename(partialPath, remotePath, cb));
+          }
+        } else {
+          await this.sftpCall(prepared, (cb) => prepared.sftp.rename(partialPath, remotePath, cb));
+        }
+      } catch (error) {
+        settled = true;
+        finalizeIo();
+        try { await this.removeSftpPartial(prepared, partialPath); } catch (cleanupError) {
+          this.streamJson(res, 502, "sftp-cleanup-failed", `${partialPath}: ${cleanupError.message}`);
+          return;
+        }
+        this.streamJson(res, 502, "sftp-rename-failed", `${remotePath}: ${error.message}`);
+        return;
+      }
       settled = true;
       finalizeIo();
       if (res.destroyed || res.headersSent || res.writableEnded) {

@@ -661,6 +661,10 @@ function ConnectDialog({ api, credentials, onClose, onConnected }) {
       setError(t("请填写名称、主机和用户名（名称会用于保存的资源）"));
       return;
     }
+    if (form.authKind === "password" && !form.password) {
+      setError(t("请输入密码后再保存并连接"));
+      return;
+    }
     if (proxyJumps.some((hop) => !hop.profileId)) {
       setError(t("请选择每台跳板服务器"));
       return;

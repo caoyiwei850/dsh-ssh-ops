@@ -93,7 +93,7 @@ export function registerSftpTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "sftp_read",
-    description: "Read a remote file's contents over SFTP (base64-decoded to text). Useful for inspecting config files, logs, or small artifacts on a connected server. Omit connection_id for the current server.",
+    description: "Read a remote file over SFTP. The data field is base64-encoded file content; decode it to text when inspecting text files. Useful for config files, logs, or small artifacts on a connected server. Omit connection_id for the current server.",
     parameters: {
       connection_id: { type: "string", description: "Connection id from ssh_connect; omit to use the current server." },
       path: { type: "string", required: true, description: "Remote file path. A relative path resolves under the remote workspace root." },
@@ -112,7 +112,8 @@ export function registerSftpTools(ctx, service) {
       },
       render(args, value) {
         const body = value.data || "(empty file)";
-        return [{ type: "text", text: value.truncated ? `${body}\n[output truncated at ${value.bytes} bytes]` : body }];
+        const returnedBytes = Buffer.from(value.data || "", "base64").length;
+        return [{ type: "text", text: value.truncated ? `${body}\n[output truncated after ${returnedBytes} of ${value.bytes} bytes]` : body }];
       }
     },
     async execute(args, exec) {
