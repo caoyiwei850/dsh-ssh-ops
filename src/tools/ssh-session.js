@@ -101,7 +101,10 @@ export function registerSshSessionTools(ctx, service) {
     name: "ssh_terminal_sessions",
     description: "List open SSH terminal sessions so you can identify a terminal the user operated manually. Returns metadata and history cursors only; never returns terminal output, saved resources, or credentials.",
     parameters: {},
-    output: { schema: { type: "object", additionalProperties: false, properties: { sessions: { type: "array", required: true, items: { type: "object", additionalProperties: true } } } } },
+    output: {
+      schema: { type: "object", additionalProperties: false, properties: { sessions: { type: "array", required: true, items: { type: "object", additionalProperties: true } } } },
+      render(_args, value) { return [{ type: "text", text: JSON.stringify(value, null, 2) }]; }
+    },
     async execute() { const result = service.listTerminalContexts(); if (!result.ok) throw new Error(`ssh_terminal_sessions failed: ${result.error.message}`); return result.value; }
   }));
 
@@ -109,7 +112,10 @@ export function registerSshSessionTools(ctx, service) {
     name: "ssh_terminal_context",
     description: "Read a bounded, redacted range from a user-operated SSH terminal after approval. Use ssh_terminal_sessions first to select a session. This does not consume or alter the visible terminal history.",
     parameters: { session_id: { type: "string", required: true }, after: { type: "integer", description: "Optional cursor from a previous read." }, max_bytes: { type: "integer", description: "1024..98304 bytes; defaults to 24576." } },
-    output: { schema: { type: "object", additionalProperties: true } },
+    output: {
+      schema: { type: "object", additionalProperties: true },
+      render(_args, value) { return [{ type: "text", text: JSON.stringify(value, null, 2) }]; }
+    },
     async execute(args) { const result = service.readTerminalContext({ sessionId: args.session_id, after: args.after, maxBytes: args.max_bytes }); if (!result.ok) throw new Error(`ssh_terminal_context failed: ${result.error.message}`); return result.value; }
   }));
 

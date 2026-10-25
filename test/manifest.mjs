@@ -14,6 +14,11 @@ import { dirname, join } from "node:path";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+assert.equal(manifest.dependencies?.["@xterm/addon-search"], undefined, "bundled xterm addon must not enter the Desktop runtime closure");
+assert.ok(manifest.devDependencies?.["@xterm/addon-search"], "xterm search addon remains available to the client build");
+assert.ok(manifest.dependencies?.["@types/node"], "mysql2's required peer must resolve inside the Desktop generation");
+assert.equal(manifest.dependencies?.mongodb, undefined, "MongoDB's tr46 dependency must not enter the Desktop runtime closure");
+assert.ok(manifest.devDependencies?.mongodb, "MongoDB remains available to the host build");
 
 assert.ok(manifest.dsh?.bundle?.patch, "dsh.bundle.patch must declare the cordis patch layer (rc.1 loader requirement)");
 assert.equal(manifest.dsh?.client?.platform, "web", "dsh.client.platform=web is what makes the web loader compose the client bundle");
@@ -70,7 +75,7 @@ for (const language of ["en", "zh"]) {
 // just the `files` globs): adding a root file to the package or losing a lib
 // bundle must be a conscious checklist update, never an accident.
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 
 // The pack list includes lib/, which is a build output. CI builds before
 // testing; a fresh clone running this file directly gets the same courtesy
@@ -90,6 +95,8 @@ const start = stdout.indexOf("[");
 const end = stdout.lastIndexOf("]");
 assert.ok(start !== -1 && end > start, `npm pack produced no JSON manifest; stdout was: ${stdout.slice(0, 400)}`);
 const packedFiles = JSON.parse(stdout.slice(start, end + 1))[0].files.map((f) => f.path).sort();
+const chunkFiles = readdirSync(join(root, "lib", "chunks")).map((name) => `lib/chunks/${name}`).sort();
+assert.equal(chunkFiles.length, 4, "host build must keep its audited lazy and shared chunks");
 const expectedPackedFiles = [
   "CHANGELOG.md",
   "INSTALL.md",
@@ -101,6 +108,7 @@ const expectedPackedFiles = [
   "docs/product-guide.md",
   "icon.svg",
   "lib/client.js",
+  ...chunkFiles,
   "lib/index.js",
   "lib/remote.js",
   "lib/typert.js",

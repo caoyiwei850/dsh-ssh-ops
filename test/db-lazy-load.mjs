@@ -38,7 +38,13 @@ const STATIC_IMPORT = /(?:from|require\()\s*["'](?:mysql2(?:\/promise\.js)?|pg|p
 for (const [label, url] of [["src/db-ops.js", SRC], ["lib/index.js", LIB]]) {
   const text = readFileSync(url, "utf8");
   for (const spec of DYNAMIC_IMPORTS) {
-    assert.ok(text.includes(spec), `${label}: missing first-use import ${spec}`);
+    if (label === "lib/index.js" && spec === 'await import("mongodb")') {
+      const chunk = text.match(/await import\("(\.\/chunks\/lib-[^"]+\.js)"\)/);
+      assert.ok(chunk, `${label}: MongoDB must load from a dynamic bundle chunk`);
+      assert.ok(existsSync(new URL(chunk[1], LIB)), `${label}: MongoDB chunk must be packaged`);
+    } else {
+      assert.ok(text.includes(spec), `${label}: missing first-use import ${spec}`);
+    }
   }
   const staticHit = text.match(STATIC_IMPORT);
   assert.equal(staticHit, null, `${label}: static driver import crept back in: ${staticHit?.[0]}`);

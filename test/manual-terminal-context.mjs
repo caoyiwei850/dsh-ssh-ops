@@ -78,6 +78,15 @@ function makeService() {
   }, makeService());
   assert.ok(registrations.some((tool) => tool.name === "ssh_terminal_sessions"));
   assert.ok(registrations.some((tool) => tool.name === "ssh_terminal_context"));
+  const sessionsTool = registrations.find((tool) => tool.name === "ssh_terminal_sessions");
+  const contextTool = registrations.find((tool) => tool.name === "ssh_terminal_context");
+  const listed = await sessionsTool.execute({});
+  const renderedSessions = sessionsTool.output.render({}, listed);
+  assert.equal(renderedSessions[0].type, "text");
+  assert.deepEqual(JSON.parse(renderedSessions[0].text), listed);
+  const context = await contextTool.execute({ session_id: "shell-a" });
+  const renderedContext = contextTool.output.render({}, context);
+  assert.deepEqual(JSON.parse(renderedContext[0].text), context);
   assert.deepEqual(beforeExecute?.({ name: "ssh_terminal_context" }), {
     kind: "ask",
     reason: "Agent requests recent manual SSH terminal activity, which may contain sensitive output."

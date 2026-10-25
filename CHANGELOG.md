@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.3 - 2026-10-26
+
+- **修复 [#44](https://github.com/caoyiwei850/dsh-ssh-ops/issues/44)：macOS 27 + Desktop v0.12.1 插件市场无法安装**——依赖闭包治理：仅用于客户端构建的 `@xterm/addon-search` 移出运行依赖（进 devDependencies）；`mongodb` 移出运行依赖并改为**独立延迟加载的服务端 bundle chunk**（esbuild `splitting` + `createRequire` 横幅，`db_connect` 时才动态加载），其传递依赖 `tr46`/`punycode` 不再进入 Desktop generation 的生产依赖闭包；显式补上 `mysql2` 类型所需的 `@types/node`；构建前清理 `lib/chunks` 旧产物。
+- **修复 [#45](https://github.com/caoyiwei850/dsh-ssh-ops/issues/45)：`ssh_terminal_sessions` / `ssh_terminal_context` 调用报错**——两个工具此前没有输出 render，宿主在部分展示路径直接报错；补齐 JSON 渲染，手动终端读取的操作者审批与输出脱敏行为不变。
+
 ## 0.4.2 - 2026-10-22
 
 - **修复 [#43](https://github.com/caoyiwei850/dsh-ssh-ops/issues/43)：`sftp_read` 指定 `max_bytes` 且文件更大时返回空内容**——分块累积改为按「剩余字节数」截取（此前首块超过上限被整块丢弃，超出即空）；工具描述说明 base64 返回格式，截断提示显示已返回字节数与文件总大小。

@@ -434,7 +434,8 @@ export class DbOpsManager {
           onLose: () => { try { client.disconnect(); } catch {} }
         });
       } else if (type === "mongodb") {
-        const { MongoClient } = await import("mongodb");
+        const mongodb = await import("mongodb");
+        const MongoClient = mongodb.MongoClient ?? mongodb.default?.MongoClient;
         const cred = username ? `${encodeURIComponent(username)}:${encodeURIComponent(password ?? "")}@` : "";
         const uri = `mongodb://${cred}${connectHost}:${connectPort}/${database ?? ""}`;
         client = new MongoClient(uri, {
