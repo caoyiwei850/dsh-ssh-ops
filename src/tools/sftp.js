@@ -11,6 +11,7 @@ import { t } from "../i18n/core.js";
 import { askOperatorApproval } from "./ssh-session.js";
 
 export function registerSftpTools(ctx, service) {
+
   /**
    * Resolve one SFTP request for the calling session (issue #38). When the
    * session's workspace is bound to a remote root, a relative path resolves
@@ -276,6 +277,85 @@ export function registerSftpTools(ctx, service) {
   }));
 
   ctx.tools.register(defineTool({
+    name: "sftp_upload_file",
+    description: "把一个本地文件通过 SFTP 传到远端：按块流水线写入并自适应窗口，大量数据块同时在途，所以高延迟或有丢包的链路也能跑到链路带宽，而不是每块付一个往返。服务器已确认的字节绝不重发；失败时留下可续传的临时文件，下次调用从断点继续。省略 connection_id 表示当前服务器。",
+    parameters: {
+      connection_id: { type: "string", description: "来自 ssh_connect 的连接 id；省略则用当前服务器。" },
+      local_path: { type: "string", required: true, description: "要上传的本地文件。" },
+      remote_path: { type: "string", required: true, description: "远端目标文件路径；目录不存在时会自动创建。" },
+      resume: { type: "boolean", description: "从上次失败留下的可续传临时文件继续（默认 true）。设为 false 则每次都从头开始。" },
+      chunk_kb: { type: "integer", description: "写入块大小，单位 KiB，4–1024（默认 64）。" },
+      concurrency: { type: "integer", description: "初始在途块数（默认 32）。" },
+      max_concurrency: { type: "integer", description: "自适应窗口的上限，单位是块（默认 256，并硬性夹住 chunk × window 不超过 16 MiB）。一般不需要动它：一旦更宽的窗口买不到吞吐，循环会自己停止扩张，这个上限只是护栏。" },
+      dedicated: { type: "boolean", description: "为本次上传单独开一条短命的 SSH 连接，而不是复用共享的交互会话（默认 true）。新连接不受会话早先选定的那条路径限制，实测常常快出好几倍；设为 false 则复用会话。" }
+    },
+    output: {
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          source: { type: "string", required: true },
+          target: { type: "string", required: true },
+          partial: { type: "string", required: true },
+          resumed: { type: "boolean", required: true },
+          start_offset: { type: "number", required: true },
+          bytes: { type: "number", required: true },
+          seconds: { type: "number", required: true },
+          bytes_per_second: { type: "number", required: true },
+          peak_concurrency: { type: "number", required: true },
+          stalls: { type: "number", required: true },
+          retries: { type: "number", required: true }
+        }
+      },
+      render(args, value) {
+        const mib = (bytes) => (bytes / 1048576).toFixed(1);
+        const speed = value.bytes_per_second >= 1048576
+          ? `${mib(value.bytes_per_second)} MiB/s`
+          : `${(value.bytes_per_second / 1024).toFixed(0)} KiB/s`;
+        const retries = value.retries ? `，${value.retries} 次块重试` : "";
+        const stalls = value.stalls ? `，${value.stalls} 次窗口收缩` : "";
+        const head = `已上传 ${mib(value.bytes)} MiB 到 ${value.target}，用时 ${value.seconds.toFixed(1)}s（${speed}，峰值窗口 ${value.peak_concurrency}${retries}${stalls}）`;
+        if (!value.resumed) return [{ type: "text", text: head }];
+        return [{ type: "text", text: `${head}
+已从中断处续传，此前确认过 ${value.start_offset} 字节。` }];
+      }
+    },
+    async execute(args, exec) {
+      const target = await resolveTarget(exec, args.connection_id, args.remote_path);
+      const result = await service.sftpUploadFileFast({
+        connectionId: target.connectionId,
+        localPath: args.local_path,
+        remotePath: target.path,
+        signal: exec?.signal,
+        resume: args.resume,
+        chunk: args.chunk_kb === undefined ? undefined : args.chunk_kb * 1024,
+        concurrency: args.concurrency,
+        concurrencyMax: args.max_concurrency,
+        dedicated: args.dedicated,
+        segmentBytes: args.segment_mib === undefined ? undefined : Math.max(0, args.segment_mib) * 1024 * 1024,
+        ...(target.bound ? { remoteWorkspaceRoot: target.workspaceRoot } : {})
+      });
+      if (!result.ok) throw new Error(`sftp_upload_file failed: ${result.error.message}`);
+      const value = result.value;
+      return {
+        source: value.source,
+        target: value.target,
+        partial: value.partial,
+        resumed: value.resumed,
+        start_offset: value.startOffset,
+        bytes: value.bytes,
+        seconds: value.seconds,
+        bytes_per_second: value.bytesPerSecond,
+        peak_concurrency: value.peakConcurrency,
+        stalls: value.stalls ?? 0,
+        retries: value.retries
+      };
+    }
+  }));
+
+
+
+  ctx.tools.register(defineTool({
     name: "sftp_download_dir",
     description: "Download a remote directory tree over SFTP to a local directory, recreating the structure. Small files transfer in parallel (bounded), large files one at a time. Per-file failures are reported, not fatal. Omit connection_id for the current server.",
     parameters: {
@@ -315,4 +395,5 @@ export function registerSftpTools(ctx, service) {
       return result.value;
     }
   }));
+
 }

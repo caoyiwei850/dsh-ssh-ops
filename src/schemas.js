@@ -638,6 +638,39 @@ export const sftpDownloadDirRequestSchema = z.object({
   localPath: z.string().min(1)
 });
 
+// One row of the file panel's task list. Agent-driven uploads register in the
+// transfer registry, so the panel shows them next to its own transfers and can
+// cancel them through the same button.
+export const sftpTransferEntrySchema = z.object({
+  id: z.string(),
+  kind: z.enum(["upload", "download"]),
+  name: z.string(),
+  target: z.string().nullable().optional(),
+  connection: z.string().nullable().optional(),
+  total: z.number().nullable(),
+  sent: z.number(),
+  status: z.enum(["running", "done", "cancelled", "failed"]),
+  error: z.string().nullable().optional(),
+  cancellable: z.boolean(),
+  cancelPending: z.boolean().optional(),
+  startedAt: z.number(),
+  endedAt: z.number()
+});
+
+export const sftpTransferListRequestSchema = z.object({});
+
+export const sftpTransferListResultSchema = resultSchema(
+  z.object({ transfers: z.array(sftpTransferEntrySchema) })
+);
+
+export const sftpTransferCancelRequestSchema = z.object({
+  id: z.string().min(1)
+});
+
+export const sftpTransferCancelResultSchema = resultSchema(
+  z.object({ cancelled: z.boolean() })
+);
+
 export const sftpTransferDirResultSchema = resultSchema(
   z.object({
     source: z.string(),

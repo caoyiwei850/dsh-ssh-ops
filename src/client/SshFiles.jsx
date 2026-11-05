@@ -54,6 +54,33 @@ export function SshFiles({ api, connectionId, onCd, initialPath = "/" }) {
   useEffect(() => () => { searchController.current?.abort(); for (const controller of controllers.current.values()) controller.abort(); }, []);
   useEffect(() => { searchController.current?.abort(); searchController.current = null; setSearchState(null); }, [connectionId]);
 
+  // Transfers started by the agent (sftp_upload_file) live in the host's
+  // registry, not in this component. Pull them on a slow tick so the list shows
+  // work the panel did not start, and so a cancel click can reach it.
+  const [agentTasks, setAgentTasks] = useState([]);
+  useEffect(() => {
+    let alive = true;
+    let timer = null;
+    const poll = async () => {
+      try {
+        const result = await api.sftpTransferList();
+        if (!alive) return;
+        setAgentTasks((result?.transfers ?? []).map((item) => ({
+          ...item,
+          id: `agent:${item.id}`,
+          remoteId: item.id,
+          writing: false
+        })));
+      } catch {
+        // The panel stays usable when the host has no registry (older build).
+        if (alive) setAgentTasks([]);
+      }
+      if (alive) timer = setTimeout(poll, 1000);
+    };
+    poll();
+    return () => { alive = false; if (timer) clearTimeout(timer); };
+  }, [api, connectionId]);
+
   const runSearch = async () => {
     if (!searchQuery.trim()) return;
     searchController.current?.abort();
@@ -492,12 +519,13 @@ export function SshFiles({ api, connectionId, onCd, initialPath = "/" }) {
           <div style={{ maxHeight: 150, overflowY: "auto" }}>{searchState.results.map((item) => <button key={item.path} style={{ ...filesStyles.favoritePath, display: "block", maxWidth: "100%" }} title={item.path} onClick={() => { load(item.isDirectory ? item.path : dirnameOf(item.path)); setSearchOpen(false); }}>{item.path}</button>)}</div>
         </div>}
       </div>}
-      {tasks.length > 0 && <div style={{ ...filesStyles.scpCard, maxHeight: 180, overflowY: "auto" }}>
-        <div style={filesStyles.inlineForm}><strong>{t("传输任务")}</strong><button style={filesStyles.btnTiny} onClick={() => setTasks((items) => items.filter((item) => item.status === "running"))}>{t("清除已结束")}</button></div>
-        {tasks.map((task) => <div key={task.id} style={filesStyles.uploadProgress} role="status">
-          <span>{task.kind === "upload" ? t("上传") : t("下载")} · {task.name} · {task.status === "running" ? (task.writing ? t("远端写入中") : t("进行中")) : task.status === "done" ? t("已完成") : task.status === "cancelled" ? t("已取消") : t("失败")} {task.error || ""}</span>
+      {(agentTasks.length > 0 || tasks.length > 0) && <div style={{ ...filesStyles.scpCard, maxHeight: 180, overflowY: "auto" }}>
+        <div style={filesStyles.inlineForm}><strong>{t("传输任务")}</strong><button style={filesStyles.btnTiny} onClick={() => { setTasks((items) => items.filter((item) => item.status === "running")); setAgentTasks((items) => items.filter((item) => item.status === "running")); }}>{t("清除已结束")}</button></div>
+        {[...agentTasks, ...tasks].map((task) => <div key={task.id} style={filesStyles.uploadProgress} role="status">
+          <span>{task.kind === "upload" ? t("上传") : t("下载")} · {task.name} · {task.status === "running" ? (task.writing ? t("远端写入中") : task.cancelPending ? t("正在取消…") : t("进行中")) : task.status === "done" ? t("已完成") : task.status === "cancelled" ? t("已取消") : t("失败")} {task.error || ""}</span>
           {task.status === "running" && task.total != null && <progress value={task.sent} max={Math.max(task.total, 1)} />}
-          {task.status === "running" && task.cancellable && <button style={filesStyles.btnTiny} onClick={() => controllers.current.get(task.id)?.abort()}>{t("取消")}</button>}
+          {task.status === "running" && task.total != null && <span>{formatSize(task.sent)} / {formatSize(task.total)}</span>}
+          {task.status === "running" && task.cancellable && <button style={filesStyles.btnTiny} onClick={() => (task.remoteId ? api.sftpTransferCancel(task.remoteId) : controllers.current.get(task.id)?.abort())}>{t("取消")}</button>}
         </div>)}
       </div>}
 

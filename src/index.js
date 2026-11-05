@@ -39,6 +39,9 @@ import { mkdir as fsMkdir, readdir as fsReaddir, stat as fsStat, unlink as fsUnl
 import { createReadStream, createWriteStream } from "node:fs";
 import { pipeline as streamPipeline } from "node:stream/promises";
 import { runTransferTasks, joinRemotePath, splitRemotePath } from "./sftp-dir.js";
+import { MIN_PIPELINE_BYTES, PIPELINE_DEFAULTS, uploadPipelined } from "./sftp-push.js";
+import { uploadWithRedraw } from "./upload-redraw.js";
+import { cancelTransfer, listTransfers, startTransfer } from "./transfers.js";
 import {
   KnownHosts,
   decideHostKey,
@@ -4575,29 +4578,314 @@ export default class SshOpsService extends TypertRemoteService {
     });
   }
 
-  /** Upload through a unique sibling file, then commit only a completed transfer. */
-  async sftpUploadFile(sftp, localFile, remoteFile, signal) {
-    const partial = `${remoteFile}.dsh-upload-${randomUUID()}.tmp`;
+  /**
+   * 把一个本地文件写到远端路径。值得开窗口的文件走流水线引擎；小文件仍走
+   * 普通流 —— 对它们来说，多出来的窗口记账要比省下的往返还贵。
+   */
+  async putLocalFile(sftp, localFile, remotePath, signal, options = {}) {
+    const { size } = await fsStat(localFile);
+    // `start`/`end` 让调用方只推大文件的一段：引擎永远按绝对偏移写入，
+    // 所以一段就是一个区间。
+    const start = Math.max(0, Math.min(size, options.start ?? 0));
+    const end = Math.max(start, Math.min(size, options.end ?? size));
+    if (end - start >= MIN_PIPELINE_BYTES) {
+      return await uploadPipelined({
+        sftp: sftp.sftp,
+        localFile,
+        remotePath,
+        size: end,
+        start,
+        options: {
+          chunk: options.chunk,
+          concStart: options.concurrency ?? PIPELINE_DEFAULTS.concStart,
+          concMax: options.concurrencyMax ?? PIPELINE_DEFAULTS.concMax
+        },
+        signal,
+        onProgress: options.onProgress
+      });
+    }
     const source = createReadStream(localFile);
-    const target = sftp.sftp.createWriteStream(partial);
-    try {
-      await this.pipeSftpFile(source, target, signal, () => {});
-      if (signal?.aborted) throw signal.reason ?? new Error("SFTP directory transfer cancelled");
-      if (typeof sftp.sftp.ext_openssh_rename === "function") {
-        try {
-          await this.sftpCall(sftp, (cb) => sftp.sftp.ext_openssh_rename(partial, remoteFile, cb));
-          return;
-        } catch (error) {
-          if (error.message !== "Server does not support this extended request") throw error;
-        }
+    const target = sftp.sftp.createWriteStream(remotePath);
+    await this.pipeSftpFile(source, target, signal, () => {});
+    return { bytes: size, start: 0, seconds: 0, bytesPerSecond: 0, peakConcurrency: 1, retries: 0 };
+  }
+
+  /** 把传完的兄弟临时文件提交成真实文件名，优先用 OpenSSH 的原子 rename 扩展。 */
+  async commitRemoteFile(sftp, partial, remoteFile) {
+    if (typeof sftp.sftp.ext_openssh_rename === "function") {
+      try {
+        await this.sftpCall(sftp, (cb) => sftp.sftp.ext_openssh_rename(partial, remoteFile, cb));
+        return;
+      } catch (error) {
+        if (error.message !== "Server does not support this extended request") throw error;
       }
-      await this.sftpCall(sftp, (cb) => sftp.sftp.rename(partial, remoteFile, cb));
+    }
+    await this.sftpCall(sftp, (cb) => sftp.sftp.rename(partial, remoteFile, cb));
+  }
+
+  /** 先写同目录下唯一的兄弟临时文件，只有整份传完才提交成目标文件。 */
+  async sftpUploadFile(sftp, localFile, remoteFile, signal, options = {}) {
+    const partial = `${remoteFile}.dsh-upload-${randomUUID()}.tmp`;
+    try {
+      await this.putLocalFile(sftp, localFile, partial, signal, options);
+      if (signal?.aborted) throw signal.reason ?? new Error("SFTP transfer cancelled");
+      await this.commitRemoteFile(sftp, partial, remoteFile);
     } catch (error) {
-      // A failed commit or cancellation leaves only our unique sibling file.
+      // 提交失败或取消时，只会留下我们自己那个唯一的临时文件。
       try { await this.removeSftpPartial(sftp, partial); } catch (cleanupError) {
         throw new AggregateError([error, cleanupError], `SFTP upload failed and partial-file cleanup failed: ${cleanupError.message}`);
       }
       throw error;
+    }
+  }
+
+  /**
+   * 用自适应窗口引擎上传单个本地文件，并支持可选的续传点。与 sftpUploadFile
+   * 不同：续传时它写的是一个*固定*的临时路径，所以重试的调用能从服务器已经
+   * 确认过的字节继续，而不是为整个文件再付一次代价 —— 在丢包链路上，这就是
+   * 「可恢复的卡顿」和「从头再来」的区别。
+   */
+  async sftpUploadFileFast(request) {
+    const selected = this.resolveConnection(request.connectionId);
+    if (!selected.ok) return selected;
+    const connection = selected.connection;
+    // 大文件上传单独开一条连接。交互会话被钉死在它连上时那条 TCP 流选中的路径，
+    // 还要和终端通道共用这条流；同一条链路上，全新的流实测能快好几倍，所以传输
+    // 自己开一条、用完就关。
+    if (request.dedicated !== false) {
+      let dedicated = null;
+      try {
+        dedicated = await this.openDedicatedSftp(connection);
+      } catch { /* fall back to the interactive session below */ }
+      if (dedicated) {
+        try {
+          return await this.sftpUploadFileFastOn({ sftp: dedicated.sftp }, connection, {
+            ...request,
+            // 链路是成片塌陷的：一条已经确认到 5 MiB/s 的流可能直接死掉、
+            // 再也不动，而同一套凭据上的下一条流却跑满速。协议层唯一能做的
+            // 补救就是重画这条 TCP 流，所以引擎一旦卡住就请求换一条。
+            redraw: async () => {
+              try { dedicated.client.end(); } catch { /* already closed */ }
+              const fresh = await this.openDedicatedSftp(connection);
+              dedicated = fresh;
+              return { sftp: fresh.sftp };
+            }
+          });
+        } finally {
+          try { dedicated.client.end(); } catch { /* already closed */ }
+        }
+      }
+    }
+    const sftp = await this.requireSftp(connection);
+    if (!sftp.ok) return sftp;
+    return await this.sftpUploadFileFastOn(sftp, connection, request);
+  }
+
+  /** agent 侧发起、正在进行的传输，供文件面板的任务列表读取。 */
+  async sftpTransferList() {
+    return { ok: true, value: { transfers: listTransfers() } };
+  }
+
+  /** 中止其中一个。未知或已结束的 id 是空操作，不当错误处理。 */
+  async sftpTransferCancel(request) {
+    return { ok: true, value: { cancelled: cancelTransfer(request.id) } };
+  }
+
+  /**
+   * 用同一套凭据开第二条短命连接。ready 超时刻意设得短：连不快的传输应该
+   * 快速失败，而不是把工具调用一直挂在那里。
+   */
+  async openDedicatedSftp(connection) {
+    const client = new Client();
+    // 没有监听器的 EventEmitter 'error' 会把整个宿主进程带崩，而 ssh2 每次
+    // socket 层失败都会抛一个 —— 包括握手结束之后才到的那些。所以常驻一个
+    // 兜底监听，握手结果单独监听。
+    client.on("error", () => {});
+    await new Promise((resolve, reject) => {
+      let settled = false;
+      const onReady = () => {
+        if (settled) return;
+        settled = true;
+        client.removeListener("ready", onReady);
+        client.removeListener("error", onHandshakeError);
+        resolve();
+      };
+      const onHandshakeError = (error) => {
+        if (settled) return;
+        settled = true;
+        client.removeListener("ready", onReady);
+        client.removeListener("error", onHandshakeError);
+        reject(error);
+      };
+      client.once("ready", onReady);
+      client.once("error", onHandshakeError);
+      try {
+        client.connect({ ...connection.connectConfig, readyTimeout: 15000 });
+      } catch (error) {
+        onHandshakeError(error);
+      }
+    });
+    try {
+      const sftp = await new Promise((resolve, reject) => {
+        client.sftp((error, session) => (error ? reject(error) : resolve(session)));
+      });
+      return { client, sftp };
+    } catch (error) {
+      try { client.end(); } catch { /* nothing was opened */ }
+      throw error;
+    }
+  }
+
+  /** 传输本体；`sftp` 是包着「实际在跑的那条会话」的 { sftp } 包装。 */
+  async sftpUploadFileFastOn(sftp, connection, request) {
+    const { localPath, remotePath } = request;
+    let size;
+    try {
+      const stat = await fsStat(localPath);
+      if (!stat.isFile()) return { ok: false, error: fail("sftp-upload-failed", `${localPath} is not a file`) };
+      size = stat.size;
+    } catch (error) {
+      return { ok: false, error: fail("sftp-upload-failed", `cannot read ${localPath}: ${error.message}`) };
+    }
+    const resume = request.resume !== false;
+    const partial = resume
+      ? (request.partialPath || `${remotePath}.dsh-partial`)
+      : `${remotePath}.dsh-upload-${randomUUID()}.tmp`;
+
+    // 面板自己发起的传输由面板取消，因为 AbortController 在它手里。agent 发起
+    // 的上传背后没有面板对象，所以注册进共享注册表：面板从同一条记录读任务列表、
+    // 也通过这个 controller 取消它；工具调用自带的 signal 作为第二个触发源转发进来。
+    const controller = new AbortController();
+    const outerSignal = request.signal;
+    const relayAbort = () => controller.abort(outerSignal?.reason ?? new Error("SFTP upload cancelled"));
+    if (outerSignal) {
+      if (outerSignal.aborted) relayAbort();
+      else outerSignal.addEventListener("abort", relayAbort, { once: true });
+    }
+    const signal = controller.signal;
+    const transfer = startTransfer({
+      kind: "upload",
+      name: localPath.split(/[\\/]/).pop() || localPath,
+      target: remotePath,
+      connection: connection?.name ?? null,
+      total: size,
+      cancel: () => controller.abort(new Error("Upload cancelled from the file panel"))
+    });
+    let outcome = "failed";
+    let failure = null;
+    try {
+      if (request.remoteWorkspaceRoot !== undefined) {
+        await this.assertRemoteWorkspaceTarget(connection, request.remoteWorkspaceRoot, remotePath);
+      }
+      const { parent } = splitRemotePath(remotePath);
+      if (parent && parent !== "/") await this.ensureRemoteDir(sftp, parent);
+      let start = 0;
+      if (resume) {
+        const existing = await this.sftpCall(sftp, (cb) => sftp.sftp.stat(partial, cb)).catch(() => null);
+        const remoteSize = existing?.size ?? 0;
+        if (remoteSize > 0 && remoteSize <= size) {
+          // 续传前回退一个块：上次中断时还在途的写入会让远端文件比我们已知落盘的
+          // 字节更长，所以尾部宁可重写也不直接相信。
+          start = Math.max(0, remoteSize - (request.chunk || PIPELINE_DEFAULTS.chunk));
+        }
+      }
+      transfer.progress(start);
+
+      // 从引擎内部看，远端磁盘写满和链路死掉长得一模一样：写入失败、重试堆积、
+      // 传输爬行，最后才放弃。所以先问文件系统，好让调用方直接听到「空间不够」，
+      // 而不是盯着一条健康的 socket 一分钟没有进展。
+      try {
+        const probe = await this.execShort(
+          connection,
+          `df -Pk -- ${shellQuote(parent || "/")} 2>/dev/null | tail -1`,
+          8000
+        );
+        const availableKb = Number(probe.stdout.trim().split(/\s+/)[3]);
+        if (Number.isFinite(availableKb)) {
+          const neededKb = Math.ceil((size - start) / 1024);
+          if (availableKb < neededKb) {
+            return {
+              ok: false,
+              error: fail(
+                "sftp-upload-no-space",
+                `remote disk free ${Math.floor(availableKb / 1024)} MiB, this upload needs ${Math.ceil(neededKb / 1024)} MiB`
+              )
+            };
+          }
+        }
+      } catch {
+        /* 这个探测只是提醒：绝不因为它挡住上传 */
+      }
+
+      // 按有界的段推送。实测链路能在几分钟里从 7 MiB/s 掉到 0.1 MiB/s，且与
+      // 文件长度无关；重试的单位是「段」，所以一次塌陷最多损失一段的进度，
+      // 而不是整份传输。
+      // 分段、塌陷看门狗和重连决策都放在一处（src/upload-redraw.js），
+      // 这样不接链路也能测。
+      const run = await uploadWithRedraw({
+        size,
+        start,
+        segmentBytes: Math.max(0, Math.floor(request.segmentBytes ?? 32 * 1024 * 1024)),
+        floor: Math.max(0, Math.floor(request.redrawBytesPerSecond ?? 256 * 1024)),
+        afterMs: Math.max(1000, Math.floor((request.redrawAfterSeconds ?? 6) * 1000)),
+        maxRedraws: Math.max(0, Math.floor(request.redrawMax ?? 20)),
+        getSession: () => sftp,
+        redraw: request.redraw
+          ? async () => {
+              const fresh = await request.redraw();
+              if (fresh) sftp = fresh;
+            }
+          : undefined,
+        putSegment: (session, from, to, segmentOptions) =>
+          this.putLocalFile(session, localPath, partial, segmentOptions.signal, {
+            chunk: request.chunk,
+            concurrency: request.concurrency,
+            concurrencyMax: request.concurrencyMax,
+            start: from,
+            end: to,
+            onProgress: segmentOptions.onProgress
+          }),
+        onProgress: (sent) => transfer.progress(sent),
+        signal
+      });
+      const stats = { ...run };
+      if (stats.seconds > 0) stats.bytesPerSecond = stats.bytes / stats.seconds;
+      const segments = run.segments;
+      const redraws = run.redraws;
+      if (signal.aborted) throw signal.reason ?? new Error("SFTP upload cancelled");
+      await this.commitRemoteFile(sftp, partial, remotePath);
+      outcome = "done";
+      return {
+        ok: true,
+        value: {
+          source: localPath,
+          target: remotePath,
+          partial,
+          resumed: start > 0,
+          startOffset: start,
+          bytes: stats.bytes,
+          seconds: stats.seconds,
+          bytesPerSecond: stats.bytesPerSecond,
+          peakConcurrency: stats.peakConcurrency,
+          stalls: stats.stalls ?? 0,
+          segments,
+          redraws,
+          retries: stats.retries
+        }
+      };
+    } catch (error) {
+      failure = error;
+      outcome = signal.aborted ? "cancelled" : "failed";
+      // 可续传的临时文件正是这条路的意义：失败时保留它，下次调用接着传。
+      // 只有一次性临时路径才会被清掉。
+      if (!resume) {
+        try { await this.removeSftpPartial(sftp, partial); } catch { /* best effort */ }
+      }
+      if (signal.aborted) return { ok: false, error: fail("sftp-upload-cancelled", "upload cancelled") };
+      return { ok: false, error: fail("sftp-upload-failed", error.message) };
+    } finally {
+      transfer.finish(outcome, failure);
+      outerSignal?.removeEventListener("abort", relayAbort);
     }
   }
 

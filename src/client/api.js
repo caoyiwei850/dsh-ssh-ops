@@ -315,6 +315,16 @@ export class SshApi {
     return this.call("sftpRename", { connectionId, from, to });
   }
 
+  /** Transfers the agent started (currently `sftp_upload_file`), for the task list. */
+  sftpTransferList() {
+    return this.call("sftpTransferList", {});
+  }
+
+  /** Abort one of them from the panel. */
+  sftpTransferCancel(id) {
+    return this.call("sftpTransferCancel", { id });
+  }
+
   // ── Port forwarding ────────────────────────────────────────────────────────
 
   tunnelStartLocal(input) {

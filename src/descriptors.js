@@ -90,6 +90,8 @@ export const DESCRIPTORS = [
   def("sftpRename", S.sftpRenameRequestSchema, "SftpRenameRequest", S.sftpRenameResultSchema, "SftpRenameResult"),
   def("sftpUploadDir", S.sftpUploadDirRequestSchema, "SftpUploadDirRequest", S.sftpTransferDirResultSchema, "SftpTransferDirResult"),
   def("sftpDownloadDir", S.sftpDownloadDirRequestSchema, "SftpDownloadDirRequest", S.sftpTransferDirResultSchema, "SftpTransferDirResult"),
+  def("sftpTransferList", S.sftpTransferListRequestSchema, "SftpTransferListRequest", S.sftpTransferListResultSchema, "SftpTransferListResult"),
+  def("sftpTransferCancel", S.sftpTransferCancelRequestSchema, "SftpTransferCancelRequest", S.sftpTransferCancelResultSchema, "SftpTransferCancelResult"),
   def("tunnelStartLocal", S.tunnelStartLocalRequestSchema, "TunnelStartLocalRequest", S.tunnelStartLocalResultSchema, "TunnelStartLocalResult"),
   def("tunnelStartRemote", S.tunnelStartRemoteRequestSchema, "TunnelStartRemoteRequest", S.tunnelStartRemoteResultSchema, "TunnelStartRemoteResult"),
   def("tunnelStartDynamic", S.tunnelStartDynamicRequestSchema, "TunnelStartDynamicRequest", S.tunnelStartDynamicResultSchema, "TunnelStartDynamicResult"),
