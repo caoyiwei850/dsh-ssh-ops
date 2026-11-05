@@ -17,9 +17,9 @@
  */
 import * as React from "react";
 
-export function IconTerminal16({ size = 16, className }) {
+export function IconTerminal16({ size = 16, className, color = "var(--dsw-static-deepseek-500, #4176e6)" }) {
   return (
-    <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" stroke="var(--dsw-static-deepseek-500, #4176e6)" aria-hidden="true">
+    <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" stroke={color} aria-hidden="true">
       <rect x="1.6" y="3" width="12.8" height="10" rx="2.4" strokeWidth="1.3" />
       <path d="M5 6.17L6.94 8L5 9.83" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
       <path d="M8.46 9.86H11.03" strokeWidth="1.3" strokeLinecap="round" />

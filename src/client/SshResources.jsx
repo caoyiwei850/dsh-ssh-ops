@@ -11,12 +11,12 @@ import { t } from "../i18n/core.js";
 import { useLanguage } from "./locale.js";
 import { ResourceWorkspaces } from "./ResourceWorkspaces.jsx";
 import { TIER_ORDER, execPolicyLabel, execPolicyLooseningDetail } from "./exec-policy-ui.js";
+import { inspectInstallation } from "./update-guidance.js";
 
 /** Injected at build time from package.json (scripts/build-client.mjs). */
 // eslint-disable-next-line no-undef
 const PLUGIN_VERSION = typeof __DSH_SSH_OPS_VERSION__ === "string" ? __DSH_SSH_OPS_VERSION__ : "dev";
 const GITHUB_URL = "https://github.com/caoyiwei850/dsh-ssh-ops";
-const UPDATE_ENDPOINT = "/api/dsh-ssh-ops/update";
 
 /** GitHub mark (octicon, 16px, fill). */
 function GitHubMarkIcon() {
@@ -428,7 +428,7 @@ function HostKeyPopup({ host, port, known, copied, onCopy, onForget, forgetBusy,
   );
 }
 
-export function SshResources({ api, credentials }) {
+export function SshResources({ api, credentials, pluginManager, openPluginManager }) {
   // Repaint on language change: every t() call below re-evaluates per render.
   useLanguage();
   const [profiles, setProfiles] = useState([]);
@@ -464,52 +464,15 @@ export function SshResources({ api, credentials }) {
   // to "root". Loaded once with the rest of the settings; updated locally
   // again whenever an editor saves.
   const [defaultUsername, setDefaultUsername] = useState(null);
-  // Self-update: 检查更新 opens the dialog and runs a check; the meta rows,
-  // manual-update command and auto-update all live inside the dialog.
-  // The interface follows the host's language automatically (root resolver);
-  // there is no manual language switch by design.
   const [updateOpen, setUpdateOpen] = useState(false);
-  const [update, setUpdate] = useState(null);
-  const [updateBusy, setUpdateBusy] = useState(false);
-  const [updateError, setUpdateError] = useState(null);
-  const [copied, setCopied] = useState(false);
-
-  const fetchUpdate = async (method) => {
-    setUpdateBusy(true);
-    setUpdateError(null);
-    try {
-      const response = await fetch(UPDATE_ENDPOINT, method === "POST" ? {
-        method: "POST",
-        headers: { "content-type": "application/json", "x-dsh-ssh-ops-update": "1" },
-        body: "{}"
-      } : { cache: "no-store" });
-      const value = await response.json().catch(() => null);
-      if (!response.ok) throw new Error(value?.error ?? `HTTP ${response.status}`);
-      setUpdate(value);
-      return value;
-    } catch (cause) {
-      setUpdateError(cause?.message ?? String(cause));
-      return null;
-    } finally {
-      setUpdateBusy(false);
-    }
-  };
-
-  const openUpdateDialog = () => {
+  const [installKind, setInstallKind] = useState(null);
+  const updateSequence = React.useRef(0);
+  const openUpdateDialog = async () => {
+    const sequence = ++updateSequence.current;
+    setInstallKind(null);
     setUpdateOpen(true);
-    setCopied(false);
-    if (update === null) void fetchUpdate("GET");
-  };
-
-  const copyUpdateCommand = async () => {
-    const profile = update?.profileName ?? "web";
-    const spec = update?.latestVersion ?? "latest";
-    try {
-      await navigator.clipboard.writeText(`dsh plugin --profile ${profile} add dsh-ssh-ops@${spec} --registry=https://registry.npmjs.org/`);
-      setCopied(true);
-    } catch (cause) {
-      setError(cause?.message ?? String(cause));
-    }
+    const kind = await inspectInstallation(pluginManager);
+    if (sequence === updateSequence.current) setInstallKind(kind);
   };
 
   const refresh = async ({ showLoading = true } = {}) => {
@@ -795,7 +758,7 @@ export function SshResources({ api, credentials }) {
               <span className="dsh-ssh-ops-ubtn-icon"><GitHubMarkIcon /></span>GitHub
             </a>
             <button type="button" className="dsh-ssh-ops-ubtn outline" onClick={openUpdateDialog}>
-              <span className="dsh-ssh-ops-ubtn-icon"><RefreshIcon /></span>{t("检查更新")}
+              <span className="dsh-ssh-ops-ubtn-icon"><RefreshIcon /></span>{t("更新指引")}
             </button>
           </div>
         </div>
@@ -917,16 +880,7 @@ export function SshResources({ api, credentials }) {
       )}
 
       {updateOpen && (
-        <UpdateDialog
-          status={update}
-          busy={updateBusy}
-          error={updateError}
-          copied={copied}
-          onCheck={() => void fetchUpdate("GET")}
-          onUpdate={() => void fetchUpdate("POST")}
-          onCopy={copyUpdateCommand}
-          onClose={() => setUpdateOpen(false)}
-        />
+        <UpdateGuidance kind={installKind} openManager={openPluginManager} onClose={() => { updateSequence.current++; setUpdateOpen(false); }} />
       )}
       {hostKeyPopup && (
         <HostKeyPopup host={hostKeyPopup.host} port={hostKeyPopup.port} known={hostKeyPopup} copied={copiedHostKey} onCopy={copyHostFingerprint} onForget={forgetHost} forgetBusy={forgetBusy} onClose={() => setHostKeyPopup(null)} />
@@ -937,58 +891,21 @@ export function SshResources({ api, credentials }) {
   );
 }
 
-/**
- * Self-update dialog, modeled on @michengai/dsh-archive-manager's update
- * dialog: meta rows (running/latest/profile), a copyable manual-update
- * command, and re-check / auto-update actions.
- */
-function UpdateDialog({ status, busy, error, copied, onCheck, onUpdate, onCopy, onClose }) {
-  const latest = status?.latestVersion;
-  const profile = status?.profileName ?? "web";
-  let latestStatus;
-  if (busy) {
-    latestStatus = <span style={styles.updateMetaLabel}>{t("检查中…")}</span>;
-  } else if (status?.updatedVersion !== undefined) {
-    latestStatus = <span style={styles.updateOk}>{t(`已更新到 v${status.updatedVersion}，重启 DSH 后生效。`)}</span>;
-  } else if (error !== null && error !== undefined) {
-    latestStatus = <span style={styles.updateBad}>{t("检查失败")}：{error}</span>;
-  } else if (status?.latestCheckFailed === true) {
-    latestStatus = <span style={styles.updateBad}>{t("检查失败")}</span>;
-  } else if (status?.updateAvailable === true) {
-    latestStatus = <span style={styles.updateOk}>{t("发现新版本")}</span>;
-  } else if (status !== null) {
-    latestStatus = <span style={styles.updateOk}>{t("已是最新版本")}</span>;
-  }
-  const spec = latest ?? "latest";
-  const command = `dsh plugin --profile ${profile} add dsh-ssh-ops@${spec} --registry=https://registry.npmjs.org/`;
+function UpdateGuidance({ kind, openManager, onClose }) {
   return (
-    <div style={styles.backdrop} onClick={busy ? undefined : onClose}>
-      <div className="dsh-ssh-ops-resource-modal" style={styles.dialog} onClick={(event) => event.stopPropagation()}>
-        <div style={styles.dialogTitle}>{t("dsh-ssh-ops 更新")}</div>
-        <p style={styles.updateIntro}>{t("仅检查并更新当前插件，不会联动安装其他插件。")}</p>
-        <div style={styles.updateMeta}>
-          <span style={styles.updateMetaLabel}>{t("运行版本")}</span>
-          <span style={styles.updateMono}>{status?.currentVersion ? `v${status.currentVersion}` : "—"}</span>
-          <span style={styles.updateMetaLabel}>{t("最新版本")}</span>
-          <span style={styles.updateMono}>{latest ? `v${latest}` : "—"}{latestStatus ? <>{" "}{latestStatus}</> : null}</span>
-        </div>
-        <div style={styles.updateDivider} />
-        <div style={styles.updateHeading}>{t("手工更新")}</div>
-        <p style={styles.updateIntro}>{t("自动更新失败时，可在当前 DSH 终端执行以下命令，完成后重启 DSH。")}</p>
-        <div style={styles.updateCommand}>
-          <code style={styles.updateCode}>{command}</code>
-          <button type="button" style={styles.secondary} onClick={onCopy}>{copied ? t("已复制") : t("复制命令")}</button>
-        </div>
-        <div style={styles.actions}>
-          <button type="button" style={styles.secondary} onClick={onCheck} disabled={busy}>{t("重新检查")}</button>
-          <button
-            type="button"
-            style={styles.primary}
-            onClick={onUpdate}
-            disabled={busy || status?.updateAvailable !== true || status?.canAutoUpdate === false}
-            title={status?.canAutoUpdate === false ? t("当前环境不支持自动更新，请使用手工更新。") : undefined}
-          >{t("自动更新")}</button>
-        </div>
+    <div style={styles.backdrop} onClick={onClose}>
+      <div className="dsh-ssh-ops-resource-modal" style={styles.dialog} onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label={t("插件更新")}>
+        <div style={styles.dialogTitle}>{t("插件更新")}</div>
+        <p style={styles.updateIntro}>{t(`当前版本：v${PLUGIN_VERSION}`)}</p>
+        {kind === null ? <p style={styles.updateBody}>{t("正在读取安装方式…")}</p> : kind === "local" ? <p style={styles.updateBody}>{t("当前为本地链接安装，请在源码目录更新。插件不会自动替换此链接。")}</p> : kind === "git" ? <p style={styles.updateBody}>{t("当前通过 Git 安装，请按原安装方式更新；更新前请确认来源和本地修改。")}</p> : <>
+          <p style={styles.updateBody}>{t("请打开 DSH 左侧的插件管理页面，找到 dsh-ssh-ops 并检查可用更新。")}</p>
+          {kind === "unknown" && <p style={styles.updateBody}>{t("无法确认安装来源；请先在插件管理页面确认，避免覆盖本地链接。")}</p>}
+          <p style={styles.updateBody}>{t("旧版 DSH 如果没有更新功能，请参考安装说明手动更新。")}</p>
+          <a style={styles.updateBody} href={`${GITHUB_URL}/blob/main/INSTALL.md`} target="_blank" rel="noreferrer">{t("查看安装说明")}</a>
+          <p style={styles.updateBody}>{t("更新可能中断 SSH 连接和正在进行的传输，请先完成当前操作。")}</p>
+          {openManager && <button type="button" style={styles.primary} onClick={() => { openManager(); onClose(); }}>{t("打开插件管理")}</button>}
+        </>}
+        <div style={styles.actions}><button type="button" style={styles.secondary} onClick={onClose}>{t("关闭")}</button></div>
       </div>
     </div>
   );
@@ -1027,7 +944,8 @@ const styles = {
   formTabActive: { flex: "1 1 0", minWidth: 0, border: "1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.35))", borderRadius: 6, padding: "6px 10px", background: "rgba(127,127,127,.24)", color: "var(--dsw-alias-label-primary, inherit)", cursor: "default", font: "inherit", fontSize: 13, lineHeight: "20px", fontWeight: 600 },
   titleRow: { display: "flex", alignItems: "center", gap: "8px 12px", minWidth: 0, flexWrap: "wrap" },
   titleLinks: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
-  updateIntro: { margin: "0 0 14px", fontSize: 13, lineHeight: "20px", color: "var(--dsw-alias-label-secondary, #8b93a1)" },
+  updateBody: { margin: 0, fontSize: 13, lineHeight: "20px" },
+  updateIntro: { margin: 0, fontSize: 13, lineHeight: "20px", color: "var(--dsw-alias-label-secondary, #8b93a1)" },
   updateMeta: { display: "grid", gridTemplateColumns: "max-content minmax(0,1fr)", gap: "8px 18px", margin: "0 0 16px", fontSize: 12, lineHeight: "18px" },
   updateMetaLabel: { color: "var(--dsw-alias-label-secondary, #8b93a1)" },
   updateMono: { fontFamily: "ui-monospace, SFMono-Regular, Consolas, monospace" },

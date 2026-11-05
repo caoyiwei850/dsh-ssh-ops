@@ -65,7 +65,6 @@ import { registerBatchTools } from "./tools/batch.js";
 import { registerDbTools } from "./tools/db.js";
 import { registerSessionLogTools } from "./tools/session-log.js";
 import { t, setLanguage } from "./i18n/core.js";
-import { registerPluginUpdater, UPDATE_ENDPOINT } from "./plugin-updater.js";
 
 const MAX_BUFFER_BYTES = 2 * 1024 * 1024;
 const MAX_COMMAND_OUTPUT_BYTES = 64 * 1024;
@@ -559,12 +558,7 @@ export default class SshOpsService extends TypertRemoteService {
           this.handleStreamRoute(req, res, hostCtx.connection);
         }
       }), "ssh-ops: streaming file routes");
-      // Settings-page self-update endpoint (GET status / trusted POST install).
-      hostCtx.effect(() => registerPluginUpdater(hostCtx, {
-        endpoint: UPDATE_ENDPOINT,
-        packageName: "dsh-ssh-ops",
-        manifestUrl: new URL("../package.json", import.meta.url)
-      }), "ssh-ops: plugin update endpoint");
+
     });
   }
 

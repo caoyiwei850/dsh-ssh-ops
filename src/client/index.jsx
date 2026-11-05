@@ -28,6 +28,7 @@ import { startAgentConnectionPoll } from "./agent-connection-poll.js";
 import { activateSidebarWhenAvailable } from "./sidebar-lifecycle.js";
 import { readHostLanguage, setLanguage } from "./locale.js";
 import { installSettingsNavIcon } from "./nav-icon.js";
+import { registerSettingsNavIcon } from "./settings-nav-icon.js";
 import TYPERT_REMOTE from "../remote.js";
 
 const NS = "ssh-ops";
@@ -122,15 +123,27 @@ export async function apply(ctx) {
       }
     }));
 
-    // The settings nav glyph: the host's section slot has no icon field (its
-    // navIcon table falls back to the gear), so paint our terminal mark over
-    // the gear on our own row — same DOM-marker technique as dshmarket.
-    try {
-      own(installSettingsNavIcon(ctx, () => hostT("settingsSectionLabel")));
-    } catch (error) {
-      // Purely cosmetic: a stylesheet hiccup must not fail the whole plugin.
-      console.error("[dsh-ssh-ops] settings nav icon install failed (non-fatal):", error);
-    }
+    // The native icon slot is optional on older hosts. Its lifetime owns the
+    // legacy DOM fallback so exactly one icon is active at a time.
+    own(registerSettingsNavIcon({
+      slots: ctx.slots,
+      component: SettingsTerminalIcon,
+      fallback: () => installSettingsNavIcon(ctx, () => hostT("settingsSectionLabel")),
+      onError: (error) => console.error("[dsh-ssh-ops] settings nav icon unavailable:", error)
+    }));
+
+    // Optional host services must be obtained inside their own injection
+    // scopes. Accessing an undeclared remote face throws in older hosts.
+    let pluginManager;
+    let pluginNavigation;
+    own(ctx.inject(["remote.pluginManager"], (optionalCtx) => {
+      pluginManager = optionalCtx.remote.pluginManager;
+      return () => { pluginManager = undefined; };
+    }));
+    own(ctx.inject(["pluginNavigation"], (optionalCtx) => {
+      pluginNavigation = optionalCtx.pluginNavigation;
+      return () => { pluginNavigation = undefined; };
+    }));
 
     // SSH resources are a first-class settings section, beside General and
     // Models. Keeping them under Settings → Plugins made an operational
@@ -143,9 +156,8 @@ export async function apply(ctx) {
           id: "ssh-ops-resources",
           order: 35,
           label: () => hostT("settingsSectionLabel"), // getter: the host menu re-renders it per language change
-          icon: "terminal",
           locale: NS,
-          inject: () => ({ api, credentials: ctx.remote?.credentials })
+          inject: () => ({ api, credentials: ctx.remote?.credentials, pluginManager, openPluginManager: typeof pluginNavigation?.openBundle === "function" ? () => pluginNavigation?.openBundle("dsh-ssh-ops") : undefined })
         },
         SshResources
       )
@@ -162,6 +174,10 @@ export async function apply(ctx) {
     }
     throw error;
   }
+}
+
+function SettingsTerminalIcon({ size = 16 }) {
+  return <IconTerminal16 size={size} color="currentColor" />;
 }
 
 /** Official Sidebar registrations: both stages live under one disposable scope. */

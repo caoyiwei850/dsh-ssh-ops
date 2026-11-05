@@ -1,17 +1,7 @@
 /**
- * Settings-nav glyph for this plugin's section, drawn over the shell's gear.
- *
- * The host's `settings.section` slot carries no `icon` field, and its nav
- * renderer picks glyphs from a hard-coded id table (`navIcon`) whose fallback
- * is the settings gear — so every extension that wants a recognizable row
- * paints its own. Same technique as dshmarket (`nav-icon.ts`),
- * dsh-better-sidebar and dsh-skill-mcp-panel: a stylesheet hides the gear on
- * the ONE nav row whose visible text equals this plugin's localized section
- * label, and a CSS mask draws our terminal glyph instead. Delete this module
- * the day `settings.section` grows an `icon` field.
- *
- * The mask artwork is our IconTerminal16 sheet scaled 28→16 (outline variant,
- * 1.3px stroke to match the official nav icons' medium stroke).
+ * Compatibility icon for hosts without the settings.section.icon slot.
+ * The newer slot is preferred by settings-nav-icon.js; this DOM fallback is
+ * active only until that slot is registered and is restored if it disappears.
  */
 
 /** Marks the one nav row this plugin owns. */

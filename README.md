@@ -8,13 +8,15 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.4.3-blue)
+![version](https://img.shields.io/badge/version-0.4.4-blue)
 [![dsh.so risk](https://www.dsh.so/badge/dsh-ssh-ops.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![dsh.so install · dsh 0.2.0-rc.2](https://www.dsh.so/badge/install/dsh-ssh-ops@0.2.0-rc.2.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/caoyiwei850/dsh-ssh-ops)
 
 📖 **第一次使用？请从[产品文档](./docs/product-guide.md)开始**——十分钟上手、功能详解、安全模型与场景配方。
 
+> **v0.4.4**：文件面板新增**远程文件搜索**与**传输任务列表**（上传进度、取消、失败清理）；插件内一键更新移除，改为宿主插件管理与手动更新指引（防 link 挂载被静默覆盖）；适配新版宿主设置图标，修复可选服务未注入时面板空白。详见 [CHANGELOG.md](./CHANGELOG.md)。
+> **v0.4.3**：修复 macOS 27 + Desktop v0.12.1 插件市场无法安装（mongodb 拆独立懒加载 chunk 出运行依赖闭包、客户端专用 xterm 搜索扩展移出运行依赖）与 ssh_terminal_sessions/ssh_terminal_context 调用报错（补输出渲染）。详见 [CHANGELOG.md](./CHANGELOG.md)。
 > **v0.4.2**：修复 `sftp_read` 超限读取与空密码保存问题；文件面板新增上传进度、远端写入状态和完成提示，流式上传通过临时文件完成后再替换目标。详见 [CHANGELOG.md](./CHANGELOG.md)。
 > **v0.4.1**：远程工作区相对路径改以会话当前远端目录为基（`cd` 子目录后 `sftp_*` 相对路径跟随，越界仍锁绑定根）；ssh_read 增量读在缓冲翻滚后依然增量；SFTP 目录传输支持取消、空闲死线与半成品清理；工作区绑定下拉可改绑他人已绑工作区。
 > **v0.4.0**：危险命令确认整体迁移到**宿主原生会话内审批**——`ssh_exec` 与 `sftp_delete` 在操作者答复前挂起，一次性批准绑定命令与服务器，拒绝、取消或无审批通道一律 fail-closed；同时包含**远程工作区**（把 DSH 工作区绑定到已保存服务器的远端目录，`sftp_*` 自动使用绑定根与服务端）、`ssh_read` 增量读取、终端 Ctrl+滚轮缩放与选中即复制、日志 warning/error 高亮、最近用户名自动记忆；修复客户端 apply 重试残留、zsh/NAS 自定义登录 shell 的 `ssh_exec` 目录探测、官方 Desktop 一键更新通道，并加固远端路径符号链接边界与跨读取脱敏。
@@ -39,6 +41,8 @@
 
 
 
+
+> **更新方式**：设置页提供更新指引。线上安装通过 DSH 插件管理页更新；本地链接请在源码目录更新。插件不再自行执行安装。
 
 ## 兼容性
 
@@ -82,7 +86,7 @@
 - 输出给模型前会脱敏私钥、Bearer Token、常见密码/API Key（含裸 `sk-` 开头的密钥）和数据库连接口令。
 - **连接稳定性**：SSH 连接启用 keepalive（20 秒间隔、3 次判定），NAT/防火墙不再静默丢弃空闲连接；传输意外断开后指数退避自动重连（上限 30 秒），命令中途掉线透明重试一次，瞬时连接失败自动重试 3 次（认证失败除外）；显式断开或插件卸载不触发重连，重连后远程隧道自动重新注册。对端 SSH 横幅不符合 RFC 4253 时（例如 `SSH-2.0- OpenSSH` 只多一个空格、`SSH-2.1-`）不再直接失败：ssh2 一向只认 `SSH-2.0-`/`SSH-1.99-` 并抛出信息量极低的 `Invalid identification string`，现在仅在它因此拒绝之后重试一次，由插件把该行规范化后再交给它握手（对端软件版本原样保留，连接的加密强度不受影响），成功会给出警告；确实不可用的横幅（只支持 SSH-1 的设备、缺少软件版本）则明确报出对端原文与原因，不反复重试。
 - **主机指纹校验（TOFU）**：SSH 连接校验服务器主机公钥指纹——首次连接记录并信任，之后指纹变化即拒（防中间人 / 误连重装机）。每台服务器可选 `accept-new`（默认）/`verify`（拒绝未知）/`off`；指纹变化时**不重试、不自动重连**，提示用「忘记指纹」重置。设置 → SSH 资源可按服务器设置校验模式、管理已信任指纹并一键忘记。校验在用户认证前，与登录账号/密码无关，同一台服务器换人登录不会被挡。
-- **文件管理**：SSH 面板「文件」页签，基于 SFTP 浏览服务器目录树，支持上传、下载、新建目录、删除与重命名；对话中也可用 `sftp_*` 工具直接操作。
+- **文件管理**：SSH 面板「文件」页签，基于 SFTP 浏览服务器目录树，支持上传、下载、新建目录、删除与重命名；对话中也可用 `sftp_*` 工具直接操作。 面板可从当前目录递归搜索文件名（最多 200 个目录、200 个结果、15 秒，不递归跟随符号链接；读取失败、超时和达到上限时提示结果不完整）。传输任务列表显示本面板发起的上传和下载状态，流式上传可取消；任务记录仅在面板打开期间保留，下载沿用原有读取大小限制。
 - **端口转发**：SSH 面板「转发」页签，可建立本地转发（本机 → 服务器可达目标）与远程转发（服务器 → 本机），实时查看与停止隧道；对话中也可用 `tunnel_*` 工具。
 - **多机批量**：主对话说「批量执行 <命令>」，Agent 创建批量任务，右侧 SSH 面板弹出勾选弹窗，列出 SSH 资源中已保存的全部服务器（**含未连接的**）供手动勾选，确认后并发执行（每台用保存凭据建连 → 执行 → 断开），结果按服务器分节展示（成功绿 / 失败红）。批量目标与当前打开的连接完全无关，可勾选未连接的服务器；命中安全策略时「命令 + N 台目标」一次性确认，不再逐台弹窗。旧的 `ssh_cluster`（基于已打开连接、无需确认即群发）已彻底移除：多机操作只能经 `ssh_batch` 由操作者勾选确认，杜绝「点名一台、全量执行」。
 - **数据库**：SSH 面板「数据库」页签，支持连接 MySQL / PostgreSQL / Redis / MongoDB，可手动执行 SQL 查询或命令并查看结果表格；对话中也可用 `db_*` 工具直接操作。
@@ -111,7 +115,7 @@ Agent 命中上述黑名单时不会被静默拒绝：整个工具调用会在�
 ### 从 GitHub 安装（推荐）
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.3
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.4
 ```
 
 git 渠道装的是源码，安装期由 `prepare` 钩子自动执行 `npm run build` 生成入口 `lib/`，无需手动构建。**注意：pnpm ≥ 10 默认拦截依赖包的构建脚本**——若重启后 SSH 标签未出现，按 [INSTALL.md](INSTALL.md) 第 3 步检查 `node_modules/dsh-ssh-ops/lib/`：缺失说明构建被拦，进入该包目录执行 `npm install && npm run build`（或在该 profile 的 pnpm 配置 `onlyBuiltDependencies` 中放行 `dsh-ssh-ops`）后重启即可。
@@ -126,14 +130,14 @@ dsh web
 
 ### 从发布压缩包安装
 
-从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.4.3) 下载 `dsh-ssh-ops-0.4.3.tgz` 后：
+从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.4.4) 下载 `dsh-ssh-ops-0.4.4.tgz` 后：
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.4.3.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.4.4.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.4.3.zip` 适用于离线审阅或二次开发；解压后在目录中执行 `npm install`（构建自动完成）。
+`dsh-ssh-ops-0.4.4.zip` 适用于离线审阅或二次开发；解压后在目录中执行 `npm install`（构建自动完成）。
 
 ## 使用方式
 
@@ -247,8 +251,8 @@ npm run pack:release
 
 生成物位于 `release/`：
 
-- `dsh-ssh-ops-0.4.3.tgz`：可直接被 DSH 安装。
-- `dsh-ssh-ops-0.4.3.zip`：完整离线源码包。
+- `dsh-ssh-ops-0.4.4.tgz`：可直接被 DSH 安装。
+- `dsh-ssh-ops-0.4.4.zip`：完整离线源码包。
 
 ## 许可
 

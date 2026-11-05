@@ -8,13 +8,15 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.4.3-blue)
+![version](https://img.shields.io/badge/version-0.4.4-blue)
 [![dsh.so risk](https://www.dsh.so/badge/dsh-ssh-ops.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![dsh.so install · dsh 0.2.0-rc.2](https://www.dsh.so/badge/install/dsh-ssh-ops@0.2.0-rc.2.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/caoyiwei850/dsh-ssh-ops)
 
 📖 **New here? Start with the [Product Guide](./docs/product-guide.en.md)** — a ten-minute quick start, a feature walkthrough, the security model, and ready-made recipes.
 
+> **v0.4.4**: the file panel gains **remote file search** and a **transfer task list** (upload progress, cancel, failure cleanup); the in-plugin one-click updater is removed in favor of host plugin management and manual update guidance (protects link-mounted dev installs from silent overwrites); adapts to the new host settings icon slot and fixes blank panels when optional host services are absent. See [CHANGELOG.md](./CHANGELOG.md).
+> **v0.4.3**: fixes marketplace installation failing on macOS 27 + Desktop v0.12.1 (mongodb split into a lazily loaded chunk outside the runtime dependency closure; client-only xterm search addon moved out of runtime deps) and ssh_terminal_sessions/ssh_terminal_context call errors (output rendering added). See [CHANGELOG.md](./CHANGELOG.md).
 > **v0.4.2**: fixes bounded `sftp_read` and saving a password profile without a password. File uploads show progress and completion, and stream through a temporary file before replacing the destination. See [CHANGELOG.md](./CHANGELOG.md).
 > **v0.4.1**: remote-workspace relative paths now resolve against the session's current remote directory (`cd` into a subdirectory and `sftp_*` relative paths follow; escapes of the bound root are still refused); incremental `ssh_read` stays incremental across capture-buffer rollover; SFTP directory transfers gain cancellation, an idle deadline, and partial-file cleanup; the workspace binding dropdown allows rebinding a workspace bound elsewhere.
 > **v0.4.0**: moves dangerous-command confirmation to the **host's native in-conversation approval** — `ssh_exec` and `sftp_delete` suspend until the operator answers, a one-shot approval is bound to the command and server, and rejection, cancellation, or a missing approval channel fail closed; it also includes **remote workspaces** (bind a DSH workspace to a saved server directory; `sftp_*` uses that root and server automatically), incremental `ssh_read`, Ctrl-wheel terminal zoom and copy-on-select, warning/error log highlighting, and a remembered default username; fixes client `apply()` retry residue, `ssh_exec` cwd discovery for zsh/NAS custom login shells, official Desktop one-click updates, and hardens remote path symlink containment plus cross-read redaction.
@@ -41,6 +43,8 @@
 
 
 > **New in v0.3.4**: **each split pane now gets its own connection** — opening the same server in two panes creates two independent transports, terminals and working directories instead of mirroring one terminal; tick "reuse the open connection" in the connect dialog to share one on purpose. The **pane the agent is acting on is now visible and switchable**, marked with a blue robot badge — click another pane to re-target it. **Peers whose SSH identification string does not follow RFC 4253 can now connect**: when a device writes it malformed (a stray space in `SSH-2.0- OpenSSH`, or `SSH-2.1-`), ssh2 previously failed with a bare `Invalid identification string` that named neither the device nor the reason; the plugin now retries once and normalizes that single line (the peer's software version is preserved and no crypto is weakened), while a genuinely unusable banner reports the peer's own bytes. Also fixes connecting from the settings page not opening or loading the SSH pane. Shared credentials, jump hosts, connection reuse and the terminal theme from 0.3.3 remain. See **[INSTALL.md](./INSTALL.md)** for desktop install instructions.
+
+> **Updates:** The settings page provides update guidance. Use the DSH Plugins page for registry installations; update local links in their source directory. The plugin no longer installs updates itself.
 
 ## Compatibility
 
@@ -108,7 +112,7 @@ The same model covers `sftp_delete` (it also uses the host's in-conversation app
 ### From GitHub (recommended)
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.3
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.4
 ```
 
 The git channel installs source; the `prepare` hook runs `npm run build` during install to produce the `lib/` entry files, so no manual build is needed. **Note: pnpm ≥ 10 blocks dependency build scripts by default** — if the SSH tab does not appear after restart, check `node_modules/dsh-ssh-ops/lib/` as described in [INSTALL.md](INSTALL.md) step 3: if it is missing, the build was blocked; run `npm install && npm run build` inside that package directory (or allowlist `dsh-ssh-ops` in the profile's pnpm `onlyBuiltDependencies`) and restart.
@@ -123,14 +127,14 @@ Open any session, click the top **SSH** tab, and use the right-side panel to con
 
 ### From a release archive
 
-Download `dsh-ssh-ops-0.4.3.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.4.3), then:
+Download `dsh-ssh-ops-0.4.4.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.4.4), then:
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.4.3.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.4.4.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.4.3.zip` is for offline review or further development; extract it and run `npm install` in the directory (the build runs automatically).
+`dsh-ssh-ops-0.4.4.zip` is for offline review or further development; extract it and run `npm install` in the directory (the build runs automatically).
 
 ## Usage
 
@@ -242,8 +246,8 @@ Pushing a `vX.Y.Z` tag that matches `package.json.version` runs tests, builds th
 
 Artifacts are written to `release/`:
 
-- `dsh-ssh-ops-0.4.3.tgz`: installable directly by DSH.
-- `dsh-ssh-ops-0.4.3.zip`: full offline source archive.
+- `dsh-ssh-ops-0.4.4.tgz`: installable directly by DSH.
+- `dsh-ssh-ops-0.4.4.zip`: full offline source archive.
 
 ## License
 

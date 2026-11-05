@@ -6,6 +6,7 @@ import * as React from "react";
 import { MAX_EDITABLE_BYTES, decodeEditableText, encodeEditableText, filterEntries } from "./file-editor.js";
 import { favoritesKey, readFavorites, writeFavorites, toggleFavorite } from "./sftp-favorites.js";
 import { t } from "../i18n/core.js";
+import { searchRemoteFiles } from "./remote-file-search.js";
 const { useEffect, useState } = React;
 
 function joinPath(base, name) {
@@ -41,8 +42,28 @@ export function SshFiles({ api, connectionId, onCd, initialPath = "/" }) {
   const [editing, setEditing] = useState(null);
   const [editorBusy, setEditorBusy] = useState(false);
   const [dragActive, setDragActive] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState(null);
-  const [uploadNotice, setUploadNotice] = useState(null);
+  const [tasks, setTasks] = useState([]);
+  const taskId = React.useRef(0);
+  const controllers = React.useRef(new Map());
+  const searchController = React.useRef(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchState, setSearchState] = useState(null);
+  const updateTask = (id, patch) => setTasks((items) => items.map((item) => item.id === id ? { ...item, ...patch } : item));
+  const addTask = (task) => { const id = ++taskId.current; setTasks((items) => [{ ...task, id }, ...items.filter((item, index) => item.status === "running" || index < 49)]); return id; };
+  useEffect(() => () => { searchController.current?.abort(); for (const controller of controllers.current.values()) controller.abort(); }, []);
+  useEffect(() => { searchController.current?.abort(); searchController.current = null; setSearchState(null); }, [connectionId]);
+
+  const runSearch = async () => {
+    if (!searchQuery.trim()) return;
+    searchController.current?.abort();
+    const controller = new AbortController();
+    searchController.current = controller;
+    const root = cwd;
+    setSearchState({ running: true, root, results: [], errors: [] });
+    const result = await searchRemoteFiles((path) => api.sftpList(connectionId, path), root, searchQuery.trim(), { signal: controller.signal });
+    if (searchController.current === controller) setSearchState({ ...result, root, running: false });
+  };
   // Monotonic sequence: only the latest issued directory listing may commit
   // state, so a slow earlier response cannot overwrite a newer directory.
   const loadSeq = React.useRef(0);
@@ -120,11 +141,11 @@ export function SshFiles({ api, connectionId, onCd, initialPath = "/" }) {
     if (!target) return;
     setBusy(true);
     setError(null);
+    const task = addTask({ name: target.name, kind: "download", status: "running" });
     try {
       const value = await api.sftpReadFile(connectionId, joinPath(cwd, target.name));
       if (value.truncated) {
-        setError(t(`文件超过读取上限（${value.bytes} 字节），已截断——请用对话里的 sftp_read 指定更大 max_bytes`));
-        return;
+        throw new Error(t(`文件超过读取上限（${value.bytes} 字节），未下载`));
       }
       // browser download
       const blob = new Blob([value.data], { type: "application/octet-stream" });
@@ -134,7 +155,9 @@ export function SshFiles({ api, connectionId, onCd, initialPath = "/" }) {
       a.download = target.name;
       a.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
+      updateTask(task, { status: "done" });
     } catch (err) {
+      updateTask(task, { status: "failed", error: err?.message ?? String(err) });
       setError(err?.message ?? String(err));
     } finally {
       setBusy(false);
@@ -156,11 +179,13 @@ export function SshFiles({ api, connectionId, onCd, initialPath = "/" }) {
     if (files.length === 0) return;
     setBusy(true);
     setError(null);
-    setUploadNotice(null);
-    const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
+    const controller = new AbortController();
+    const task = addTask({ name: files.length === 1 ? files[0].name : t(`${files.length} 个文件`), kind: "upload", status: "running", sent: 0, total: files.reduce((sum, file) => sum + file.size, 0), cancellable: true });
+    controllers.current.set(task, controller);
     let completedBytes = 0;
     try {
       for (const file of files) {
+        if (controller.signal.aborted) throw new Error("cancelled");
         // Preserve relative path for directory uploads (webkitRelativePath).
         const relPath = file.webkitRelativePath || file.name;
         const remotePath = joinPath(cwd, relPath);
@@ -169,25 +194,29 @@ export function SshFiles({ api, connectionId, onCd, initialPath = "/" }) {
         if (dirPart !== "/" && dirPart !== cwd) {
           await ensureRemoteDir(dirPart);
         }
-        setUploadProgress({ name: file.name, sent: completedBytes, total: totalBytes, writing: false });
+        updateTask(task, { current: file.name, sent: completedBytes, writing: false });
         try {
           await api.sftpUploadFile(connectionId, remotePath, file, (sent) => {
-            setUploadProgress({ name: file.name, sent: completedBytes + sent, total: totalBytes, writing: sent >= file.size });
-          });
+            updateTask(task, { current: file.name, sent: completedBytes + sent, writing: sent >= file.size });
+          }, controller.signal);
         } catch (error) {
           if (error?.code !== "stream-unavailable") throw error;
           const bytes = new Uint8Array(await file.arrayBuffer());
-          setUploadProgress({ name: file.name, sent: completedBytes, total: totalBytes, writing: true });
+          if (controller.signal.aborted) throw new Error("cancelled");
+          updateTask(task, { current: file.name, sent: completedBytes, writing: true, cancellable: false });
           await api.sftpWriteFile(connectionId, remotePath, bytes);
         }
         completedBytes += file.size;
+        updateTask(task, { sent: completedBytes, cancellable: true });
       }
-      setUploadNotice(t("上传完成"));
+      updateTask(task, { status: "done", cancellable: false });
       load(cwdRef.current);
     } catch (err) {
-      setError(t(`上传失败：${err?.message ?? String(err)}`));
+      const cancelled = controller.signal.aborted;
+      updateTask(task, { status: cancelled ? "cancelled" : "failed", error: cancelled ? null : (err?.message ?? String(err)), cancellable: false });
+      if (!cancelled) setError(t(`上传失败：${err?.message ?? String(err)}`));
     } finally {
-      setUploadProgress(null);
+      controllers.current.delete(task);
       setBusy(false);
     }
   };
@@ -420,6 +449,7 @@ export function SshFiles({ api, connectionId, onCd, initialPath = "/" }) {
             }}
           />
         </label>
+        <button onClick={() => setSearchOpen(!searchOpen)} style={filesStyles.btn} title={t("递归搜索文件名")}>{t("搜索")}</button>
         <button onClick={() => load(cwd)} disabled={busy} style={filesStyles.btn} title={t("刷新")}>↻</button>
       </div>
 
@@ -450,11 +480,26 @@ export function SshFiles({ api, connectionId, onCd, initialPath = "/" }) {
       )}
 
       {error && <div style={filesStyles.error}>{error}</div>}
-      {uploadProgress && <div style={filesStyles.uploadProgress} role="status">
-        <span>{uploadProgress.writing ? t("远端写入中") : t("正在上传")} · {uploadProgress.name} · {uploadProgress.sent}/{uploadProgress.total} B</span>
-        <progress value={uploadProgress.sent} max={Math.max(uploadProgress.total, 1)} style={{ width: "100%" }} />
+      {searchOpen && <div style={filesStyles.scpCard}>
+        <div style={filesStyles.inlineForm}>
+          <input value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} onKeyDown={(e) => e.key === "Enter" && runSearch()} placeholder={t("搜索当前目录下的文件名")} style={filesStyles.input} />
+          <button onClick={runSearch} disabled={!searchQuery.trim() || searchState?.running} style={filesStyles.btn}>{t("搜索")}</button>
+          {searchState?.running && <button onClick={() => searchController.current?.abort()} style={filesStyles.btn}>{t("取消")}</button>}
+        </div>
+        {searchState && <div style={filesStyles.uploadProgress} role="status">
+          <span>{searchState.running ? t("搜索中…") : t(`已搜索 ${searchState.visited} 个目录，找到 ${searchState.results.length} 项`)} {searchState.reason === "limit" ? t("（达到上限）") : searchState.reason === "timeout" ? t("（超时，结果不完整）") : searchState.reason === "cancelled" ? t("（已取消）") : ""}</span>
+          {searchState.errors.length > 0 && <span>{t(`有 ${searchState.errors.length} 个目录无法读取，结果可能不完整`)}</span>}
+          <div style={{ maxHeight: 150, overflowY: "auto" }}>{searchState.results.map((item) => <button key={item.path} style={{ ...filesStyles.favoritePath, display: "block", maxWidth: "100%" }} title={item.path} onClick={() => { load(item.isDirectory ? item.path : dirnameOf(item.path)); setSearchOpen(false); }}>{item.path}</button>)}</div>
+        </div>}
       </div>}
-      {uploadNotice && <div style={filesStyles.uploadNotice} role="status">{uploadNotice}</div>}
+      {tasks.length > 0 && <div style={{ ...filesStyles.scpCard, maxHeight: 180, overflowY: "auto" }}>
+        <div style={filesStyles.inlineForm}><strong>{t("传输任务")}</strong><button style={filesStyles.btnTiny} onClick={() => setTasks((items) => items.filter((item) => item.status === "running"))}>{t("清除已结束")}</button></div>
+        {tasks.map((task) => <div key={task.id} style={filesStyles.uploadProgress} role="status">
+          <span>{task.kind === "upload" ? t("上传") : t("下载")} · {task.name} · {task.status === "running" ? (task.writing ? t("远端写入中") : t("进行中")) : task.status === "done" ? t("已完成") : task.status === "cancelled" ? t("已取消") : t("失败")} {task.error || ""}</span>
+          {task.status === "running" && task.total != null && <progress value={task.sent} max={Math.max(task.total, 1)} />}
+          {task.status === "running" && task.cancellable && <button style={filesStyles.btnTiny} onClick={() => controllers.current.get(task.id)?.abort()}>{t("取消")}</button>}
+        </div>)}
+      </div>}
 
       {renaming && selected && (
         <div style={filesStyles.inlineForm}>

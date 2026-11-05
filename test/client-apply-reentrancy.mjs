@@ -149,7 +149,7 @@ try {
     const teardown = await entry.apply(ctx);
     assert.deepEqual([...locale.dicts.get("ssh-ops")?.keys() ?? []], ["zh", "en"],
       "after recovery the dictionaries are registered exactly once, in both languages");
-    assert.deepEqual(slots.injections, ["settings.section"],
+    assert.deepEqual(slots.injections, ["settings.section.icon", "settings.section"],
       "the settings section is registered again after recovery");
 
     // Teardown stays symmetric (existing behavior preserved).
@@ -186,6 +186,30 @@ try {
       "…and never the misleading duplicate-registration error (issue #37)");
     assert.equal(dictionaryCount(locale), 0,
       "every failed apply leaves no residue behind");
+  }
+
+  // Host remote proxies throw on access to services without injection. Both
+  // registered surface providers must still render on hosts lacking them.
+  {
+    const descriptors = new Map();
+    const remote = new Proxy(makeRemoteFace(), { get(target, key) {
+      if (key === "pluginManager") throw new Error('cannot get property "remote.pluginManager" without inject');
+      return target[key];
+    } });
+    const slots = {
+      inject(_name, callback) { callback(); return () => {}; },
+      register(descriptor) { descriptors.set(descriptor.name, descriptor); return () => {}; }
+    };
+    const ctx = makeCtx({ locale: makeLocaleFace(), remote, slots });
+    ctx.sidebarRightTabs = { register: () => () => {} };
+    ctx.sidebarRight = { openTab() {}, isExpanded: () => false, active: () => null };
+    ctx.inject = (services, callback) => { if (services.includes("sidebarRight")) callback(ctx); return () => {}; };
+    const dispose = await entry.apply(ctx);
+    for (const name of ["settings.section", "sidebar.right.pane.tab"]) {
+      assert.ok(descriptors.has(name), `${name} was registered`);
+      assert.doesNotThrow(() => descriptors.get(name).inject(), `${name} renders without optional services`);
+    }
+    await dispose();
   }
 
   console.log("client apply reentrancy (#37): failure rolls back, retry re-reports the real error: passed");

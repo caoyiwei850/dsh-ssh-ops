@@ -29,7 +29,7 @@ assert.match(entry, /openTab\(SSH_TAB_KIND\)/, "the SSH button opens/focuses the
 assert.match(entry, /slots\.inject\("settings\.section"/, "SSH resources register as a first-class Settings section");
 assert.match(entry, /name: "settings\.section"/, "the registration targets the official Settings-section slot");
 assert.match(entry, /id: "ssh-ops-resources"/, "the Settings section keeps a stable identity");
-assert.match(entry, /icon: "terminal"/, "the Settings menu receives the terminal icon");
+assert.match(entry, /registerSettingsNavIcon\(/, "the Settings menu registers its icon through the compatibility lifecycle");
 assert.doesNotMatch(entry, /settings\.plugins\.tab/, "resources no longer appear as a Plugins sub-tab");
 
 // ── late Sidebar services, and no legacy drawer anywhere ──

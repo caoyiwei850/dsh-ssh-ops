@@ -270,7 +270,7 @@ export class SshApi {
   }
 
   /** Stream a browser File and report bytes sent to the host. Resolves after SFTP closes. */
-  sftpUploadFile(connectionId, path, file, onProgress) {
+  sftpUploadFile(connectionId, path, file, onProgress, signal) {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       const query = new URLSearchParams({ connectionId, path });
@@ -286,6 +286,10 @@ export class SshApi {
         else if (xhr.status === 404 && !reply) reject(new SshApiError("stream-unavailable", "Streaming upload is unavailable"));
         else reject(new SshApiError(reply?.error?.code ?? "upload-failed", reply?.error?.message ?? `Upload failed (HTTP ${xhr.status})`));
       };
+      const abort = () => xhr.abort();
+      if (signal?.aborted) { reject(new SshApiError("upload-cancelled", "Upload cancelled")); return; }
+      signal?.addEventListener("abort", abort, { once: true });
+      xhr.addEventListener("loadend", () => signal?.removeEventListener("abort", abort));
       xhr.send(file);
     });
   }
