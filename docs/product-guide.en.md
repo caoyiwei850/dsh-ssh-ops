@@ -253,7 +253,7 @@ Omitting `connection_id` / `db_connection_id` targets the currently active conne
 
 **Session logs (3)**: `ssh_session_log_list` / `ssh_session_log_read` / `ssh_session_log_search`
 
-**SFTP (8)**: `sftp_list` · `sftp_read` (4 MiB default cap) · `sftp_write` · `sftp_mkdir` · `sftp_delete` (never executes directly — requires host in-conversation approval; simple literal paths move to the trash when possible) · `sftp_rename` · `sftp_upload_dir` · `sftp_download_dir` (batch tree transfer; small files concurrent, large files exclusive, single-file failures never abort the batch)
+**SFTP (9)**: `sftp_list` · `sftp_read` (4 MiB default cap) · `sftp_write` · `sftp_mkdir` · `sftp_delete` (never executes directly — requires host in-conversation approval; simple literal paths move to the trash when possible) · `sftp_rename` · `sftp_upload_file` (single-file upload: block-pipelined writes with an adaptive window, redraw-and-resume on collapse, free-space precheck) · `sftp_upload_dir` · `sftp_download_dir` (batch tree transfer; small files concurrent, large files exclusive, single-file failures never abort the batch)
 
 **Port forwarding (3)**: `tunnel_start` (`local` / `remote` / `dynamic` SOCKS5) · `tunnel_list` · `tunnel_stop`
 

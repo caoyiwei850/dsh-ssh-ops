@@ -188,7 +188,7 @@ There are 34 agent tools. Omitting `connection_id` / `db_connection_id` targets 
 | `ssh_terminal_sessions` | List low-sensitivity metadata and cursors for open terminals; never returns terminal content or credentials |
 | `ssh_terminal_context` | After per-read user approval, read a bounded, redacted history range from a selected manually operated terminal without affecting the visible terminal scrollback |
 
-#### SFTP (6)
+#### SFTP (7)
 
 | Tool | Purpose |
 | --- | --- |
@@ -198,6 +198,7 @@ There are 34 agent tools. Omitting `connection_id` / `db_connection_id` targets 
 | `sftp_mkdir` | Create a remote directory |
 | `sftp_delete` | Delete a remote file or empty dir (**requires host in-conversation approval**; simple literal paths move to the trash when possible) |
 | `sftp_rename` | Rename or move a remote path |
+| `sftp_upload_file` | Upload one local file: block-pipelined writes with an adaptive window, acknowledged bytes are never resent; a collapsed flow is redrawn and resumed from the last confirmed byte, and free space is checked before the transfer |
 
 #### Port forwarding (3)
 

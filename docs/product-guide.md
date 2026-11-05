@@ -253,7 +253,7 @@ AI 会把命令下发到当前连接的服务器，**命令和回显实时出现
 
 **会话日志（3）**：`ssh_session_log_list` / `ssh_session_log_read` / `ssh_session_log_search`
 
-**SFTP（8）**：`sftp_list` · `sftp_read`（默认上限 4 MiB）· `sftp_write` · `sftp_mkdir` · `sftp_delete`（不直接执行，经宿主会话内审批；简单字面路径优先移入回收站）· `sftp_rename` · `sftp_upload_dir` · `sftp_download_dir`（目录批量，小文件并发、大文件独占、单文件失败不断整批）
+**SFTP（9）**：`sftp_list` · `sftp_read`（默认上限 4 MiB）· `sftp_write` · `sftp_mkdir` · `sftp_delete`（不直接执行，经宿主会话内审批；简单字面路径优先移入回收站）· `sftp_rename` · `sftp_upload_file`（单文件上传：块级流水线 + 自适应窗口，塌陷自动重拨续传，开传前预检远端空间）· `sftp_upload_dir` · `sftp_download_dir`（目录批量，小文件并发、大文件独占、单文件失败不断整批）
 
 **端口转发（3）**：`tunnel_start`（`local` 本地 / `remote` 远程 / `dynamic` SOCKS5）· `tunnel_list` · `tunnel_stop`
 
