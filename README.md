@@ -170,7 +170,7 @@ dsh web
 - 请在 Harness **停止**时编辑该文件（运行中的实例在加载时可能会改写它），编辑完成后重启 Harness 使更改生效。
 ### Agent 工具
 
-共 34 个 Agent 工具，省略 `connection_id` / `db_connection_id` 时默认作用于当前活动连接，**无需先调 `ssh_list` / `db_list_connections`**。
+共 35 个 Agent 工具，省略 `connection_id` / `db_connection_id` 时默认作用于当前活动连接，**无需先调 `ssh_list` / `db_list_connections`**。
 
 #### SSH（7）
 
