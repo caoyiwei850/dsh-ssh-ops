@@ -109,7 +109,13 @@ The same model covers `sftp_delete` (it also uses the host's in-conversation app
 
 ## Installation
 
-### From GitHub (recommended)
+### From npm (recommended)
+
+Install the npm package `dsh-ssh-ops` through DSH's plugin manager. DSH versions with plugin updates can check and update registry-installed bundles that the host marks as updatable; follow the host's prompts for availability and activation.
+
+Local `link:`, Git, and archive installations do not display the host's registry-version update section. Developers should keep their local link and update the source directory instead of replacing it with a registry installation.
+
+### From GitHub
 
 ```bash
 dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.5
