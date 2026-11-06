@@ -15,6 +15,8 @@
 
 📖 **第一次使用？请从[产品文档](./docs/product-guide.md)开始**——十分钟上手、功能详解、安全模型与场景配方。
 
+> **v0.4.5**：新增 `sftp_upload_file` 单文件并发上传，支持 AI 上传任务进度、取消和当前进程内校验续传；提交前校验远端文件完整性。修复部分宿主的 `ssh2` 导入兼容问题，为自动重连增加异常兜底；补齐英文工具文档，并说明 DSH 注册表插件更新的适用范围。详见 [CHANGELOG.md](./CHANGELOG.md)。
+
 > **v0.4.4**：文件面板新增**远程文件搜索**与**传输任务列表**（上传进度、取消、失败清理）；插件内一键更新移除，改为宿主插件管理与手动更新指引（防 link 挂载被静默覆盖）；适配新版宿主设置图标，修复可选服务未注入时面板空白。详见 [CHANGELOG.md](./CHANGELOG.md)。
 > **v0.4.3**：修复 macOS 27 + Desktop v0.12.1 插件市场无法安装（mongodb 拆独立懒加载 chunk 出运行依赖闭包、客户端专用 xterm 搜索扩展移出运行依赖）与 ssh_terminal_sessions/ssh_terminal_context 调用报错（补输出渲染）。详见 [CHANGELOG.md](./CHANGELOG.md)。
 > **v0.4.2**：修复 `sftp_read` 超限读取与空密码保存问题；文件面板新增上传进度、远端写入状态和完成提示，流式上传通过临时文件完成后再替换目标。详见 [CHANGELOG.md](./CHANGELOG.md)。

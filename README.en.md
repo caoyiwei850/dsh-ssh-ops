@@ -15,6 +15,8 @@
 
 📖 **New here? Start with the [Product Guide](./docs/product-guide.en.md)** — a ten-minute quick start, a feature walkthrough, the security model, and ready-made recipes.
 
+> **v0.4.5**: adds pipelined single-file uploads with AI task progress, cancellation, verified in-process resume, and remote integrity checks before committing. Fixes `ssh2` import compatibility on affected hosts, contains unexpected auto-reconnect failures, fills in the English tool documentation, and clarifies when DSH registry plugin updates apply. See [CHANGELOG.md](./CHANGELOG.md).
+
 > **v0.4.4**: the file panel gains **remote file search** and a **transfer task list** (upload progress, cancel, failure cleanup); the in-plugin one-click updater is removed in favor of host plugin management and manual update guidance (protects link-mounted dev installs from silent overwrites); adapts to the new host settings icon slot and fixes blank panels when optional host services are absent. See [CHANGELOG.md](./CHANGELOG.md).
 > **v0.4.3**: fixes marketplace installation failing on macOS 27 + Desktop v0.12.1 (mongodb split into a lazily loaded chunk outside the runtime dependency closure; client-only xterm search addon moved out of runtime deps) and ssh_terminal_sessions/ssh_terminal_context call errors (output rendering added). See [CHANGELOG.md](./CHANGELOG.md).
 > **v0.4.2**: fixes bounded `sftp_read` and saving a password profile without a password. File uploads show progress and completion, and stream through a temporary file before replacing the destination. See [CHANGELOG.md](./CHANGELOG.md).
