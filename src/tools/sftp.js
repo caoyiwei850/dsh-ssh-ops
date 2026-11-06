@@ -234,6 +234,30 @@ export function registerSftpTools(ctx, service) {
   }));
 
   ctx.tools.register(defineTool({
+    name: "sftp_upload_file",
+    description: "Upload one local file over the active SSH connection using bounded pipelined SFTP. A failed or cancelled task may be resumed in the same plugin runtime using its task id; the source and remote prefix are verified. The destination is replaced only after completion.",
+    parameters: {
+      connection_id: { type: "string", description: "SSH connection id; omit for the active connection." },
+      local_path: { type: "string", required: true, description: "Local source file path." },
+      remote_path: { type: "string", required: true, description: "Remote destination file path." },
+      resume_id: { type: "string", description: "ID of a failed or cancelled upload to resume in this plugin runtime." }
+    },
+    output: {
+      schema: { type: "object", additionalProperties: false, properties: {
+        taskId: { type: "string", required: true }, source: { type: "string", required: true }, target: { type: "string", required: true },
+        bytes: { type: "number", required: true }, resumed: { type: "boolean", required: true }, startOffset: { type: "number", required: true }
+      } },
+      render(_args, value) { return [{ type: "text", text: `Uploaded ${value.bytes} bytes to ${value.target}${value.resumed ? ` (resumed at ${value.startOffset} bytes)` : ""}. Task: ${value.taskId}` }]; }
+    },
+    async execute(args, exec) {
+      const target = await resolveTarget(exec, args.connection_id, args.remote_path);
+      const result = await service.sftpUploadLocalFile({ connectionId: target.connectionId, localPath: args.local_path, remotePath: target.path, resumeId: args.resume_id, signal: exec?.signal, ...(target.bound ? { remoteWorkspaceRoot: target.workspaceRoot } : {}) });
+      if (!result.ok) throw new Error(`sftp_upload_file failed: ${result.error.message}`);
+      return result.value;
+    }
+  }));
+
+  ctx.tools.register(defineTool({
     name: "sftp_upload_dir",
     description: "Upload a local directory tree to a remote server over SFTP, creating the remote directory structure. Small files transfer in parallel (bounded), large files one at a time for full link throughput. Per-file failures are reported, not fatal. Omit connection_id for the current server.",
     parameters: {

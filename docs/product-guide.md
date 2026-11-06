@@ -6,7 +6,7 @@
 
 > 在 DSH 主对话里指挥服务器干活，右侧始终留着一台真实交互终端——外加文件管理、端口转发、数据库操作与多机批量执行，全部在一个插件里。
 
-**版本 0.4.4** · MIT 协议 · [GitHub 仓库](https://github.com/caoyiwei850/dsh-ssh-ops) · [Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases)
+**版本 0.4.5** · MIT 协议 · [GitHub 仓库](https://github.com/caoyiwei850/dsh-ssh-ops) · [Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases)
 
 ---
 
@@ -48,7 +48,7 @@
 
 配套的 **设置 → SSH 资源** 是服务器资产管理页（与通用设置并列的一等菜单），内含三段：**服务器分组**、**共享 SSH 凭据**、**AI 命令执行策略**。
 
-主对话里的 AI 共获得 **40 个工具**（详见附录总表）。
+主对话里的 AI 共获得 **41 个工具**（详见附录总表）。
 
 ## 4. 安装
 
@@ -62,7 +62,7 @@
 **GitHub 渠道（推荐）**：
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.4
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.5
 ```
 
 装的是源码，安装期自动构建。注意 pnpm ≥ 10 默认拦截依赖构建脚本——若重启后 SSH 标签没出现，进 `node_modules/dsh-ssh-ops/` 手动执行 `npm install && npm run build` 后再重启（详见 [INSTALL.md](../INSTALL.md)）。
@@ -243,7 +243,7 @@ AI 会把命令下发到当前连接的服务器，**命令和回显实时出现
 **数据库大查询被 30 秒掐断？**
 连接时设 `query_timeout_ms`（`0` 为不限），或在资源里保存该设置。
 
-## 9. 附录：Agent 工具总表（40 个）
+## 9. 附录：Agent 工具总表（41 个）
 
 省略 `connection_id` / `db_connection_id` 时默认作用于当前活动连接，无需先列连接。
 
@@ -253,7 +253,7 @@ AI 会把命令下发到当前连接的服务器，**命令和回显实时出现
 
 **会话日志（3）**：`ssh_session_log_list` / `ssh_session_log_read` / `ssh_session_log_search`
 
-**SFTP（8）**：`sftp_list` · `sftp_read`（默认上限 4 MiB）· `sftp_write` · `sftp_mkdir` · `sftp_delete`（不直接执行，经宿主会话内审批；简单字面路径优先移入回收站）· `sftp_rename` · `sftp_upload_dir` · `sftp_download_dir`（目录批量，小文件并发、大文件独占、单文件失败不断整批）
+**SFTP（9）**：`sftp_list` · `sftp_read`（默认上限 4 MiB）· `sftp_write` · `sftp_mkdir` · `sftp_delete`（不直接执行，经宿主会话内审批；简单字面路径优先移入回收站）· `sftp_rename` · `sftp_upload_file`（单文件并发上传，校验后提交；运行期间可用任务 ID 续传） · `sftp_upload_dir` · `sftp_download_dir`（目录批量，小文件并发、大文件独占、单文件失败不断整批）
 
 **端口转发（3）**：`tunnel_start`（`local` 本地 / `remote` 远程 / `dynamic` SOCKS5）· `tunnel_list` · `tunnel_stop`
 
@@ -263,4 +263,4 @@ AI 会把命令下发到当前连接的服务器，**命令和回显实时出现
 
 ---
 
-*文档对应版本 v0.4.4，功能细节以 [README](../README.md) 与 [CHANGELOG](../CHANGELOG.md) 为准。*
+*文档对应版本 v0.4.5，功能细节以 [README](../README.md) 与 [CHANGELOG](../CHANGELOG.md) 为准。*

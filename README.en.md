@@ -8,7 +8,7 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.4.4-blue)
+![version](https://img.shields.io/badge/version-0.4.5-blue)
 [![dsh.so risk](https://www.dsh.so/badge/dsh-ssh-ops.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![dsh.so install · dsh 0.2.0-rc.2](https://www.dsh.so/badge/install/dsh-ssh-ops@0.2.0-rc.2.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/caoyiwei850/dsh-ssh-ops)
@@ -112,7 +112,7 @@ The same model covers `sftp_delete` (it also uses the host's in-conversation app
 ### From GitHub (recommended)
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.4
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.5
 ```
 
 The git channel installs source; the `prepare` hook runs `npm run build` during install to produce the `lib/` entry files, so no manual build is needed. **Note: pnpm ≥ 10 blocks dependency build scripts by default** — if the SSH tab does not appear after restart, check `node_modules/dsh-ssh-ops/lib/` as described in [INSTALL.md](INSTALL.md) step 3: if it is missing, the build was blocked; run `npm install && npm run build` inside that package directory (or allowlist `dsh-ssh-ops` in the profile's pnpm `onlyBuiltDependencies`) and restart.
@@ -127,14 +127,14 @@ Open any session, click the top **SSH** tab, and use the right-side panel to con
 
 ### From a release archive
 
-Download `dsh-ssh-ops-0.4.4.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.4.4), then:
+Download `dsh-ssh-ops-0.4.5.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.4.5), then:
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.4.4.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.4.5.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.4.4.zip` is for offline review or further development; extract it and run `npm install` in the directory (the build runs automatically).
+`dsh-ssh-ops-0.4.5.zip` is for offline review or further development; extract it and run `npm install` in the directory (the build runs automatically).
 
 ## Usage
 
@@ -167,7 +167,7 @@ dsh web
 - Edit the file while the harness is **stopped** (a running instance may rewrite it on load) and restart the harness afterwards to apply the change.
 ### Agent tools
 
-There are 34 agent tools. Omitting `connection_id` / `db_connection_id` targets the active connection — **no need to call `ssh_list` / `db_list_connections` first**.
+There are 41 agent tools (including 15 database tools, which can be disabled). Omitting `connection_id` / `db_connection_id` targets the active connection — **no need to call `ssh_list` / `db_list_connections` first**.
 
 #### SSH (7)
 
@@ -188,7 +188,14 @@ There are 34 agent tools. Omitting `connection_id` / `db_connection_id` targets 
 | `ssh_terminal_sessions` | List low-sensitivity metadata and cursors for open terminals; never returns terminal content or credentials |
 | `ssh_terminal_context` | After per-read user approval, read a bounded, redacted history range from a selected manually operated terminal without affecting the visible terminal scrollback |
 
-#### SFTP (6)
+#### Shell integration and session logs (4)
+
+| Tool | Purpose |
+| --- | --- |
+| `ssh_shell_integration` | Enable shell integration for an idle interactive terminal |
+| `ssh_session_log_list` / `ssh_session_log_search` / `ssh_session_log_read` | List, search and read session logs |
+
+#### SFTP (9)
 
 | Tool | Purpose |
 | --- | --- |
@@ -198,6 +205,9 @@ There are 34 agent tools. Omitting `connection_id` / `db_connection_id` targets 
 | `sftp_mkdir` | Create a remote directory |
 | `sftp_delete` | Delete a remote file or empty dir (**requires host in-conversation approval**; simple literal paths move to the trash when possible) |
 | `sftp_rename` | Rename or move a remote path |
+| `sftp_upload_file` | Upload one local file with bounded pipelining and SHA-256 verification; failed or cancelled tasks can resume by task ID while the plugin stays running |
+| `sftp_upload_dir` | Upload a local directory tree; small files run concurrently, large files exclusively, and individual failures are reported |
+| `sftp_download_dir` | Download a remote directory tree with the same scheduling and error handling |
 
 #### Port forwarding (3)
 
@@ -213,7 +223,7 @@ There are 34 agent tools. Omitting `connection_id` / `db_connection_id` targets 
 | --- | --- |
 | `ssh_batch` | Create a batch task over saved servers (including not-yet-connected ones) from SSH Resources; the operator ticks targets in the panel before it is dispatched concurrently, results grouped per server — **only when the user explicitly asks for multi-server batch** (the legacy `ssh_cluster` is removed entirely; there is no confirmation-free multi-server path) |
 
-#### Database (14)
+#### Database (15)
 
 | Tool | Purpose |
 | --- | --- |
@@ -224,6 +234,7 @@ There are 34 agent tools. Omitting `connection_id` / `db_connection_id` targets 
 | `db_list_tables` | List tables in the current schema of MySQL/PostgreSQL |
 | `db_describe_table` | Full structure: columns, indexes, foreign keys, row-count/size estimates, plus MySQL `SHOW CREATE TABLE` DDL |
 | `db_preview` | Paginated table sampling (bound LIMIT/OFFSET, injection-safe identifier whitelist) with a full-table row estimate — no SQL needed |
+| `db_export` | Export database query results to a file |
 | `db_explain` | Execution plan (EXPLAIN FORMAT=JSON) to check index usage |
 | `db_tx_begin` / `db_tx_execute` / `db_tx_commit` / `db_tx_rollback` | Interactive transaction workflow: begin → write → SELECT-verify → commit/rollback (dedicated connection, auto-rollback after 5 min idle) |
 | `db_run` | Run a command on Redis (`command`+`args`), or `find`/`findOne`/`insertOne`/`updateOne`/`deleteOne`/`countDocuments` on MongoDB |
@@ -246,8 +257,8 @@ Pushing a `vX.Y.Z` tag that matches `package.json.version` runs tests, builds th
 
 Artifacts are written to `release/`:
 
-- `dsh-ssh-ops-0.4.4.tgz`: installable directly by DSH.
-- `dsh-ssh-ops-0.4.4.zip`: full offline source archive.
+- `dsh-ssh-ops-0.4.5.tgz`: installable directly by DSH.
+- `dsh-ssh-ops-0.4.5.zip`: full offline source archive.
 
 ## License
 

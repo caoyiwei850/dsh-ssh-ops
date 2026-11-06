@@ -9,6 +9,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "ssh2";
+import { uploadPipeline } from "../src/sftp-pipeline.js";
+const { default: SshOpsService } = await import(process.env.DSH_TEST_BUILT_HOST ? "../lib/index.js" : "../src/index.js");
+import { TransferTasks } from "../src/transfer-tasks.js";
 
 const freePort = () => new Promise((resolve) => {
   const probe = net.createServer();
@@ -51,6 +54,25 @@ try {
     client.connect({ host: "127.0.0.1", port, username: "test", password: "test123", readyTimeout: 8000 });
   });
   const sftp = await call(client, "sftp");
+
+  const payload = Buffer.alloc(512 * 1024);
+  for (let i = 0; i < payload.length; i += 1) payload[i] = i % 251;
+  const input = join(root, "pipeline-source.bin");
+  writeFileSync(input, payload);
+  await uploadPipeline(sftp, input, "/pipeline-upload.bin");
+  assert.deepEqual(await call(sftp, "readFile", "/pipeline-upload.bin"), payload);
+  await call(sftp, "unlink", "/pipeline-upload.bin");
+  const service = Object.create(SshOpsService.prototype);
+  service.transferTasks = new TransferTasks();
+  const connection = { id: "local-ssh", dead: false };
+  service.resolveConnection = () => ({ ok: true, connection });
+  service.requireSftp = async () => ({ ok: true, sftp });
+  const uploaded = await service.sftpUploadLocalFile({ localPath: input, remotePath: "/agent-upload.bin" });
+  assert.equal(uploaded.ok, true, uploaded.error?.message);
+  assert.deepEqual(await call(sftp, "readFile", "/agent-upload.bin"), payload);
+  assert.equal(service.sftpTransferList({ connectionId: "local-ssh" }).value.transfers[0].status, "done");
+  await call(sftp, "unlink", "/agent-upload.bin");
+  rmSync(input);
 
   // ── listing: the seeds plus the sandbox shape ─────────────────────────────
   const names = (await call(sftp, "readdir", "/")).map((entry) => entry.filename).sort();

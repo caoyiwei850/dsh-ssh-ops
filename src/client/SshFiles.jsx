@@ -43,6 +43,7 @@ export function SshFiles({ api, connectionId, onCd, initialPath = "/" }) {
   const [editorBusy, setEditorBusy] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const [tasks, setTasks] = useState([]);
+  const [agentTasks, setAgentTasks] = useState([]);
   const taskId = React.useRef(0);
   const controllers = React.useRef(new Map());
   const searchController = React.useRef(null);
@@ -53,6 +54,17 @@ export function SshFiles({ api, connectionId, onCd, initialPath = "/" }) {
   const addTask = (task) => { const id = ++taskId.current; setTasks((items) => [{ ...task, id }, ...items.filter((item, index) => item.status === "running" || index < 49)]); return id; };
   useEffect(() => () => { searchController.current?.abort(); for (const controller of controllers.current.values()) controller.abort(); }, []);
   useEffect(() => { searchController.current?.abort(); searchController.current = null; setSearchState(null); }, [connectionId]);
+  useEffect(() => {
+    let active = true;
+    setAgentTasks([]);
+    if (!connectionId || typeof api.sftpTransferList !== "function") return () => { active = false; };
+    const refresh = async () => {
+      try { const result = await api.sftpTransferList(connectionId); if (active) setAgentTasks(result.transfers ?? []); } catch { /* Older hosts may not expose the registry. */ }
+    };
+    void refresh();
+    const timer = setInterval(refresh, 1500);
+    return () => { active = false; clearInterval(timer); };
+  }, [api, connectionId]);
 
   const runSearch = async () => {
     if (!searchQuery.trim()) return;
@@ -491,6 +503,15 @@ export function SshFiles({ api, connectionId, onCd, initialPath = "/" }) {
           {searchState.errors.length > 0 && <span>{t(`有 ${searchState.errors.length} 个目录无法读取，结果可能不完整`)}</span>}
           <div style={{ maxHeight: 150, overflowY: "auto" }}>{searchState.results.map((item) => <button key={item.path} style={{ ...filesStyles.favoritePath, display: "block", maxWidth: "100%" }} title={item.path} onClick={() => { load(item.isDirectory ? item.path : dirnameOf(item.path)); setSearchOpen(false); }}>{item.path}</button>)}</div>
         </div>}
+      </div>}
+      {agentTasks.length > 0 && <div style={{ ...filesStyles.scpCard, maxHeight: 180, overflowY: "auto" }}>
+        <div style={filesStyles.inlineForm}><strong>{t("AI 上传任务")}</strong></div>
+        {agentTasks.map((task) => <div key={task.id} style={filesStyles.uploadProgress} role="status">
+          <span title={task.id}>{task.source.split(/[\\/]/).pop()} → {task.target} · {task.status === "running" ? t("进行中") : task.status === "done" ? t("已完成") : task.status === "cancelled" ? t("已取消") : t("失败")} {task.error}</span>
+          {task.status === "running" && <progress value={task.sent} max={Math.max(task.total, 1)} />}
+          {task.status === "running" && <button style={filesStyles.btnTiny} onClick={() => { void api.sftpTransferCancel(connectionId, task.id).catch((err) => setError(err.message)); }}>{t("取消")}</button>}
+          {(task.status === "failed" || task.status === "cancelled") && <span>{t("可使用任务 ID 续传")}：{task.id}</span>}
+        </div>)}
       </div>}
       {tasks.length > 0 && <div style={{ ...filesStyles.scpCard, maxHeight: 180, overflowY: "auto" }}>
         <div style={filesStyles.inlineForm}><strong>{t("传输任务")}</strong><button style={filesStyles.btnTiny} onClick={() => setTasks((items) => items.filter((item) => item.status === "running"))}>{t("清除已结束")}</button></div>

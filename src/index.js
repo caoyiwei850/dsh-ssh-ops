@@ -10,7 +10,7 @@ import { randomUUID } from "node:crypto";
 import { findReusableProfileConnection } from "./profile-connection.js";
 import { resolveProfileRef, noConnectionGuidance, AUTO_CONNECT_DISABLED_MESSAGE } from "./agent-connect.js";
 import net from "node:net";
-import { Client } from "ssh2";
+import ssh2 from "ssh2";
 import { Service } from "@deepseek-ai/cordis";
 import { credentialRef } from "@deepseek-ai/dsh-credentials";
 import { defineDomain, domainTable } from "@deepseek-ai/dsh-storage-domain";
@@ -39,6 +39,8 @@ import { mkdir as fsMkdir, readdir as fsReaddir, stat as fsStat, unlink as fsUnl
 import { createReadStream, createWriteStream } from "node:fs";
 import { pipeline as streamPipeline } from "node:stream/promises";
 import { runTransferTasks, joinRemotePath, splitRemotePath } from "./sftp-dir.js";
+import { uploadPipeline } from "./sftp-pipeline.js";
+import { TransferTasks, hashTransferStream } from "./transfer-tasks.js";
 import {
   KnownHosts,
   decideHostKey,
@@ -109,6 +111,8 @@ export function isKexMismatchError(error) {
   const message = String(error?.message ?? error ?? "");
   return /no matching key exchange|no matching kex|key exchange algorithm/i.test(message);
 }
+const { Client } = ssh2;
+
 const RECONNECT_BASE_DELAY_MS = 1000;
 const RECONNECT_MAX_DELAY_MS = 30000;
 const RECONNECT_WAIT_MS = 30000;
@@ -453,6 +457,7 @@ export default class SshOpsService extends TypertRemoteService {
   operatorApprovals = new Map();
   /** batchId -> operator-selected batch exec task awaiting selection/execution. */
   batchTasks = new Map();
+  transferTasks = new TransferTasks();
 
   /** The connection currently represented by the right-side terminal panel. */
   activeConnectionId = null;
@@ -524,6 +529,7 @@ export default class SshOpsService extends TypertRemoteService {
     };
     // Tear down all connections when the plugin fiber unloads.
     ctx.effect(() => () => {
+      for (const task of this.transferTasks.entries.values()) task.controller.abort(new Error("Plugin unloaded"));
       for (const conn of this.connections.values()) {
         conn.closing = true;
         if (conn.reconnectTimer !== null) clearTimeout(conn.reconnectTimer);
@@ -1700,29 +1706,41 @@ export default class SshOpsService extends TypertRemoteService {
     );
     record.reconnectAttempts += 1;
     record.reconnectTimer = setTimeout(async () => {
-      record.reconnectTimer = null;
-      if (record.closing || !record.dead) return;
-      const connected = await this.connectClient(record, 0);
-      if (!connected.ok) {
-        // A host-key mismatch/unseen must NOT trigger a reconnect storm against
-        // a possibly re-provisioned or impersonated server: stop retrying and
-        // let the operator decide (forget the key or investigate).
-        const code = connected.error?.code;
-        if (code === "host-key-mismatch" || code === "host-key-unseen" || code === "host-key-error") {
+      try {
+        record.reconnectTimer = null;
+        if (record.closing || !record.dead) return;
+        const connected = await this.connectClient(record, 0);
+        if (!connected.ok) {
+          // A host-key mismatch/unseen must NOT trigger a reconnect storm against
+          // a possibly re-provisioned or impersonated server: stop retrying and
+          // let the operator decide (forget the key or investigate).
+          const code = connected.error?.code;
+          if (code === "host-key-mismatch" || code === "host-key-unseen" || code === "host-key-error") {
+            for (const waiter of record.reconnectWaiters.splice(0)) waiter(false);
+            return;
+          }
+          this.scheduleReconnect(record);
           return;
         }
-        this.scheduleReconnect(record);
-        return;
-      }
-      this.attachTransportHandlers(record);
-      for (const tunnel of record.tunnels.values()) {
-        if (tunnel.kind === "remote" && tunnel.bridgeInfo?.bridge) {
-          record.client.prependListener("tcp connection", tunnel.bridgeInfo.bridge);
+        this.attachTransportHandlers(record);
+        for (const tunnel of record.tunnels.values()) {
+          if (tunnel.kind === "remote" && tunnel.bridgeInfo?.bridge) {
+            record.client.prependListener("tcp connection", tunnel.bridgeInfo.bridge);
+          }
+          tunnel.active = true;
         }
-        tunnel.active = true;
+        const waiters = record.reconnectWaiters.splice(0);
+        for (const waiter of waiters) waiter(true);
+      } catch (error) {
+        // Timer callbacks have no caller to observe a rejection. Stop retries
+        // on unexpected failures, including failures in Cordis service proxies.
+        record.dead = true;
+        try { record.client?.end(); } catch {}
+        for (const hop of record.hops ?? []) { try { hop.end(); } catch {} }
+        record.hops = [];
+        for (const waiter of record.reconnectWaiters.splice(0)) { try { waiter(false); } catch {} }
+        try { console.warn("[dsh-ssh-ops] Automatic reconnect stopped after an unexpected error:", error); } catch {}
       }
-      const waiters = record.reconnectWaiters.splice(0);
-      for (const waiter of waiters) waiter();
     }, delay);
   }
 
@@ -1735,11 +1753,16 @@ export default class SshOpsService extends TypertRemoteService {
     if (record.closing) return Promise.resolve(false);
     if (!record.dead) return Promise.resolve(true);
     return new Promise((resolve) => {
-      const timer = setTimeout(() => resolve(false), timeoutMs);
-      record.reconnectWaiters.push(() => {
+      const waiter = (alive) => {
         clearTimeout(timer);
-        resolve(true);
-      });
+        resolve(alive);
+      };
+      const timer = setTimeout(() => {
+        const index = record.reconnectWaiters.indexOf(waiter);
+        if (index !== -1) record.reconnectWaiters.splice(index, 1);
+        resolve(false);
+      }, timeoutMs);
+      record.reconnectWaiters.push(waiter);
     });
   }
 
@@ -4578,10 +4601,15 @@ export default class SshOpsService extends TypertRemoteService {
   /** Upload through a unique sibling file, then commit only a completed transfer. */
   async sftpUploadFile(sftp, localFile, remoteFile, signal) {
     const partial = `${remoteFile}.dsh-upload-${randomUUID()}.tmp`;
-    const source = createReadStream(localFile);
-    const target = sftp.sftp.createWriteStream(partial);
     try {
-      await this.pipeSftpFile(source, target, signal, () => {});
+      const { size } = await fsStat(localFile);
+      if (size >= 256 * 1024 && ["open", "write", "close"].every((method) => typeof sftp.sftp[method] === "function")) {
+        await uploadPipeline(sftp.sftp, localFile, partial, { signal });
+      } else {
+        const source = createReadStream(localFile);
+        const target = sftp.sftp.createWriteStream(partial);
+        await this.pipeSftpFile(source, target, signal, () => {});
+      }
       if (signal?.aborted) throw signal.reason ?? new Error("SFTP directory transfer cancelled");
       if (typeof sftp.sftp.ext_openssh_rename === "function") {
         try {
@@ -4599,6 +4627,104 @@ export default class SshOpsService extends TypertRemoteService {
       }
       throw error;
     }
+  }
+
+  /** Agent upload: a unique remote partial and a verified in-memory checkpoint. */
+  async sftpUploadLocalFile(request) {
+    const selected = this.resolveConnection(request.connectionId);
+    if (!selected.ok) return selected;
+    const conn = selected.connection;
+    const tasks = this.transferTasks;
+    const previous = request.resumeId ? tasks.entries.get(request.resumeId) : null;
+    if (request.resumeId && (!previous || previous.connectionId !== conn.id || previous.source !== request.localPath || previous.target !== request.remotePath || previous.status === "running" || previous.status === "done")) {
+      return { ok: false, error: fail("sftp-resume-invalid", "Resume task not found, already running, or does not match the source and destination") };
+    }
+    const task = previous ?? tasks.start({ connectionId: conn.id, source: request.localPath, target: request.remotePath, partial: `${request.remotePath}.dsh-upload-${randomUUID()}.tmp`, total: 0, digest: "", checkpoint: 0 });
+    if (previous) { task.status = "running"; task.error = ""; task.controller = new AbortController(); }
+    const signal = task.controller.signal;
+    const relay = () => task.controller.abort(request.signal?.reason);
+    if (request.signal?.aborted) relay();
+    else request.signal?.addEventListener("abort", relay, { once: true });
+    const initialCheckpoint = task.checkpoint;
+    try {
+      const stat = await fsStat(task.source);
+      if (!stat.isFile()) throw new Error("Source is not a file");
+      if (!Number.isSafeInteger(stat.size) || stat.size < 0) throw new Error("Source file size is unsupported");
+      if (previous && stat.size !== task.total) throw new Error("Source file size changed; resume refused");
+      task.total = stat.size;
+      const digest = await hashTransferStream(createReadStream(task.source), signal);
+      if (previous && task.digest && digest !== task.digest) throw new Error("Source file changed; resume refused");
+      task.digest = digest;
+      if (request.remoteWorkspaceRoot !== undefined) {
+        await this.assertRemoteWorkspaceTarget(conn, request.remoteWorkspaceRoot, task.target);
+        await this.assertRemoteWorkspaceTarget(conn, request.remoteWorkspaceRoot, task.partial);
+      }
+      let attempts = 0;
+      for (;;) {
+        if (signal.aborted) throw signal.reason ?? new Error("Upload cancelled");
+        const prepared = await this.requireSftp(conn);
+        if (!prepared.ok) throw new Error(prepared.error.message);
+        const sftp = prepared.sftp;
+        // statvfs is optional and does not require an SSH shell. Unsupported
+        // servers keep working; a responsive insufficient-space result fails early.
+        if (task.checkpoint === 0 && typeof sftp.ext_openssh_statvfs === "function") {
+          let stats;
+          let timer;
+          try {
+            const parent = splitRemotePath(task.target).parent || "/";
+            stats = await Promise.race([
+              this.sftpCall(prepared, (cb) => sftp.ext_openssh_statvfs(parent, cb)),
+              new Promise((resolve) => { timer = setTimeout(resolve, 2000); })
+            ]);
+          } catch { /* Extension unavailable: let the write report real errors. */ }
+          finally { clearTimeout(timer); }
+          const available = Number(stats?.f_bavail) * Number(stats?.f_frsize);
+          if (Number(stats?.f_frsize) > 0 && Number.isFinite(available) && available < task.total) throw new Error(`Remote disk has ${available} bytes available; ${task.total} required`);
+        }
+        if (task.checkpoint > 0) {
+          const remoteStat = await this.sftpCall(prepared, (cb) => sftp.stat(task.partial, cb));
+          if (remoteStat.size < task.checkpoint) throw new Error("Remote partial is shorter than the checkpoint; resume refused");
+          const localPrefix = await hashTransferStream(createReadStream(task.source, { start: 0, end: task.checkpoint - 1 }), signal);
+          const remotePrefix = await hashTransferStream(sftp.createReadStream(task.partial, { start: 0, end: task.checkpoint - 1 }), signal);
+          if (localPrefix !== remotePrefix) throw new Error("Remote partial does not match the source; resume refused");
+        }
+        try {
+          await uploadPipeline(sftp, task.source, task.partial, { signal, start: task.checkpoint, onProgress: (sent) => { task.checkpoint = sent; task.sent = sent; } });
+          if (await hashTransferStream(createReadStream(task.source), signal) !== task.digest) throw new Error("Source file changed during upload; commit refused");
+          if (await hashTransferStream(sftp.createReadStream(task.partial), signal) !== task.digest) throw new Error("Remote file verification failed; commit refused");
+          if (signal.aborted) throw signal.reason ?? new Error("Upload cancelled");
+          if (typeof sftp.ext_openssh_rename === "function") {
+            try { await this.sftpCall(prepared, (cb) => sftp.ext_openssh_rename(task.partial, task.target, cb)); }
+            catch (error) {
+              if (error.message !== "Server does not support this extended request") throw error;
+              await this.sftpCall(prepared, (cb) => sftp.rename(task.partial, task.target, cb));
+            }
+          } else await this.sftpCall(prepared, (cb) => sftp.rename(task.partial, task.target, cb));
+          task.status = "done";
+          task.sent = task.total;
+          return { ok: true, value: { taskId: task.id, source: task.source, target: task.target, bytes: task.total, resumed: initialCheckpoint > 0 || attempts > 0, startOffset: initialCheckpoint } };
+        } catch (error) {
+          if (signal.aborted || !conn.dead || attempts >= 3) throw error;
+          attempts += 1;
+          if (!(await this.ensureAlive(conn))) throw error;
+        }
+      }
+    } catch (error) {
+      task.status = signal.aborted ? "cancelled" : "failed";
+      task.error = error.message;
+      return { ok: false, error: fail(signal.aborted ? "sftp-upload-cancelled" : "sftp-upload-failed", `${error.message} (task ${task.id})`) };
+    } finally {
+      request.signal?.removeEventListener("abort", relay);
+      tasks.prune();
+    }
+  }
+
+  sftpTransferList(request) {
+    return { ok: true, value: { transfers: this.transferTasks.list(request.connectionId) } };
+  }
+
+  sftpTransferCancel(request) {
+    return { ok: true, value: { cancelled: this.transferTasks.cancel(request.id, request.connectionId) } };
   }
 
   /** Download one remote SFTP file into a local write stream. */

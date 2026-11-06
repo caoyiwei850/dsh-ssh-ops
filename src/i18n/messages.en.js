@@ -31,6 +31,8 @@ export const en = {
   "（已取消）": " (cancelled)",
   "有 ${searchState.errors.length} 个目录无法读取，结果可能不完整": "Could not read ${searchState.errors.length} directories; results may be incomplete",
   "传输任务": "Transfers",
+  "AI 上传任务": "AI upload tasks",
+  "可使用任务 ID 续传": "Resume using task ID",
   "清除已结束": "Clear finished",
   "进行中": "In progress",
   "已完成": "Completed",

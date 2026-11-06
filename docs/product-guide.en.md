@@ -6,7 +6,7 @@
 
 > Drive your servers from the DSH main conversation while keeping a real interactive terminal on the right — plus file management, port forwarding, database access, and multi-server batch execution, all in one plugin.
 
-**Version 0.4.4** · MIT License · [GitHub repository](https://github.com/caoyiwei850/dsh-ssh-ops) · [Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases)
+**Version 0.4.5** · MIT License · [GitHub repository](https://github.com/caoyiwei850/dsh-ssh-ops) · [Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases)
 
 ---
 
@@ -62,7 +62,7 @@ The AI in the main conversation gains **40 tools** in total (see the appendix fo
 **GitHub channel (recommended)**:
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.4
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.5
 ```
 
 This installs source and builds automatically during install. Note that pnpm ≥ 10 blocks build scripts of dependencies by default — if the SSH tab does not appear after a restart, go into `node_modules/dsh-ssh-ops/`, run `npm install && npm run build`, and restart (see [INSTALL.md](../INSTALL.md) for details).
@@ -243,7 +243,7 @@ First make sure it is not a man-in-the-middle and you are not hitting a rebuilt 
 **Big database queries get cut off at 30 seconds?**
 Set `query_timeout_ms` on the connection (`0` = unlimited), and save it in the resource.
 
-## 9. Appendix: all 40 agent tools
+## 9. Appendix: all 41 agent tools
 
 Omitting `connection_id` / `db_connection_id` targets the currently active connection — no need to list connections first.
 
@@ -253,7 +253,7 @@ Omitting `connection_id` / `db_connection_id` targets the currently active conne
 
 **Session logs (3)**: `ssh_session_log_list` / `ssh_session_log_read` / `ssh_session_log_search`
 
-**SFTP (8)**: `sftp_list` · `sftp_read` (4 MiB default cap) · `sftp_write` · `sftp_mkdir` · `sftp_delete` (never executes directly — requires host in-conversation approval; simple literal paths move to the trash when possible) · `sftp_rename` · `sftp_upload_dir` · `sftp_download_dir` (batch tree transfer; small files concurrent, large files exclusive, single-file failures never abort the batch)
+**SFTP (9)**: `sftp_list` · `sftp_read` (4 MiB default cap) · `sftp_write` · `sftp_mkdir` · `sftp_delete` (never executes directly — requires host in-conversation approval; simple literal paths move to the trash when possible) · `sftp_rename` · `sftp_upload_file` (pipelined single-file upload with verification and in-process resume) · `sftp_upload_dir` · `sftp_download_dir` (batch tree transfer; small files concurrent, large files exclusive, single-file failures never abort the batch)
 
 **Port forwarding (3)**: `tunnel_start` (`local` / `remote` / `dynamic` SOCKS5) · `tunnel_list` · `tunnel_stop`
 
@@ -263,4 +263,4 @@ Omitting `connection_id` / `db_connection_id` targets the currently active conne
 
 ---
 
-*This document matches v0.4.4; for the fine detail consult the [README](../README.en.md) and the [CHANGELOG](../CHANGELOG.md).*
+*This document matches v0.4.5; for the fine detail consult the [README](../README.en.md) and the [CHANGELOG](../CHANGELOG.md).*

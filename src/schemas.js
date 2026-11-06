@@ -626,6 +626,14 @@ export const sftpRenameResultSchema = resultSchema(
   z.object({ from: z.string(), to: z.string() })
 );
 
+export const sftpTransferListRequestSchema = z.object({ connectionId: z.string().min(1) });
+export const sftpTransferListResultSchema = resultSchema(z.object({ transfers: z.array(z.object({
+  id: z.string(), connectionId: z.string(), source: z.string(), target: z.string(),
+  status: z.enum(["running", "done", "failed", "cancelled"]), total: z.number(), sent: z.number(), error: z.string()
+})) }));
+export const sftpTransferCancelRequestSchema = z.object({ connectionId: z.string().min(1), id: z.string().min(1) });
+export const sftpTransferCancelResultSchema = resultSchema(z.object({ cancelled: z.boolean() }));
+
 export const sftpUploadDirRequestSchema = z.object({
   connectionId: z.string().optional(),
   localPath: z.string().min(1),

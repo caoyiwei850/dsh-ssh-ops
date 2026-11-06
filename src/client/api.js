@@ -311,6 +311,14 @@ export class SshApi {
     return this.call("sftpDelete", { connectionId, path });
   }
 
+  sftpTransferList(connectionId) {
+    return this.call("sftpTransferList", { connectionId });
+  }
+
+  sftpTransferCancel(connectionId, id) {
+    return this.call("sftpTransferCancel", { connectionId, id });
+  }
+
   sftpRename(connectionId, from, to) {
     return this.call("sftpRename", { connectionId, from, to });
   }

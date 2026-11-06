@@ -8,7 +8,7 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.4.4-blue)
+![version](https://img.shields.io/badge/version-0.4.5-blue)
 [![dsh.so risk](https://www.dsh.so/badge/dsh-ssh-ops.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![dsh.so install · dsh 0.2.0-rc.2](https://www.dsh.so/badge/install/dsh-ssh-ops@0.2.0-rc.2.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/caoyiwei850/dsh-ssh-ops)
@@ -115,7 +115,7 @@ Agent 命中上述黑名单时不会被静默拒绝：整个工具调用会在�
 ### 从 GitHub 安装（推荐）
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.4
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.5
 ```
 
 git 渠道装的是源码，安装期由 `prepare` 钩子自动执行 `npm run build` 生成入口 `lib/`，无需手动构建。**注意：pnpm ≥ 10 默认拦截依赖包的构建脚本**——若重启后 SSH 标签未出现，按 [INSTALL.md](INSTALL.md) 第 3 步检查 `node_modules/dsh-ssh-ops/lib/`：缺失说明构建被拦，进入该包目录执行 `npm install && npm run build`（或在该 profile 的 pnpm 配置 `onlyBuiltDependencies` 中放行 `dsh-ssh-ops`）后重启即可。
@@ -130,14 +130,14 @@ dsh web
 
 ### 从发布压缩包安装
 
-从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.4.4) 下载 `dsh-ssh-ops-0.4.4.tgz` 后：
+从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.4.5) 下载 `dsh-ssh-ops-0.4.5.tgz` 后：
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.4.4.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.4.5.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.4.4.zip` 适用于离线审阅或二次开发；解压后在目录中执行 `npm install`（构建自动完成）。
+`dsh-ssh-ops-0.4.5.zip` 适用于离线审阅或二次开发；解压后在目录中执行 `npm install`（构建自动完成）。
 
 ## 使用方式
 
@@ -170,7 +170,7 @@ dsh web
 - 请在 Harness **停止**时编辑该文件（运行中的实例在加载时可能会改写它），编辑完成后重启 Harness 使更改生效。
 ### Agent 工具
 
-共 34 个 Agent 工具，省略 `connection_id` / `db_connection_id` 时默认作用于当前活动连接，**无需先调 `ssh_list` / `db_list_connections`**。
+共 41 个 Agent 工具（其中 15 个数据库工具可配置关闭），省略 `connection_id` / `db_connection_id` 时默认作用于当前活动连接，**无需先调 `ssh_list` / `db_list_connections`**。
 
 #### SSH（7）
 
@@ -191,7 +191,14 @@ dsh web
 | `ssh_terminal_sessions` | 列出已打开终端的低敏元数据与读取游标，不返回终端内容或凭据 |
 | `ssh_terminal_context` | 经每次用户确认后，按游标读取指定手动终端的有限、脱敏历史；不会影响右侧终端回看 |
 
-#### SFTP（8）
+#### Shell 集成与会话日志（4）
+
+| 工具 | 用途 |
+| --- | --- |
+| `ssh_shell_integration` | 为空闲的交互式终端启用 shell 集成 |
+| `ssh_session_log_list` / `ssh_session_log_search` / `ssh_session_log_read` | 列出、搜索和读取会话日志 |
+
+#### SFTP（9）
 
 | 工具 | 用途 |
 | --- | --- |
@@ -201,6 +208,7 @@ dsh web
 | `sftp_mkdir` | 新建远程目录 |
 | `sftp_delete` | 删除远程文件或空目录（**必须经宿主会话内审批**；简单字面路径批准后优先移入回收站） |
 | `sftp_rename` | 重命名/移动远程路径 |
+| `sftp_upload_file` | 单文件分块并发上传，完成前校验 SHA-256；失败或取消后可在插件运行期间通过任务 ID 校验并续传 |
 | `sftp_upload_dir` | 上传本地目录树到远程（自动建目录结构；小文件并发、大文件独占；单文件失败逐条上报不中断整批） |
 | `sftp_download_dir` | 下载远程目录树到本地（同上调度策略） |
 
@@ -218,7 +226,7 @@ dsh web
 | --- | --- |
 | `ssh_batch` | 基于 SSH 资源中已保存服务器（含未连接的）创建批量执行任务，由操作者在面板勾选确认后并发下发，结果按服务器分节；**仅当用户明确要求多机批量时使用**（旧的 `ssh_cluster` 已彻底移除，多机操作无免确认路径） |
 
-#### 数据库（14）
+#### 数据库（15）
 
 | 工具 | 用途 |
 | --- | --- |
@@ -229,6 +237,7 @@ dsh web
 | `db_list_tables` | 列出 MySQL/PostgreSQL 当前 schema 的表 |
 | `db_describe_table` | 完整表结构：列、索引、外键、行数/容量估计、MySQL 附 `SHOW CREATE TABLE` DDL |
 | `db_preview` | 按表名分页采样数据（LIMIT/OFFSET 参数绑定，标识符白名单防注入），附全表行数估计，无需手写 SQL |
+| `db_export` | 将数据库查询结果导出到文件 |
 | `db_explain` | 查看查询执行计划（EXPLAIN FORMAT=JSON），检查索引使用 |
 | `db_tx_begin` / `db_tx_execute` / `db_tx_commit` / `db_tx_rollback` | 交互式事务工作流：开事务 → 执行变更 → SELECT 验证 → 提交/回滚（独占连接，闲置 5 分钟自动回滚） |
 | `db_run` | 在 Redis 上跑命令（`command`+`args`），或在 MongoDB 上跑 `find`/`findOne`/`insertOne`/`updateOne`/`deleteOne`/`countDocuments` |
@@ -251,8 +260,8 @@ npm run pack:release
 
 生成物位于 `release/`：
 
-- `dsh-ssh-ops-0.4.4.tgz`：可直接被 DSH 安装。
-- `dsh-ssh-ops-0.4.4.zip`：完整离线源码包。
+- `dsh-ssh-ops-0.4.5.tgz`：可直接被 DSH 安装。
+- `dsh-ssh-ops-0.4.5.zip`：完整离线源码包。
 
 ## 许可
 
