@@ -1,6 +1,7 @@
 // xterm renders to its own canvas. It cannot inherit DSH's CSS text color,
 // so every terminal theme must provide the full contrast-critical palette.
-const DARK_TERMINAL_THEME = Object.freeze({
+/** DSH's own dark terminal chrome (the web UI palette, not the ANSI palette). */
+export const DARK_TERMINAL_THEME = Object.freeze({
   background: "#101418",
   foreground: "#e6edf3",
   cursor: "#e6edf3",
@@ -9,7 +10,8 @@ const DARK_TERMINAL_THEME = Object.freeze({
   selectionForeground: "#ffffff"
 });
 
-const LIGHT_TERMINAL_THEME = Object.freeze({
+/** DSH's own light terminal chrome. */
+export const LIGHT_TERMINAL_THEME = Object.freeze({
   background: "#f7f8fa",
   foreground: "#1d2128",
   cursor: "#1d2128",

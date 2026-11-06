@@ -17,6 +17,11 @@ const clientOut = resolve(rootDir, "lib/client.js");
 // the bundle never carries the whole manifest.
 const manifest = JSON.parse(readFileSync(resolve(rootDir, "package.json"), "utf8"));
 
+const worker = await build({
+  entryPoints: [resolve(rootDir, "src/client/terminal-display/highlight-worker.js")],
+  bundle: true, write: false, platform: "browser", format: "iife", target: "es2022", minify: true
+});
+
 await build({
   entryPoints: [resolve(rootDir, "src/client/index.jsx")],
   outfile: cjsOut,
@@ -25,7 +30,7 @@ await build({
   target: "es2022",
   bundle: true,
   sourcemap: false,
-  define: { __DSH_SSH_OPS_VERSION__: JSON.stringify(manifest.version) },
+  define: { __DSH_SSH_OPS_VERSION__: JSON.stringify(manifest.version), __DSH_HIGHLIGHT_WORKER_SOURCE__: JSON.stringify(worker.outputFiles[0].text) },
   // xterm/zod are inlined; react stays external (resolved by the host page
   // through the ModuleLoader seed table).
   external: ["react", "react/*", "@deepseek-ai/*"],

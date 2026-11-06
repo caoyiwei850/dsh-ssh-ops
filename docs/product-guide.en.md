@@ -36,15 +36,22 @@ It is not "a command line crammed into a chat box" — it is **two tracks runnin
 
 ## 3. Feature map
 
-Once installed, the right sidebar gains an **SSH tab** containing five sub-tabs:
+Once installed, the right sidebar gains an **SSH tab** containing six sub-tabs:
 
 | Sub-tab | What it does | Agent tools |
 | --- | --- | --- |
-| **Terminal** | Interactive PTY terminal: multiple tabs, light/dark theme following, scrollback buffer | `ssh_exec` / `ssh_read` / `ssh_write` |
+| **Terminal** | Interactive PTY terminal: multiple tabs, independent light/dark themes, semantic highlighting, scrollback buffer | `ssh_exec` / `ssh_read` / `ssh_write` |
 | **Files** | SFTP file manager: browse, upload/download, drag-and-drop, text editor | `sftp_*` (8 tools) |
 | **Tunnels** | Local / remote / SOCKS5 dynamic port forwarding with live status and stop | `tunnel_*` (3 tools) |
 | **Database** | Connect to databases, run SQL/commands, tabular results, CSV export | `db_*` (15 tools) |
 | **Logs** | Terminal session recording: preview, search, download, delete | `ssh_session_log_*` (3 tools) |
+| **Quick commands** | Search common commands or save custom ones; click to fill the terminal | None (operator selection) |
+
+The palette button on the server bar opens Terminal appearance. New preferences follow DSH with semantic highlighting off; fixed dark/light themes are also available. Background and text defaults use DSH's terminal skin. Each theme can have a custom background, with a readable foreground selected automatically.
+
+The color scheme supports entry switches, colors, regex tags, case sensitivity, and drag or Alt+↑/↓ ordering. Type directly in the live preview. Turning highlighting off dims the scheme controls and preserves saved settings; the preview stays editable as plain text. Resetting the current theme asks for confirmation, and JSON backup includes its background and scheme entries without changing the other theme. The dialog fits laptop and narrow windows with a scrolling list; shorter windows scroll the whole dialog.
+
+Changes apply immediately to all connections and split panes, persist in the current browser and synchronize same-origin windows. Regex matching runs in a background worker with timeout recovery. Highlighting follows scrollback and continuous output, while remote ANSI/truecolor and font styles take priority. The Logs tab keeps its existing warning/error whole-line highlighting independently of this switch. See [terminal display settings](./terminal-display.md) for controls, rules and limitations.
 
 The companion **Settings → SSH Resources** page manages server assets (a first-class entry in the settings menu) with three segments: **Server groups**, **Shared SSH credentials**, and **AI command execution policy**.
 
