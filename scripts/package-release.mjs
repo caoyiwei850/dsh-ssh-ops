@@ -11,6 +11,7 @@ export const RELEASE_ARCHIVE_ENTRIES = [
   "src",
   "scripts",
   "test",
+  "tools",
   "locale",
   "docs",
   "package.json",
@@ -21,6 +22,8 @@ export const RELEASE_ARCHIVE_ENTRIES = [
   "README.en.md",
   "INSTALL.md",
   "LICENSE",
+  "THIRD_PARTY_NOTICES.md",
+  "licenses",
   "CHANGELOG.md"
 ];
 

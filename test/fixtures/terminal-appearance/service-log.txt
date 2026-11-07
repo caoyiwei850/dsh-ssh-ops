@@ -1,0 +1,16 @@
+2026-11-06 08:15:42 INFO  worker-12 connection accepted from 203.0.113.9:51444
+2026-11-06 08:15:43 ERROR worker-12 authentication failed for user 'backup_svc' (password incorrect)
+2026-11-06 08:15:43 WARN  worker-12 rate limit reached, 128 attempts from 203.0.113.9
+2026-11-06 08:15:44 INFO  worker-03 login successful for admin from 198.51.100.23
+2026-11-06 08:15:45 DEBUG worker-03 cache miss on key session:9f31c2a7
+2026-11-06 08:15:46 ERROR worker-07 disk write failed: cannot open /data/spool/msg-0042.tmp
+2026-11-06 08:15:47 FATAL worker-01 out of memory: allocation of 536870912 bytes failed, process terminated
+2026-11-06 08:15:48 INFO  worker-05 replication lag is 0.4s, replica in sync
+Nov  6 08:15:49 host-17 sshd[8811]: Connection closed by 2001:db8:85a3::8a2e:370:7334
+08:15:50 kernel: NIC link up on eth0, MAC 52:54:00:1b:9c:f2, speed 1000Mb/s
+2026/11/06 08:15:51 healthcheck OK in 3ms (status=200, upstream=10.0.0.15:8443)
+job scheduler: 47 of 50 tasks completed, 3 skipped, 0 failed
+ping: sendmsg: Operation not permitted
+rsync: link_stat "/tmp/missing" failed: No such file or directory (2)
+The configuration value 'retries' is not supported, check documentation
+Build finished: 1 warning, 0 errors, exit code 0

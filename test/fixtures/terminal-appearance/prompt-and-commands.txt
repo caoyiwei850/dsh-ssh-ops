@@ -1,0 +1,12 @@
+user@web-prod-03:~$ systemctl status nginx
+● nginx.service - A high performance web server
+     Active: active (running) since Tue 2026-11-03 14:22:07 CST; 3 days ago
+user@web-prod-03:~$ tail -n 5 /var/log/nginx/access.log | grep "500"
+user@web-prod-03:~$ rsync -avz --progress ./build/ deploy@10.20.30.40:/srv/www/
+user@web-prod-03:~$ grep -r "connection refused" /etc/hosts.deny
+user@web-prod-03:~$ chmod 755 /usr/local/bin/deploy.sh && echo "done"
+done
+root@db-replica-01:~# sudo -u postgres psql -h 127.0.0.1 -d orders
+deploy@edge-node-07:~$ ./run-tests.sh --suite=smoke --verbose 2>&1 | tee ~/results.txt
+/app $ node server.js --port=8080
+/app # make install PREFIX=/opt/app

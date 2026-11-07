@@ -1,0 +1,10 @@
+total 36
+drwxr-xr-x  4 deploy deploy 4096 Nov  4 10:02 .
+drwxr-xr-x 11 root   root   4096 Oct 28 09:14 ..
+-rwxr-xr-x  1 deploy deploy  2217 Nov  4 10:02 deploy.sh
+-rw-r--r--  1 deploy deploy  9021 Nov  3 22:41 index.html
+lrwxrwxrwx  1 root   root   11 Oct 30 18:55 current -> build-2041
+srw------- 1 deploy deploy    0 Nov  5 08:10 agent.sock
+-rw-r-----+ 1 deploy deploy  133 Nov  5 09:47 config.yml
+-rw-------  1 root   root    65536 Nov  5 08:00 shadow.bak
+drwxrwsr-x  2 deploy staff  4096 Nov  2 16:20 shared/

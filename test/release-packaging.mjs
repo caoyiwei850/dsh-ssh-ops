@@ -14,7 +14,7 @@ try {
   writeFileSync(join(root, "test", "manual", "private.mjs"), "secret\n");
   writeFileSync(join(root, "test", "unit", "public.mjs"), "ok\n");
 
-  for (const entry of ["docs", "README.en.md", "INSTALL.md", "CHANGELOG.md"]) {
+  for (const entry of ["docs", "tools", "README.en.md", "INSTALL.md", "CHANGELOG.md", "THIRD_PARTY_NOTICES.md", "licenses"]) {
     assert.ok(RELEASE_ARCHIVE_ENTRIES.includes(entry), `release archive must include ${entry}`);
   }
   assert.equal(shouldCopyReleaseEntry(join(root, "test"), root), true);

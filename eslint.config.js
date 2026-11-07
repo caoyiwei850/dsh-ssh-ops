@@ -9,7 +9,9 @@ import globals from "globals";
 export default [
   js.configs.recommended,
   {
-    ignores: ["lib/**", "node_modules/**", "release/**", "coverage/**"]
+    // verify/ holds local verification artifacts (reports, harnesses and
+    // screenshots); it is not shipped and not part of the source tree.
+    ignores: ["lib/**", "node_modules/**", "release/**", "coverage/**", "verify/**"]
   },
   {
     languageOptions: {
