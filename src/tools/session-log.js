@@ -6,10 +6,19 @@
  */
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { redactForModel } from "../redact.js";
-import { readableLine, toReadableText } from "../terminal-text.js";
+import { toReadableText } from "../terminal-text.js";
 import { t } from "../i18n/core.js";
 
 const MAX_READ_BYTES = 48 * 1024;
+const MAX_MODEL_LOG_BYTES = 8 * 1024 * 1024;
+
+// Sanitize the complete bounded recording before slicing it. Both tools use
+// offsets in the sanitized UTF-8 view so no page can begin inside a secret.
+async function modelLogView(service, sessionId) {
+  const result = await service.sessionLogSnapshot(sessionId, MAX_MODEL_LOG_BYTES);
+  if (!result.ok) throw new Error(`ssh_session_log_read failed: ${result.error.message}`);
+  return Buffer.from(redactForModel(toReadableText(result.value.toString("utf8"))).text, "utf8");
+}
 
 export function registerSessionLogTools(ctx, service) {
   ctx.tools.register(defineTool({
@@ -45,7 +54,7 @@ export function registerSessionLogTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "ssh_session_log_search",
-    description: "Search one recorded SSH session log (case-insensitive substring) and return matching lines with their byte offsets. Content is redacted before it reaches you. Use the offsets with ssh_session_log_read to see surrounding output.",
+    description: "Search one recorded SSH session log (case-insensitive substring) and return matching lines with offsets in the sanitized log view. Content is redacted before it reaches you. Use the offsets with ssh_session_log_read to see surrounding output.",
     parameters: {
       session_id: { type: "string", required: true, description: "A session id from ssh_session_log_list." },
       query: { type: "string", required: true, description: "Text to look for (case-insensitive)." },
@@ -67,24 +76,26 @@ export function registerSessionLogTools(ctx, service) {
       }
     },
     async execute(args) {
-      const result = await service.sessionLogSearch({
-        sessionId: args.session_id, query: args.query,
-        maxHits: Math.min(Math.max(Number(args.max_hits) || 50, 1), 200)
-      });
-      if (!result.ok) throw new Error(`ssh_session_log_search failed: ${result.error.message}`);
-      return {
-        // Escape debris out first, then redact: a marker between characters
-        // would hide a secret from the redactor otherwise.
-        hits: result.value.hits.map((hit) => ({ offset: hit.offset, line: redactForModel(readableLine(hit.line)) })),
-        scannedBytes: result.value.scannedBytes,
-        stoppedEarly: result.value.stoppedEarly
-      };
+      const data = await modelLogView(service, args.session_id);
+      const query = String(args.query ?? "").toLowerCase();
+      const maxHits = Math.min(Math.max(Number(args.max_hits) || 50, 1), 200);
+      const hits = [];
+      let offset = 0;
+      let stoppedEarly = false;
+      if (query) for (const line of data.toString("utf8").split("\n")) {
+        if (line.toLowerCase().includes(query)) {
+          hits.push({ offset, line: line.slice(0, 500) });
+          if (hits.length >= maxHits) { stoppedEarly = true; break; }
+        }
+        offset += Buffer.byteLength(line, "utf8") + 1;
+      }
+      return { hits, scannedBytes: data.length, stoppedEarly };
     }
   }));
 
   ctx.tools.register(defineTool({
     name: "ssh_session_log_read",
-    description: "Read a bounded range of one recorded SSH session log, starting at a byte offset. Content is redacted before it reaches you. Read at most a few tens of KB per call and continue with the returned nextOffset.",
+    description: "Read a bounded range of one recorded SSH session log, starting at a byte offset in the sanitized log view. Content is redacted before it reaches you. Read at most a few tens of KB per call and continue with the returned nextOffset.",
     parameters: {
       session_id: { type: "string", required: true },
       offset: { type: "integer", description: "Byte offset to start at; defaults to 0 (or use an offset from a search hit)." },
@@ -107,12 +118,14 @@ export function registerSessionLogTools(ctx, service) {
       }
     },
     async execute(args) {
-      const result = await service.sessionLogRead({
-        sessionId: args.session_id, offset: args.offset,
-        maxBytes: Math.min(Math.max(Number(args.max_bytes) || 24576, 1024), MAX_READ_BYTES)
-      });
-      if (!result.ok) throw new Error(`ssh_session_log_read failed: ${result.error.message}`);
-      return { ...result.value, data: redactForModel(toReadableText(result.value.data)) };
+      const data = await modelLogView(service, args.session_id);
+      let startOffset = Math.max(0, Math.min(Number(args.offset) || 0, data.length));
+      // Do not split a UTF-8 character at an arbitrary cursor or page end.
+      while (startOffset < data.length && (data[startOffset] & 0xc0) === 0x80) startOffset += 1;
+      const length = Math.min(Math.max(Number(args.max_bytes) || 24576, 1024), MAX_READ_BYTES);
+      let nextOffset = Math.min(data.length, startOffset + length);
+      while (nextOffset < data.length && nextOffset > startOffset && (data[nextOffset] & 0xc0) === 0x80) nextOffset -= 1;
+      return { data: data.subarray(startOffset, nextOffset).toString("utf8"), startOffset, nextOffset, eof: nextOffset === data.length, size: data.length };
     }
   }));
 

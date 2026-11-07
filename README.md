@@ -4,11 +4,13 @@
 
 # DSH SSH Ops
 
+> **v0.4.7**：新增流式下载校验、断线及可选跨重启续传，文件编辑差异预览和备份恢复；修复会话日志脱敏与 SFTP 删除目标解析，并更新依赖。跨重启续传会在浏览器本地明文暂存未完成文件，默认关闭。Desktop 新增界面完整交互尚待实机验证。
+
 > DeepSeek Harness 的 SSH 运维插件：在主对话中驱动当前服务器，同时在右侧保留真实的交互式终端，并集成文件管理、端口转发与数据库管理。
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.4.5-blue)
+![version](https://img.shields.io/badge/version-0.4.7-blue)
 [![dsh.so risk](https://www.dsh.so/badge/dsh-ssh-ops.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![dsh.so install · dsh 0.2.0-rc.2](https://www.dsh.so/badge/install/dsh-ssh-ops@0.2.0-rc.2.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/caoyiwei850/dsh-ssh-ops)
@@ -88,7 +90,7 @@
 - 输出给模型前会脱敏私钥、Bearer Token、常见密码/API Key（含裸 `sk-` 开头的密钥）和数据库连接口令。
 - **连接稳定性**：SSH 连接启用 keepalive（20 秒间隔、3 次判定），NAT/防火墙不再静默丢弃空闲连接；传输意外断开后指数退避自动重连（上限 30 秒），命令中途掉线透明重试一次，瞬时连接失败自动重试 3 次（认证失败除外）；显式断开或插件卸载不触发重连，重连后远程隧道自动重新注册。对端 SSH 横幅不符合 RFC 4253 时（例如 `SSH-2.0- OpenSSH` 只多一个空格、`SSH-2.1-`）不再直接失败：ssh2 一向只认 `SSH-2.0-`/`SSH-1.99-` 并抛出信息量极低的 `Invalid identification string`，现在仅在它因此拒绝之后重试一次，由插件把该行规范化后再交给它握手（对端软件版本原样保留，连接的加密强度不受影响），成功会给出警告；确实不可用的横幅（只支持 SSH-1 的设备、缺少软件版本）则明确报出对端原文与原因，不反复重试。
 - **主机指纹校验（TOFU）**：SSH 连接校验服务器主机公钥指纹——首次连接记录并信任，之后指纹变化即拒（防中间人 / 误连重装机）。每台服务器可选 `accept-new`（默认）/`verify`（拒绝未知）/`off`；指纹变化时**不重试、不自动重连**，提示用「忘记指纹」重置。设置 → SSH 资源可按服务器设置校验模式、管理已信任指纹并一键忘记。校验在用户认证前，与登录账号/密码无关，同一台服务器换人登录不会被挡。
-- **文件管理**：SSH 面板「文件」页签，基于 SFTP 浏览服务器目录树，支持上传、下载、新建目录、删除与重命名；对话中也可用 `sftp_*` 工具直接操作。 面板可从当前目录递归搜索文件名（最多 200 个目录、200 个结果、15 秒，不递归跟随符号链接；读取失败、超时和达到上限时提示结果不完整）。传输任务列表显示本面板发起的上传和下载状态，流式上传可取消；任务记录仅在面板打开期间保留，下载沿用原有读取大小限制。
+- **文件管理**：SSH 面板「文件」页签支持 SFTP 浏览、上传、下载、目录搜索和文本编辑。支持文件保存 API 的浏览器可以流式下载并查看进度、速度和剩余时间，其他浏览器仍受读取大小限制。编辑器可并排预览修改；保存前检查原始内容并在同目录创建私有备份，面板可恢复最近一次保存，也可在重新打开面板后从文件列表恢复备份。备份留在远端并可能包含敏感内容，请按需清理；SFTP 无原子比较写入，仍存在短暂的并发修改窗口。传输任务只在面板打开期间保留。
 - **端口转发**：SSH 面板「转发」页签，可建立本地转发（本机 → 服务器可达目标）与远程转发（服务器 → 本机），实时查看与停止隧道；对话中也可用 `tunnel_*` 工具。
 - **多机批量**：主对话说「批量执行 <命令>」，Agent 创建批量任务，右侧 SSH 面板弹出勾选弹窗，列出 SSH 资源中已保存的全部服务器（**含未连接的**）供手动勾选，确认后并发执行（每台用保存凭据建连 → 执行 → 断开），结果按服务器分节展示（成功绿 / 失败红）。批量目标与当前打开的连接完全无关，可勾选未连接的服务器；命中安全策略时「命令 + N 台目标」一次性确认，不再逐台弹窗。旧的 `ssh_cluster`（基于已打开连接、无需确认即群发）已彻底移除：多机操作只能经 `ssh_batch` 由操作者勾选确认，杜绝「点名一台、全量执行」。
 - **数据库**：SSH 面板「数据库」页签，支持连接 MySQL / PostgreSQL / Redis / MongoDB，可手动执行 SQL 查询或命令并查看结果表格；对话中也可用 `db_*` 工具直接操作。
@@ -123,7 +125,7 @@ Agent 命中上述黑名单时不会被静默拒绝：整个工具调用会在�
 ### 从 GitHub 安装
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.5
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.7
 ```
 
 git 渠道装的是源码，安装期由 `prepare` 钩子自动执行 `npm run build` 生成入口 `lib/`，无需手动构建。**注意：pnpm ≥ 10 默认拦截依赖包的构建脚本**——若重启后 SSH 标签未出现，按 [INSTALL.md](INSTALL.md) 第 3 步检查 `node_modules/dsh-ssh-ops/lib/`：缺失说明构建被拦，进入该包目录执行 `npm install && npm run build`（或在该 profile 的 pnpm 配置 `onlyBuiltDependencies` 中放行 `dsh-ssh-ops`）后重启即可。
@@ -138,14 +140,14 @@ dsh web
 
 ### 从发布压缩包安装
 
-从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.4.5) 下载 `dsh-ssh-ops-0.4.5.tgz` 后：
+从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.4.7) 下载 `dsh-ssh-ops-0.4.7.tgz` 后：
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.4.5.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.4.7.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.4.5.zip` 适用于离线审阅或二次开发；解压后在目录中执行 `npm install`（构建自动完成）。
+`dsh-ssh-ops-0.4.7.zip` 适用于离线审阅或二次开发；解压后在目录中执行 `npm install`（构建自动完成）。
 
 ## 使用方式
 
@@ -216,7 +218,7 @@ dsh web
 | `sftp_mkdir` | 新建远程目录 |
 | `sftp_delete` | 删除远程文件或空目录（**必须经宿主会话内审批**；简单字面路径批准后优先移入回收站） |
 | `sftp_rename` | 重命名/移动远程路径 |
-| `sftp_upload_file` | 单文件分块并发上传，完成前校验 SHA-256；失败或取消后可在插件运行期间通过任务 ID 校验并续传 |
+| `sftp_upload_file` | 单文件分块并发上传，完成前校验 SHA-256；失败或取消后可在重新连接同一服务器后通过任务 ID 校验并续传 |
 | `sftp_upload_dir` | 上传本地目录树到远程（自动建目录结构；小文件并发、大文件独占；单文件失败逐条上报不中断整批） |
 | `sftp_download_dir` | 下载远程目录树到本地（同上调度策略） |
 
@@ -268,8 +270,8 @@ npm run pack:release
 
 生成物位于 `release/`：
 
-- `dsh-ssh-ops-0.4.5.tgz`：可直接被 DSH 安装。
-- `dsh-ssh-ops-0.4.5.zip`：完整离线源码包。
+- `dsh-ssh-ops-0.4.7.tgz`：可直接被 DSH 安装。
+- `dsh-ssh-ops-0.4.7.zip`：完整离线源码包。
 
 ## 许可
 

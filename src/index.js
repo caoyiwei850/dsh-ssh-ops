@@ -40,7 +40,8 @@ import { createReadStream, createWriteStream } from "node:fs";
 import { pipeline as streamPipeline } from "node:stream/promises";
 import { runTransferTasks, joinRemotePath, splitRemotePath } from "./sftp-dir.js";
 import { uploadPipeline } from "./sftp-pipeline.js";
-import { TransferTasks, hashTransferStream } from "./transfer-tasks.js";
+import { saveEditorFile } from "./sftp-editor-save.js";
+import { TransferTasks, hashTransferStream, transferConnectionIdentity } from "./transfer-tasks.js";
 import {
   KnownHosts,
   decideHostKey,
@@ -457,7 +458,7 @@ export default class SshOpsService extends TypertRemoteService {
   operatorApprovals = new Map();
   /** batchId -> operator-selected batch exec task awaiting selection/execution. */
   batchTasks = new Map();
-  transferTasks = new TransferTasks();
+  transferTasks = new TransferTasks({ journalPath: joinPath(homedir(), ".dsh", "ssh-ops-transfer-journal.json") });
 
   /** The connection currently represented by the right-side terminal panel. */
   activeConnectionId = null;
@@ -530,6 +531,7 @@ export default class SshOpsService extends TypertRemoteService {
     // Tear down all connections when the plugin fiber unloads.
     ctx.effect(() => () => {
       for (const task of this.transferTasks.entries.values()) task.controller.abort(new Error("Plugin unloaded"));
+      this.transferTasks.close();
       for (const conn of this.connections.values()) {
         conn.closing = true;
         if (conn.reconnectTimer !== null) clearTimeout(conn.reconnectTimer);
@@ -807,7 +809,7 @@ export default class SshOpsService extends TypertRemoteService {
       });
     }
     await this.assertRemoteWorkspaceTarget(connection, record.remotePath, resolvedPath);
-    return { connectionId: connection.connectionId, path: resolvedPath, bound: true, workspaceRoot: record.remotePath };
+    return { connectionId: connection.id ?? connection.connectionId, path: resolvedPath, bound: true, workspaceRoot: record.remotePath };
   }
 
   /**
@@ -3884,6 +3886,19 @@ export default class SshOpsService extends TypertRemoteService {
     }
   }
 
+  async sftpEditorSave(request) {
+    const selected = this.resolveConnection(request.connectionId);
+    if (!selected.ok) return selected;
+    const sftp = await this.requireSftp(selected.connection);
+    if (!sftp.ok) return sftp;
+    try {
+      const value = await saveEditorFile(sftp.sftp, request.path, Buffer.from(request.expected, "base64"), Buffer.from(request.data, "base64"));
+      return { ok: true, value };
+    } catch (error) {
+      return { ok: false, error: fail("editor-save-failed", error.message) };
+    }
+  }
+
   // ── Streaming file plane (workbench S6 patch) ──────────────────────────────
   // HTTP byte routes over this service's own connections: callers address an
   // existing connectionId, so profile/credential/connection/host-key lifecycle
@@ -4042,7 +4057,31 @@ export default class SshOpsService extends TypertRemoteService {
       this.streamJson(res, 400, "is-directory", `${remotePath}: directories download through ${STREAM_ROUTE_PREFIX}/archive`);
       return;
     }
-    const stream = prepared.sftp.createReadStream(remotePath, { highWaterMark: STREAM_HIGH_WATER_MARK });
+    const offsetText = url.searchParams.get("offset") ?? "0";
+    const offset = Number(offsetText);
+    if (!/^\d+$/.test(offsetText) || !Number.isSafeInteger(offset) || offset < 0 || offset > attrs.size || (offset > 0 && url.searchParams.get("verify") !== "sha256")) {
+      this.streamJson(res, 400, "bad-offset", "Invalid download offset");
+      return;
+    }
+    let digest;
+    if (url.searchParams.get("verify") === "sha256") {
+      const controller = new AbortController();
+      const onClose = () => controller.abort(new Error("Download cancelled"));
+      res.once("close", onClose);
+      try {
+        digest = await hashTransferStream(prepared.sftp.createReadStream(remotePath, { highWaterMark: STREAM_HIGH_WATER_MARK }), controller.signal);
+      } catch (error) {
+        if (!res.destroyed) this.streamJson(res, 502, "sftp-hash-failed", error.message);
+        return;
+      } finally { res.removeListener("close", onClose); }
+      if (res.destroyed) return;
+      const expected = url.searchParams.get("expectedSha256");
+      if (offset > 0 && (!expected || expected !== digest)) {
+        this.streamJson(res, 409, "source-changed", "Remote file changed; resume refused");
+        return;
+      }
+    }
+    const stream = prepared.sftp.createReadStream(remotePath, { highWaterMark: STREAM_HIGH_WATER_MARK, ...(offset ? { start: offset } : {}) });
     const openError = await this.streamAwaitOpen(stream);
     if (openError !== null) {
       stream.destroy();
@@ -4051,7 +4090,10 @@ export default class SshOpsService extends TypertRemoteService {
     }
     res.writeHead(200, {
       "content-type": "application/octet-stream",
-      "content-length": String(attrs.size),
+      "content-length": String(attrs.size - offset),
+      "x-file-size": String(attrs.size),
+      "x-download-offset": String(offset),
+      ...(digest ? { "x-content-sha256": digest } : {}),
       "cache-control": "no-store, no-transform"
     });
     let destroyed = false;
@@ -4493,6 +4535,49 @@ export default class SshOpsService extends TypertRemoteService {
     }
   }
 
+  /** Bound a remote SFTP operation without assuming the server will reply. */
+  async sftpDeadline(operation) {
+    const timeoutMs = Math.max(1, this.config?.sftpOperationTimeoutMs ?? 30000);
+    let timer;
+    try {
+      return await Promise.race([
+        operation,
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`SFTP operation timed out after ${timeoutMs} ms`)), timeoutMs); })
+      ]);
+    } finally { clearTimeout(timer); }
+  }
+
+  /** Move a single approved target to a unique trash path using SFTP, without a shell. */
+  async moveSftpToTrash(connectionId, path) {
+    const selected = this.resolveConnection(connectionId);
+    if (!selected.ok) return selected;
+    let trashPath;
+    let renameStarted = false;
+    try {
+      const prepared = await this.sftpDeadline(this.requireSftp(selected.connection));
+      if (!prepared.ok) return prepared;
+      const home = await this.sftpDeadline(this.sftpCall(prepared, (cb) => prepared.sftp.realpath(".", cb)));
+      if (typeof home !== "string" || !(home.startsWith("/") || /^[A-Za-z]:\//.test(home))) throw new Error("SFTP home directory is not an absolute path");
+      if (typeof path !== "string" || !path || /[\\\x00-\x1f\x7f]/.test(path)) throw new Error("Use an SFTP path with forward slashes and no control characters");
+      const trashDir = joinRemotePath(home, ".dsh-trash");
+      const canonicalHome = posix.resolve("/", home).toLowerCase();
+      const source = (/^[A-Za-z]:\//.test(path) ? posix.resolve("/", path) : posix.resolve(canonicalHome, path)).toLowerCase();
+      const trash = posix.resolve("/", trashDir).toLowerCase();
+      if (source === "/" || source === canonicalHome || trash === source || trash.startsWith(`${source}/`) || source.startsWith(`${trash}/`)) {
+        throw new Error("Refusing to move the home directory, its parent, or the trash itself");
+      }
+      await this.sftpDeadline(this.ensureRemoteDir(prepared, trashDir));
+      const label = encodeURIComponent(posix.basename(path)).slice(0, 80) || "item";
+      trashPath = joinRemotePath(trashDir, `${label}-${randomUUID()}`);
+      renameStarted = true;
+      await this.sftpDeadline(this.sftpCall(prepared, (cb) => prepared.sftp.rename(path, trashPath, cb)));
+      return { ok: true, value: { trashPath } };
+    } catch (error) {
+      const outcome = renameStarted ? `; outcome may be unknown, check both ${path} and ${trashPath} before retrying` : "";
+      return { ok: false, error: fail("sftp-trash-failed", `Could not confirm remote trash move: ${error.message}${outcome}`) };
+    }
+  }
+
   /** Rename a remote file or directory. */
   async sftpRename(request) {
     const selected = this.resolveConnection(request.connectionId);
@@ -4635,12 +4720,14 @@ export default class SshOpsService extends TypertRemoteService {
     if (!selected.ok) return selected;
     const conn = selected.connection;
     const tasks = this.transferTasks;
+    try { await tasks.load(); } catch (error) { return { ok: false, error: fail("sftp-transfer-journal", error.message) }; }
+    tasks.attach(selected.connectionId ?? conn.id, conn);
     const previous = request.resumeId ? tasks.entries.get(request.resumeId) : null;
     if (request.resumeId && (!previous || previous.connectionId !== conn.id || previous.source !== request.localPath || previous.target !== request.remotePath || previous.status === "running" || previous.status === "done")) {
       return { ok: false, error: fail("sftp-resume-invalid", "Resume task not found, already running, or does not match the source and destination") };
     }
-    const task = previous ?? tasks.start({ connectionId: conn.id, source: request.localPath, target: request.remotePath, partial: `${request.remotePath}.dsh-upload-${randomUUID()}.tmp`, total: 0, digest: "", checkpoint: 0 });
-    if (previous) { task.status = "running"; task.error = ""; task.controller = new AbortController(); }
+    const task = previous ?? tasks.start({ connectionId: conn.id, identity: transferConnectionIdentity(conn), source: request.localPath, target: request.remotePath, partial: `${request.remotePath}.dsh-upload-${randomUUID()}.tmp`, total: 0, digest: "", checkpoint: 0 });
+    if (previous) { task.status = "running"; task.error = ""; task.controller = new AbortController(); tasks.ownedIds.add(task.id); }
     const signal = task.controller.signal;
     const relay = () => task.controller.abort(request.signal?.reason);
     if (request.signal?.aborted) relay();
@@ -4655,6 +4742,8 @@ export default class SshOpsService extends TypertRemoteService {
       const digest = await hashTransferStream(createReadStream(task.source), signal);
       if (previous && task.digest && digest !== task.digest) throw new Error("Source file changed; resume refused");
       task.digest = digest;
+      if (tasks.journalPath && !task.identity) throw new Error("Cannot record the transfer safely without the server identity");
+      await tasks.persist();
       if (request.remoteWorkspaceRoot !== undefined) {
         await this.assertRemoteWorkspaceTarget(conn, request.remoteWorkspaceRoot, task.target);
         await this.assertRemoteWorkspaceTarget(conn, request.remoteWorkspaceRoot, task.partial);
@@ -4716,11 +4805,56 @@ export default class SshOpsService extends TypertRemoteService {
     } finally {
       request.signal?.removeEventListener("abort", relay);
       tasks.prune();
+      try { await tasks.persist(); } catch (error) { try { console.warn("[dsh-ssh-ops] Could not save transfer journal:", error.message); } catch {} }
+      tasks.releaseIfIdle();
     }
   }
 
-  sftpTransferList(request) {
-    return { ok: true, value: { transfers: this.transferTasks.list(request.connectionId) } };
+  async sftpTransferList(request) {
+    try {
+      await this.transferTasks.load();
+      this.transferTasks.attach(request.connectionId, this.connections?.get(request.connectionId));
+      return { ok: true, value: { transfers: this.transferTasks.list(request.connectionId) } };
+    } catch (error) { return { ok: false, error: fail("sftp-transfer-journal", error.message) }; }
+  }
+
+  async sftpTransferDiscard(request) {
+    const selected = this.resolveConnection(request.connectionId);
+    if (!selected.ok) return selected;
+    let claimedTask;
+    let candidate;
+    try {
+      await this.transferTasks.load();
+      this.transferTasks.attach(selected.connectionId, selected.connection);
+      const task = this.transferTasks.entries.get(request.id);
+      if (!task || task.connectionId !== selected.connectionId || task.status === "running" || task.status === "done") return { ok: false, error: fail("sftp-transfer-invalid", "Transfer not found, active, or on another server") };
+      const suffix = task.partial.startsWith(`${task.target}.dsh-upload-`) ? task.partial.slice(`${task.target}.dsh-upload-`.length) : "";
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tmp$/i.test(suffix)) return { ok: false, error: fail("sftp-transfer-invalid", "Refusing to remove an unrecognized partial path") };
+      candidate = task;
+      task.status = "running";
+      this.transferTasks.ownedIds.add(task.id);
+      await this.transferTasks.persist();
+      claimedTask = task;
+      const sftp = await this.sftpDeadline(this.requireSftp(selected.connection));
+      if (!sftp.ok) throw new Error(sftp.error.message);
+      await this.removeSftpPartial(sftp, task.partial);
+      this.transferTasks.removedIds.add(task.id);
+      this.transferTasks.ownedIds.delete(task.id);
+      await this.transferTasks.persist();
+      this.transferTasks.entries.delete(task.id);
+      return { ok: true, value: { discarded: true } };
+    } catch (error) {
+      if (claimedTask) {
+        claimedTask.status = "failed";
+        this.transferTasks.removedIds.delete(claimedTask.id);
+        this.transferTasks.ownedIds.add(claimedTask.id);
+        try { await this.transferTasks.persist(); } catch {}
+      } else if (candidate) {
+        candidate.status = "failed";
+        this.transferTasks.ownedIds.delete(candidate.id);
+      }
+      return { ok: false, error: fail("sftp-transfer-discard-failed", error.message) };
+    }
   }
 
   sftpTransferCancel(request) {
@@ -5151,6 +5285,15 @@ export default class SshOpsService extends TypertRemoteService {
     const store = this.sessionLogStore();
     if (store === null) return { ok: true, value: { enabled: false, logs: [] } };
     return { ok: true, value: { enabled: true, logs: await store.list() } };
+  }
+
+  /** Internal agent-only byte snapshot; the panel continues to use raw paging. */
+  async sessionLogSnapshot(sessionId, maxBytes) {
+    const store = this.sessionLogStore();
+    if (store === null) return { ok: false, error: fail("session-log-disabled", "Session recording is disabled") };
+    const result = await store.snapshot(sessionId, maxBytes);
+    if (!result.ok) return { ok: false, error: fail("session-log-read-failed", `Cannot safely read session log: ${result.reason}`) };
+    return { ok: true, value: result.data };
   }
 
   async sessionLogRead(request) {

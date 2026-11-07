@@ -9,8 +9,9 @@
  * it hands the terminal journal, so a log is exactly what the panel showed.
  */
 import { createReadStream, createWriteStream } from "node:fs";
-import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 
 /** Defaults: one session may keep 8 MB, the directory 256 MB. */
 export const SESSION_LOG_LIMITS = Object.freeze({
@@ -182,6 +183,27 @@ export class SessionLogStore {
     await this.pending.get(sessionId)?.catch(() => {});
   }
 
+  /** Read one bounded byte snapshot without splitting a UTF-8 sequence. */
+  async snapshot(sessionId, maxBytes) {
+    await this.flush(sessionId);
+    await this.init();
+    let file;
+    try {
+      file = await open(this.logPath(sessionId), "r");
+      const { size } = await file.stat();
+      if (size > maxBytes) return { ok: false, reason: "too-large" };
+      const data = Buffer.alloc(size);
+      let offset = 0;
+      while (offset < size) {
+        const result = await file.read(data, offset, size - offset, offset);
+        if (result.bytesRead === 0) return { ok: false, reason: "changed" };
+        offset += result.bytesRead;
+      }
+      return { ok: true, data };
+    } catch (error) { return { ok: false, reason: error.code === "ENOENT" ? "no-such-log" : "read-failed" }; }
+    finally { await file?.close(); }
+  }
+
   /** Read a byte range of one log; callers page with `nextOffset`. */
   async read(sessionId, { offset = 0, maxBytes = 65536 } = {}) {
     await this.flush(sessionId);
@@ -229,16 +251,18 @@ export class SessionLogStore {
     let size;
     try { size = (await stat(path)).size; } catch { return { ok: false, reason: "no-such-log" }; }
     const limit = Math.min(size, this.limits.maxSearchBytes);
+    if (limit === 0) return { ok: true, hits: [], scannedBytes: 0, stoppedEarly: false };
     const hits = [];
     let scanned = 0;
     let pending = "";
     let pendingOffset = 0;
     let stoppedEarly = false;
+    const decoder = new StringDecoder("utf8");
     await new Promise((resolve) => {
       const stream = createReadStream(path, { start: 0, end: limit - 1 });
       stream.on("data", (chunk) => {
         scanned += chunk.length;
-        pending += chunk.toString("utf8");
+        pending += decoder.write(chunk);
         let index;
         while ((index = pending.indexOf("\n")) >= 0) {
           const line = pending.slice(0, index);
@@ -253,6 +277,7 @@ export class SessionLogStore {
       stream.on("error", () => resolve());
       stream.on("close", resolve);
       stream.on("end", () => {
+        pending += decoder.end();
         if (pending !== "" && pending.toLowerCase().includes(needle)) {
           hits.push({ offset: pendingOffset, line: pending.slice(0, 500) });
         }

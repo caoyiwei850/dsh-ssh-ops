@@ -6,6 +6,7 @@ import { readFile } from "node:fs/promises";
 import {
   BINARY_PROBE_BYTES,
   MAX_EDITABLE_BYTES,
+  changedLineRegions,
   decodeEditableText,
   encodeEditableText,
   filterEntries,
@@ -14,6 +15,13 @@ import {
 import { favoritesKey, readFavorites, toggleFavorite, writeFavorites } from "../src/client/sftp-favorites.js";
 
 const utf8 = (text) => new TextEncoder().encode(text);
+
+assert.deepEqual(changedLineRegions("same\nold\nend", "same\nnew\nend"), {
+  left: { before: "same", changed: "old", after: "end" },
+  right: { before: "same", changed: "new", after: "end" }
+});
+assert.equal(changedLineRegions("a\nb", "a\nx\nb").right.changed, "x");
+assert.equal(changedLineRegions("a\nx\nb", "a\nb").left.changed, "x");
 
 // ── editor byte policy ──────────────────────────────────────────────────────
 assert.equal(MAX_EDITABLE_BYTES, 10 * 1024 * 1024);
@@ -110,7 +118,8 @@ assert.equal(MAX_EDITABLE_BYTES, 10 * 1024 * 1024);
     [/openEditor\(entry\)/, "file rows offer the editor"],
     [/api\.sftpReadFile\(connectionId, path, MAX_EDITABLE_BYTES \+ 1\)/, "the editor reads with the size cap as its bound"],
     [/encodeEditableText\(editing\.text\)/, "saving writes the editor text as UTF-8 bytes"],
-    [/fresh\.mtime !== editing\.mtime[\s\S]{0,120}confirm/, "a moved mtime asks before overwriting"],
+    [/sftpEditorSave\(connectionId, editing\.path, editing\.originalBytes, replacement\)/, "saving checks the original bytes and makes a backup"],
+    [/restoreBackup\(entry\)/, "a backup remains restorable after reopening the panel"],
     [/toggleFavorite\(favorites, cwd\)/, "the star pins the current directory"],
     [/writeFavorites\(globalThis\.localStorage, favoritesStorageKey, next\)/, "favorites persist per server key"],
     [/readFavorites\(globalThis\.localStorage, key\)/, "favorites load from storage on connect"],

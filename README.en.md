@@ -4,11 +4,13 @@
 
 # DSH SSH Ops
 
+> **v0.4.7** adds verified streaming downloads with reconnect and optional restart recovery, editor change previews and backup restore, fixes session-log redaction and SFTP deletion target handling, and updates dependencies. Restart recovery is disabled by default and stores unfinished data unencrypted in browser-local storage. The new Desktop interface flows have not yet been fully validated interactively.
+
 > An SSH operations plugin for DeepSeek Harness: drive the current server from the main conversation while keeping a real interactive terminal on the right, with built-in file management, port forwarding, and database management.
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.4.5-blue)
+![version](https://img.shields.io/badge/version-0.4.7-blue)
 [![dsh.so risk](https://www.dsh.so/badge/dsh-ssh-ops.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![dsh.so install · dsh 0.2.0-rc.2](https://www.dsh.so/badge/install/dsh-ssh-ops@0.2.0-rc.2.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/caoyiwei850/dsh-ssh-ops)
@@ -91,7 +93,7 @@ The Files tab provides SFTP management and can `cd` the interactive terminal int
 - Output sent to the model is redacted for private keys, Bearer tokens, common passwords/API keys (including bare `sk-`-prefixed keys), and database passwords.
 - **Connection stability**: SSH connections enable keepalive (20s interval, 3 checks), so NAT/firewalls no longer silently drop idle connections. Transport drops trigger exponential-backoff auto-reconnect (capped at 30s); a command that drops mid-run is retried once transparently. Transient connection failures auto-retry 3 times (auth failures excluded). Explicit disconnect or plugin unload never triggers reconnect; remote tunnels re-register automatically after a reconnect.
 - **Host-key verification (TOFU)**: SSH connections verify the server's host public-key fingerprint — first connect records and trusts it, later changes are rejected (guards against MITM / re-provisioned servers). Per-server `hostKeyMode` selects `accept-new` (default) / `verify` (reject unseen) / `off`; on a changed fingerprint the connection is **not retried and not auto-reconnected**. Settings → SSH Resources lets you set the mode per server and manage trusted fingerprints with one-click forget. Verification runs before user authentication, so it is independent of who logs in or which password they use — the same server with an unchanged key never blocks another admin or vendor.
-- **File management**: a Files tab in the SSH panel browses the server's filesystem over SFTP with upload, download, mkdir, delete, and rename. The `sftp_*` tools can also be used directly in the conversation.
+- **File management**: the Files tab supports SFTP browsing, transfers, search, and text editing. Browsers supporting the file save API can stream downloads with progress, speed, and cancellation; other browsers retain the read-size limit. The editor previews changes side by side, checks original bytes before saving, and creates a private backup in the same directory. Backups can be restored from the file list after reopening the panel. Backups remain on the server and may contain sensitive data; remove them when no longer needed. SFTP lacks atomic compare-and-write, so a small concurrent-change window remains.
 - **Port forwarding**: a Tunnels tab starts local forwards (this machine → server-reachable target) and remote forwards (server → this machine), with a live tunnel list and stop control. The `tunnel_*` tools can also be used directly.
 - **Multi-server batch**: say "batch exec <command>" in the conversation and the agent creates a batch task; the SSH panel pops a selection dialog listing **all saved servers (including not-yet-connected ones)** from SSH Resources for you to tick, then runs it concurrently after confirmation (each via its saved credentials: connect → run → disconnect), presenting results grouped per server (green success / red failure). The batch target is completely independent of the currently-open connection. When the command hits the safety policy, it is confirmed once as "command + N targets" rather than per-server. The legacy `ssh_cluster` (which fanned out over open connections with no confirmation) has been removed entirely: multi-server work goes only through `ssh_batch`'s operator-ticked confirmation, so a one-server request can never silently hit every connection.
 - **Databases**: a Database tab connects to MySQL / PostgreSQL / Redis / MongoDB, runs SQL queries or commands manually, and shows results in a table. The `db_*` tools can also be used directly.
@@ -120,7 +122,7 @@ Local `link:`, Git, and archive installations do not display the host's registry
 ### From GitHub
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.5
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.7
 ```
 
 The git channel installs source; the `prepare` hook runs `npm run build` during install to produce the `lib/` entry files, so no manual build is needed. **Note: pnpm ≥ 10 blocks dependency build scripts by default** — if the SSH tab does not appear after restart, check `node_modules/dsh-ssh-ops/lib/` as described in [INSTALL.md](INSTALL.md) step 3: if it is missing, the build was blocked; run `npm install && npm run build` inside that package directory (or allowlist `dsh-ssh-ops` in the profile's pnpm `onlyBuiltDependencies`) and restart.
@@ -135,14 +137,14 @@ Open any session, click the top **SSH** tab, and use the right-side panel to con
 
 ### From a release archive
 
-Download `dsh-ssh-ops-0.4.5.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.4.5), then:
+Download `dsh-ssh-ops-0.4.7.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.4.7), then:
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.4.5.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.4.7.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.4.5.zip` is for offline review or further development; extract it and run `npm install` in the directory (the build runs automatically).
+`dsh-ssh-ops-0.4.7.zip` is for offline review or further development; extract it and run `npm install` in the directory (the build runs automatically).
 
 ## Usage
 
@@ -213,7 +215,7 @@ There are 41 agent tools (including 15 database tools, which can be disabled). O
 | `sftp_mkdir` | Create a remote directory |
 | `sftp_delete` | Delete a remote file or empty dir (**requires host in-conversation approval**; simple literal paths move to the trash when possible) |
 | `sftp_rename` | Rename or move a remote path |
-| `sftp_upload_file` | Upload one local file with bounded pipelining and SHA-256 verification; failed or cancelled tasks can resume by task ID while the plugin stays running |
+| `sftp_upload_file` | Upload one local file with bounded pipelining and SHA-256 verification; failed or cancelled tasks can resume by task ID after reconnecting to the same server |
 | `sftp_upload_dir` | Upload a local directory tree; small files run concurrently, large files exclusively, and individual failures are reported |
 | `sftp_download_dir` | Download a remote directory tree with the same scheduling and error handling |
 
@@ -265,8 +267,8 @@ Pushing a `vX.Y.Z` tag that matches `package.json.version` runs tests, builds th
 
 Artifacts are written to `release/`:
 
-- `dsh-ssh-ops-0.4.5.tgz`: installable directly by DSH.
-- `dsh-ssh-ops-0.4.5.zip`: full offline source archive.
+- `dsh-ssh-ops-0.4.7.tgz`: installable directly by DSH.
+- `dsh-ssh-ops-0.4.7.zip`: full offline source archive.
 
 ## License
 

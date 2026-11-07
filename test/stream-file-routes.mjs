@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { Writable } from "node:stream";
+import { PassThrough, Writable } from "node:stream";
 import SshOpsService from "../src/index.js";
 
 function response() {
@@ -52,6 +52,39 @@ function response() {
 }
 
 console.log("stream routes: archive namespace guard passed");
+
+// A browser disconnect must stop the upstream SFTP stream, even if the peer
+// would otherwise continue producing data indefinitely.
+{
+  const service = Object.create(SshOpsService.prototype);
+  const upstream = new PassThrough();
+  service.ctx = { logger: { warn() {} } };
+  service.streamPrepareSftp = async () => ({ sftp: {
+    stat(_path, cb) { cb(null, { size: 1024, mode: 0o100600 }); },
+    createReadStream() { queueMicrotask(() => upstream.emit("open")); return upstream; }
+  } });
+  const res = new Writable({ write(_chunk, _encoding, cb) { cb(); } });
+  res.writeHead = () => {};
+  await service.streamDownloadFile({}, res, new URL("http://localhost/?path=%2Flarge"), "c1");
+  res.destroy();
+  await new Promise((resolve) => res.once("close", resolve));
+  assert.equal(upstream.destroyed, true, "closing the HTTP response destroys the SFTP reader");
+}
+
+{
+  const service = Object.create(SshOpsService.prototype);
+  const upstream = new PassThrough();
+  service.streamPrepareSftp = async () => ({ sftp: {
+    stat(_path, cb) { cb(null, { size: 1024, mode: 0o100600 }); },
+    createReadStream() { return upstream; }
+  } });
+  const res = new Writable({ write(_chunk, _encoding, cb) { cb(); } });
+  const pending = service.streamDownloadFile({}, res, new URL("http://localhost/?path=%2Flarge&verify=sha256"), "c1");
+  await new Promise((resolve) => setImmediate(resolve));
+  res.destroy();
+  await pending;
+  assert.equal(upstream.destroyed, true, "cancelling during hashing destroys the SFTP reader");
+}
 
 // A browser upload must never truncate or delete an existing destination when
 // the request is cancelled. Only a completed temporary file may replace it.

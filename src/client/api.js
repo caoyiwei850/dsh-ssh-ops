@@ -269,6 +269,10 @@ export class SshApi {
     return this.call("sftpWriteFile", { connectionId, path, data: encodeBase64Bytes(bytes) });
   }
 
+  sftpEditorSave(connectionId, path, expected, bytes) {
+    return this.call("sftpEditorSave", { connectionId, path, expected: encodeBase64Bytes(expected), data: encodeBase64Bytes(bytes) });
+  }
+
   /** Stream a browser File and report bytes sent to the host. Resolves after SFTP closes. */
   sftpUploadFile(connectionId, path, file, onProgress, signal) {
     return new Promise((resolve, reject) => {
@@ -313,6 +317,10 @@ export class SshApi {
 
   sftpTransferList(connectionId) {
     return this.call("sftpTransferList", { connectionId });
+  }
+
+  sftpTransferDiscard(connectionId, id) {
+    return this.call("sftpTransferDiscard", { connectionId, id });
   }
 
   sftpTransferCancel(connectionId, id) {

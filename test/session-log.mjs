@@ -220,9 +220,9 @@ try {
     [logs, /toggleSelectAll/, "the log toolbar offers select-all for batch delete"],
     [logs, /删除所选（\$\{selection\.size\}）/, "checked logs surface a delete-selected button with its count"],
     [logs, /删除所选 \$\{ids\.length\} 条会话日志？此操作不可恢复/, "batch delete confirms before deleting"],
-    [tools, /redactForModel\(readableLine\(hit\.line\)\)/, "agent hits are stripped then redacted"],
+    [tools, /modelLogView\(service, args\.session_id\)/, "agent searches use the sanitized view"],
     [api, /sessionLogRead\(sessionId, offset, maxBytes\)/, "the api wrapper forwards paging arguments"],
-    [tools, /redactForModel\(toReadableText\(result\.value\.data\)\)/, "agent reads are stripped of escapes and redacted"],
+    [tools, /redactForModel\(toReadableText\(result\.value\.toString\("utf8"\)\)\)/, "agent reads are sanitized before paging"],
     [tools, /kind: "ask"/, "agent log reads ask the operator first"]
   ];
   for (const [source, pattern, label] of checks) {

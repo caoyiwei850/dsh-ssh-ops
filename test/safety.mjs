@@ -339,6 +339,7 @@ for (const [name, [args, value]] of Object.entries(renderFixtures)) {
   // With the gate's voucher the reversible trash move runs on the exec
   // channel; the voucher is consumed exactly once.
   let trashSent = null;
+  service.resolveLoginShell = async () => "bash";
   service.runPreparedExec = async (connectionId, prepared, displayCommand) => {
     trashSent = { connectionId, prepared, displayCommand };
     return { ok: true, value: { exitCode: 0, stdout: "moved", stderr: "", cwd: null, commandId: "x", startedAt: "x", finishedAt: "x", durationMs: 0, truncated: false, timedOut: false, redacted: false } };
@@ -377,6 +378,7 @@ for (const [name, [args, value]] of Object.entries(renderFixtures)) {
     /outcome is not successful: rm: permission denied/
   );
   delete service.runPreparedExec;
+  delete service.resolveLoginShell;
 }
 
 // db_execute blocked SQL returns a copyable SQL card (not a thrown error); only
