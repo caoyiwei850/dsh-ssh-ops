@@ -3,10 +3,12 @@
  * SFTP, with upload, download, mkdir, delete, and rename actions.
  */
 import * as React from "react";
-import { MAX_EDITABLE_BYTES, decodeEditableText, encodeEditableText, filterEntries } from "./file-editor.js";
+import { MAX_EDITABLE_BYTES, changedLineRegions, decodeEditableText, encodeEditableText, filterEntries } from "./file-editor.js";
 import { favoritesKey, readFavorites, writeFavorites, toggleFavorite } from "./sftp-favorites.js";
 import { t } from "../i18n/core.js";
 import { searchRemoteFiles } from "./remote-file-search.js";
+import { streamDownload } from "./stream-download.js";
+import { checkpointDestination, checkpointFile, createDownloadCheckpoint, deleteDownloadCheckpoint, listDownloadCheckpoints, withDownloadLock } from "./download-checkpoints.js";
 const { useEffect, useState } = React;
 
 function joinPath(base, name) {
@@ -39,11 +41,19 @@ export function SshFiles({ api, connectionId, onCd, initialPath = "/" }) {
   const [filter, setFilter] = useState("");
   const [favorites, setFavorites] = useState([]);
   const [favoritesStorageKey, setFavoritesStorageKey] = useState(null);
+  const favoritesKeyRef = React.useRef(favoritesStorageKey);
+  favoritesKeyRef.current = favoritesStorageKey;
   const [editing, setEditing] = useState(null);
+  const [previewChanges, setPreviewChanges] = useState(false);
+  const [lastSave, setLastSave] = useState(null);
+  const connectionRef = React.useRef(connectionId);
+  connectionRef.current = connectionId;
   const [editorBusy, setEditorBusy] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const [tasks, setTasks] = useState([]);
   const [agentTasks, setAgentTasks] = useState([]);
+  const [persistDownloads, setPersistDownloads] = useState(false);
+  const [checkpoints, setCheckpoints] = useState([]);
   const taskId = React.useRef(0);
   const controllers = React.useRef(new Map());
   const searchController = React.useRef(null);
@@ -66,6 +76,50 @@ export function SshFiles({ api, connectionId, onCd, initialPath = "/" }) {
     return () => { active = false; clearInterval(timer); };
   }, [api, connectionId]);
 
+  const refreshCheckpoints = async (identity = favoritesStorageKey) => {
+    if (!identity) return;
+    try {
+      const items = await listDownloadCheckpoints(identity);
+      if (favoritesKeyRef.current === identity) setCheckpoints(items);
+    } catch { if (favoritesKeyRef.current === identity) setCheckpoints([]); }
+  };
+  useEffect(() => { setCheckpoints([]); void refreshCheckpoints(favoritesStorageKey); }, [favoritesStorageKey]);
+
+  const resumeCheckpoint = async (checkpoint) => {
+    if (typeof globalThis.showSaveFilePicker !== "function") return;
+    let destination;
+    try { destination = await globalThis.showSaveFilePicker({ suggestedName: checkpoint.path.split("/").pop() || "download" }); }
+    catch (err) { if (err?.name !== "AbortError") setError(err?.message ?? String(err)); return; }
+    const controller = new AbortController();
+    const task = addTask({ name: checkpoint.path.split("/").pop(), kind: "download", status: "running", sent: checkpoint.offset, total: checkpoint.total, cancellable: true, resuming: true });
+    controllers.current.set(task, controller);
+    try {
+      await withDownloadLock(checkpoint.id, async () => {
+        const prefix = await checkpointFile(checkpoint.id);
+        const makeRequest = (offset, expectedSha256) => {
+          const query = new URLSearchParams({ connectionId, path: checkpoint.path, verify: "sha256", offset: String(offset), expectedSha256 });
+          return fetch(`/ssh-ops/stream/file?${query}`, { signal: controller.signal });
+        };
+        const response = await makeRequest(prefix.size, checkpoint.digest);
+        if (!response.ok || response.headers.get("x-content-sha256") !== checkpoint.digest) {
+          await response.body?.cancel().catch(() => {});
+          throw new Error(t("远程文件已变化或无法续传"));
+        }
+        updateTask(task, { resuming: false });
+        const startedAt = Date.now();
+        await streamDownload(response, checkpointDestination(checkpoint.id, destination, controller.signal, checkpoint.digest), controller.signal, (sent, total) => {
+          const elapsed = Math.max((Date.now() - startedAt) / 1000, 0.001);
+          updateTask(task, { sent, total, speed: (sent - prefix.size) / elapsed });
+        }, makeRequest, prefix);
+      });
+      updateTask(task, { status: "done" });
+    } catch (err) {
+      const cancelled = controller.signal.aborted || err?.name === "AbortError";
+      updateTask(task, { status: cancelled ? "cancelled" : "failed", error: cancelled ? "" : (err?.message ?? String(err)) });
+      if (!cancelled) setError(err?.message ?? String(err));
+    } finally { controllers.current.delete(task); void refreshCheckpoints(); }
+  };
+
   const runSearch = async () => {
     if (!searchQuery.trim()) return;
     searchController.current?.abort();
@@ -87,6 +141,7 @@ export function SshFiles({ api, connectionId, onCd, initialPath = "/" }) {
   // session, so resolve the stable host/port/username key once here.
   useEffect(() => {
     let cancelled = false;
+    setFavoritesStorageKey(null);
     (async () => {
       try {
         const value = await api.list();
@@ -133,6 +188,7 @@ export function SshFiles({ api, connectionId, onCd, initialPath = "/" }) {
 
   useEffect(() => {
     setTransferMode("sftp");
+    setLastSave(null);
     setScpReason("");
     setScpUploadFile(null);
     setScpUploadPath("");
@@ -151,6 +207,52 @@ export function SshFiles({ api, connectionId, onCd, initialPath = "/" }) {
   const download = async (entry) => {
     const target = entry || selected;
     if (!target) return;
+    if (typeof globalThis.showSaveFilePicker === "function") {
+      let handle;
+      try { handle = await globalThis.showSaveFilePicker({ suggestedName: target.name }); }
+      catch (err) { if (err?.name !== "AbortError") setError(err?.message ?? String(err)); return; }
+      const controller = new AbortController();
+      const task = addTask({ name: target.name, kind: "download", status: "running", sent: 0, total: target.size, cancellable: true, verifying: true });
+      controllers.current.set(task, controller);
+      setError(null);
+      try {
+        const query = new URLSearchParams({ connectionId, path: joinPath(cwd, target.name), verify: "sha256" });
+        const response = await fetch(`/ssh-ops/stream/file?${query}`, { signal: controller.signal });
+        const startedAt = Date.now();
+        updateTask(task, { verifying: false });
+        let destination = handle;
+        let checkpoint;
+        if (persistDownloads) {
+          const digest = response.headers.get("x-content-sha256");
+          const totalHeader = response.headers.get("x-file-size");
+          const total = Number(totalHeader);
+          if (!response.ok || !favoritesStorageKey || !/^[0-9a-f]{64}$/.test(digest ?? "") || !totalHeader || !/^\d+$/.test(totalHeader) || !Number.isSafeInteger(total) || total < 0) {
+            await response.body?.cancel().catch(() => {});
+            throw new Error(t("无法创建可恢复的下载任务"));
+          }
+          checkpoint = await createDownloadCheckpoint({ identity: favoritesStorageKey, path: joinPath(cwd, target.name), digest, total });
+          destination = checkpointDestination(checkpoint.id, handle, controller.signal, checkpoint.digest);
+        }
+        const perform = () => streamDownload(response, destination, controller.signal, (sent, total) => {
+          const elapsed = Math.max((Date.now() - startedAt) / 1000, 0.001);
+          updateTask(task, { sent, total, speed: sent / elapsed });
+        }, async (offset, expectedSha256) => {
+          updateTask(task, { verifying: true, resuming: true });
+          const next = new URLSearchParams({ connectionId, path: joinPath(cwd, target.name), verify: "sha256", offset: String(offset), expectedSha256 });
+          const response = await fetch(`/ssh-ops/stream/file?${next}`, { signal: controller.signal });
+          updateTask(task, { verifying: false, resuming: false });
+          return response;
+        });
+        if (checkpoint) await withDownloadLock(checkpoint.id, perform);
+        else await perform();
+        updateTask(task, { status: "done" });
+      } catch (err) {
+        const cancelled = controller.signal.aborted || err?.name === "AbortError";
+        updateTask(task, { status: cancelled ? "cancelled" : "failed", error: cancelled ? "" : (err?.message ?? String(err)) });
+        if (!cancelled) setError(err?.message ?? String(err));
+      } finally { controllers.current.delete(task); void refreshCheckpoints(); }
+      return;
+    }
     setBusy(true);
     setError(null);
     const task = addTask({ name: target.name, kind: "download", status: "running" });
@@ -394,10 +496,12 @@ export function SshFiles({ api, connectionId, onCd, initialPath = "/" }) {
         path,
         text: decoded.text,
         original: decoded.text,
+        originalBytes: file.data,
         replaced: decoded.replaced,
         bytes: file.data.length,
         mtime: stat?.mtime ?? entry.mtime ?? null
       });
+      setPreviewChanges(false);
     } catch (err) {
       setError(t(`打开失败：${err?.message ?? String(err)}`));
     } finally {
@@ -410,14 +514,10 @@ export function SshFiles({ api, connectionId, onCd, initialPath = "/" }) {
     setEditorBusy(true);
     setError(null);
     try {
-      // Another program may have rewritten the file since it was opened; a
-      // moved mtime asks before the editor's copy wins.
-      const fresh = await api.sftpStat(connectionId, editing.path).catch(() => null);
-      if (fresh && editing.mtime != null && fresh.mtime !== editing.mtime
-        && !globalThis.confirm?.(t("服务器上的文件已被其他程序修改，仍要用编辑器中的内容覆盖吗？"))) {
-        return;
-      }
-      await api.sftpWriteFile(connectionId, editing.path, encodeEditableText(editing.text));
+      const replacement = encodeEditableText(editing.text);
+      const result = await api.sftpEditorSave(connectionId, editing.path, editing.originalBytes, replacement);
+      if (connectionRef.current !== connectionId) return;
+      setLastSave({ path: editing.path, backup: result.backup, original: editing.originalBytes, replacement });
       setEditing(null);
       load(cwdRef.current);
     } catch (err) {
@@ -427,10 +527,49 @@ export function SshFiles({ api, connectionId, onCd, initialPath = "/" }) {
     }
   };
 
+  const restoreLastSave = async () => {
+    if (!lastSave || !globalThis.confirm?.(t(`恢复 ${lastSave.path} 的上一个版本？当前内容会先备份。`))) return;
+    setEditorBusy(true);
+    try {
+      const result = await api.sftpEditorSave(connectionId, lastSave.path, lastSave.replacement, lastSave.original);
+      if (connectionRef.current !== connectionId) return;
+      setLastSave({ path: lastSave.path, backup: result.backup, original: lastSave.replacement, replacement: lastSave.original });
+      setError(null);
+      load(cwdRef.current);
+    } catch (err) { setError(t(`恢复失败：${err?.message ?? String(err)}`)); }
+    finally { setEditorBusy(false); }
+  };
+
+  const restoreBackup = async (entry) => {
+    const match = entry.name.match(/^(.*)\.dsh-backup-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+    if (!match || !match[1]) return;
+    const targetPath = joinPath(cwd, match[1]);
+    if (!globalThis.confirm?.(t(`用 ${entry.name} 恢复 ${targetPath}？当前内容会先备份。`))) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const [backup, current] = await Promise.all([
+        api.sftpReadFile(connectionId, joinPath(cwd, entry.name), MAX_EDITABLE_BYTES + 1),
+        api.sftpReadFile(connectionId, targetPath, MAX_EDITABLE_BYTES + 1)
+      ]);
+      if (backup.truncated || current.truncated || backup.data.length > MAX_EDITABLE_BYTES || current.data.length > MAX_EDITABLE_BYTES) throw new Error(t("文件超过编辑器大小上限，无法恢复"));
+      const result = await api.sftpEditorSave(connectionId, targetPath, current.data, backup.data);
+      if (connectionRef.current !== connectionId) return;
+      setLastSave({ path: targetPath, backup: result.backup, original: current.data, replacement: backup.data });
+      load(cwdRef.current);
+    } catch (err) { setError(t(`恢复失败：${err?.message ?? String(err)}`)); }
+    finally { setBusy(false); }
+  };
+
   const visibleEntries = entries === null ? null : filterEntries(entries, filter);
+  const changes = editing && previewChanges ? changedLineRegions(editing.original, editing.text) : null;
 
   return (
     <div style={filesStyles.root}>
+      {lastSave && <div style={filesStyles.compatNotice}>
+        <div>{t(`已保存备份：${lastSave.backup}`)}</div>
+        <button type="button" disabled={editorBusy} onClick={restoreLastSave} style={filesStyles.btnTiny}>{t("恢复上一个版本")}</button>
+      </div>}
       <div style={filesStyles.toolbar}>
         <button onClick={goUp} disabled={cwd === "/"} style={filesStyles.btn} title={t("上级目录")}>↑</button>
         <span style={filesStyles.path} title={cwd}>{cwd}</span>
@@ -492,6 +631,18 @@ export function SshFiles({ api, connectionId, onCd, initialPath = "/" }) {
       )}
 
       {error && <div style={filesStyles.error}>{error}</div>}
+      {typeof globalThis.showSaveFilePicker === "function" && <div style={filesStyles.compatNotice}>
+        <label><input type="checkbox" checked={persistDownloads} onChange={(event) => setPersistDownloads(event.target.checked)} /> {t("允许下载跨重启续传")}</label>
+        {(persistDownloads || checkpoints.length > 0) && <div>{t("未完成的文件会以明文保存在此浏览器的本地存储中，占用磁盘空间；请在完成后或不再需要时清理。")}</div>}
+        {checkpoints.map((checkpoint) => <div key={checkpoint.id} style={filesStyles.inlineForm}>
+          <span title={checkpoint.path}>{checkpoint.path} · {formatSize(checkpoint.offset)} / {formatSize(checkpoint.total)}</span>
+          <button type="button" style={filesStyles.btnTiny} onClick={() => { void resumeCheckpoint(checkpoint); }}>{t("续传")}</button>
+          <button type="button" style={filesStyles.btnTiny} onClick={() => {
+            if (!globalThis.confirm?.(t("删除本地未完成的下载？"))) return;
+            void withDownloadLock(checkpoint.id, () => deleteDownloadCheckpoint(checkpoint.id)).then(() => refreshCheckpoints()).catch((err) => setError(err.message));
+          }}>{t("清理")}</button>
+        </div>)}
+      </div>}
       {searchOpen && <div style={filesStyles.scpCard}>
         <div style={filesStyles.inlineForm}>
           <input value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} onKeyDown={(e) => e.key === "Enter" && runSearch()} placeholder={t("搜索当前目录下的文件名")} style={filesStyles.input} />
@@ -511,12 +662,14 @@ export function SshFiles({ api, connectionId, onCd, initialPath = "/" }) {
           {task.status === "running" && <progress value={task.sent} max={Math.max(task.total, 1)} />}
           {task.status === "running" && <button style={filesStyles.btnTiny} onClick={() => { void api.sftpTransferCancel(connectionId, task.id).catch((err) => setError(err.message)); }}>{t("取消")}</button>}
           {(task.status === "failed" || task.status === "cancelled") && <span>{t("可使用任务 ID 续传")}：{task.id}</span>}
+          {(task.status === "failed" || task.status === "cancelled") && typeof api.sftpTransferDiscard === "function" && <button style={filesStyles.btnTiny} onClick={() => { void api.sftpTransferDiscard(connectionId, task.id).then(() => setAgentTasks((items) => items.filter((item) => item.id !== task.id))).catch((err) => setError(err.message)); }}>{t("清理残留")}</button>}
         </div>)}
       </div>}
       {tasks.length > 0 && <div style={{ ...filesStyles.scpCard, maxHeight: 180, overflowY: "auto" }}>
         <div style={filesStyles.inlineForm}><strong>{t("传输任务")}</strong><button style={filesStyles.btnTiny} onClick={() => setTasks((items) => items.filter((item) => item.status === "running"))}>{t("清除已结束")}</button></div>
         {tasks.map((task) => <div key={task.id} style={filesStyles.uploadProgress} role="status">
-          <span>{task.kind === "upload" ? t("上传") : t("下载")} · {task.name} · {task.status === "running" ? (task.writing ? t("远端写入中") : t("进行中")) : task.status === "done" ? t("已完成") : task.status === "cancelled" ? t("已取消") : t("失败")} {task.error || ""}</span>
+          <span>{task.kind === "upload" ? t("上传") : t("下载")} · {task.name} · {task.status === "running" ? (task.resuming ? t("正在验证并续传…") : task.verifying ? t("正在计算远端校验值…") : task.writing ? t("远端写入中") : t("进行中")) : task.status === "done" ? t("已完成") : task.status === "cancelled" ? t("已取消") : t("失败")} {task.error || ""}</span>
+          {task.status === "running" && task.kind === "download" && task.speed > 0 && <span>{formatSize(task.sent)}{task.total != null ? ` / ${formatSize(task.total)}` : ""} · {formatSize(task.speed)}/s{task.total != null && task.sent < task.total ? ` · ${t("剩余约")} ${Math.ceil((task.total - task.sent) / task.speed)}s` : ""}</span>}
           {task.status === "running" && task.total != null && <progress value={task.sent} max={Math.max(task.total, 1)} />}
           {task.status === "running" && task.cancellable && <button style={filesStyles.btnTiny} onClick={() => controllers.current.get(task.id)?.abort()}>{t("取消")}</button>}
         </div>)}
@@ -594,6 +747,7 @@ export function SshFiles({ api, connectionId, onCd, initialPath = "/" }) {
                   {!entry.isDirectory && (
                     <button onClick={() => openEditor(entry)} disabled={busy} style={filesStyles.btnTiny} title={t("在文本编辑器中打开（上限 10 MB）")}>{t("编辑")}</button>
                   )}
+                  {!entry.isDirectory && /\.dsh-backup-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(entry.name) && <button onClick={() => restoreBackup(entry)} disabled={busy} style={filesStyles.btnTiny}>{t("恢复备份")}</button>}
                   <button onClick={() => download(entry)} disabled={busy} style={filesStyles.btnTiny}>{t("下载")}</button>
                   <button onClick={() => setRenaming(!renaming)} style={filesStyles.btnTiny}>{t("改名")}</button>
                   <button onClick={() => doDelete(entry)} disabled={busy} style={filesStyles.btnDanger}>{t("删除")}</button>
@@ -613,15 +767,21 @@ export function SshFiles({ api, connectionId, onCd, initialPath = "/" }) {
               {editing.replaced ? t(" · 含无法按 UTF-8 解码的字节（保存会按 UTF-8 重写）") : ""}
               {editing.text !== editing.original ? t(" · 已修改") : ""}
             </div>
-            <textarea
+            {previewChanges ? <div style={filesStyles.diffColumns}>
+              {[changes.left, changes.right].map((part, index) => <div key={index}>
+                <strong>{index === 0 ? t("修改前") : t("修改后")}</strong>
+                <pre style={filesStyles.diffText}>{part.before}{part.before && "\n"}<span style={{ background: index === 0 ? "rgba(248,81,73,.2)" : "rgba(46,160,67,.2)" }}>{part.changed}</span>{part.after && "\n"}{part.after}</pre>
+              </div>)}
+            </div> : <textarea
               autoFocus
               value={editing.text}
               onChange={(event) => setEditing({ ...editing, text: event.target.value })}
               spellCheck={false}
               style={filesStyles.editorText}
-            />
+            />}
             <div style={filesStyles.editorActions}>
               <button type="button" onClick={() => setEditing(null)} style={filesStyles.btn}>{t("关闭")}</button>
+              <button type="button" onClick={() => setPreviewChanges(!previewChanges)} style={filesStyles.btn}>{previewChanges ? t("返回编辑") : t("预览修改")}</button>
               <button
                 type="button"
                 onClick={saveEditor}
@@ -643,6 +803,8 @@ function formatSize(bytes) {
 }
 
 const filesStyles = {
+  diffColumns: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, overflow: "auto", flex: 1, minHeight: 0 },
+  diffText: { whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: 12 },
   root: { display: "flex", flexDirection: "column", flex: 1, minHeight: 0, gap: 6 },
   toolbar: { display: "flex", alignItems: "center", gap: 6, flex: "none" },
   path: { flex: 1, fontSize: 12, color: "var(--dsw-alias-label-secondary, #9aa3af)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", direction: "rtl", textAlign: "left" },

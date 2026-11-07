@@ -2,7 +2,7 @@
   "name": "dsh-ssh-ops",
   "description": "SSH ops and database tools for DSH Web UI: connect to remote servers via SSH terminal/SFTP/tunnels, and connect to MySQL/PostgreSQL/Redis/MongoDB databases. Host half manages sessions with ssh2; client half renders the terminal and database panel.",
   "icon": "./icon.svg",
-  "version": "0.4.5",
+  "version": "0.4.6",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -74,7 +74,7 @@
     "pg-cursor": "^2.22.0",
     "redis": "^4.7.0",
     "ssh2": "^1.16.0",
-    "zod": "^4.4.3"
+    "zod": "^4.6.7"
   },
   "engines": {
     "dsh": ">=0.1.5-alpha.1"
@@ -93,13 +93,14 @@
     "@deepseek-ai/dsh-tools": "0.1.2-rc.1",
     "@deepseek-ai/dsh-typert-protocol": "0.1.2-rc.1",
     "@eslint/js": "^10.0.1",
+    "@noble/hashes": "1.8.0",
     "@xterm/addon-fit": "0.10.0",
     "@xterm/addon-search": "0.15.0",
     "@xterm/xterm": "5.5.0",
-    "mongodb": "^6.10.0",
-    "esbuild": "^0.24.2",
+    "esbuild": "^0.28.2",
     "eslint": "^10.10.0",
     "globals": "^17.12.0",
+    "mongodb": "^6.10.0",
     "react": "^18.3.1"
   },
   "scripts": {
@@ -110,9 +111,12 @@
     "prepare": "npm run build",
     "lint": "eslint .",
     "bump:readme": "node scripts/bump-readme.mjs",
-    "test": "node --test test/safety.mjs test/db-safety.mjs test/trash.mjs test/db-guard.mjs test/db-ops.mjs test/db-hang.mjs test/db-keepalive.mjs test/db-charset.mjs test/db-query-timeout.mjs test/ssh-auth.mjs test/ssh-agent.mjs test/dual-factor.mjs test/sftp-dir.mjs test/ssh-legacy-kex.mjs test/ssh-banner.mjs test/hostkey.mjs test/batch.mjs test/scp.mjs test/command-snippets.mjs test/ssh-panel-command-picker.mjs test/client.mjs test/client-apply-reentrancy.mjs test/manifest.mjs test/release-packaging.mjs test/ssh-write.mjs test/credentials.mjs test/sftp-tools.mjs test/stream-file-routes.mjs test/manual-terminal-context.mjs test/terminal-stream.mjs test/exec-cwd.mjs test/exec-cwd-rules.mjs test/login-command.mjs test/tunnel-crash.mjs test/reconnect-recovery.mjs test/sftp-pipeline.mjs test/upload-tasks.mjs test/network-cli.mjs test/terminal-pool.mjs test/terminal-theme.mjs test/pane-selection.mjs test/profile-connection.mjs test/active-connection.mjs test/agent-connect.mjs test/agent-connection-poll.mjs test/sidebar-integration.mjs test/settings-nav-icon.mjs test/sidebar-lifecycle.mjs test/review-regressions.mjs test/project-directory.mjs test/remote-workspace.mjs test/remote-workspace-service.mjs test/remote-workspace-ui.mjs test/domain-records.mjs test/db-lazy-load.mjs test/db-extra-drivers.mjs test/typert-sync.mjs test/sftp-files-ui.mjs test/remote-file-search.mjs test/socks5.mjs test/session-log.mjs test/terminal-text.mjs test/terminal-search.mjs test/shell-integration.mjs test/local-sshd-sftp.mjs test/resource-group-collapse.mjs test/resource-card-layout.mjs test/i18n.mjs test/exec-policy.mjs test/update-guidance.mjs test/ssh-read-incremental.mjs test/terminal-zoom.mjs test/log-highlight.mjs test/ask-gate.mjs",
+    "test": "node --test test/safety.mjs test/db-safety.mjs test/trash.mjs test/db-guard.mjs test/db-ops.mjs test/db-hang.mjs test/db-keepalive.mjs test/db-charset.mjs test/db-query-timeout.mjs test/ssh-auth.mjs test/ssh-agent.mjs test/dual-factor.mjs test/sftp-dir.mjs test/ssh-legacy-kex.mjs test/ssh-banner.mjs test/hostkey.mjs test/batch.mjs test/scp.mjs test/command-snippets.mjs test/ssh-panel-command-picker.mjs test/client.mjs test/client-apply-reentrancy.mjs test/manifest.mjs test/release-packaging.mjs test/ssh-write.mjs test/credentials.mjs test/sftp-tools.mjs test/stream-file-routes.mjs test/stream-download.mjs test/download-checkpoints.mjs test/manual-terminal-context.mjs test/terminal-stream.mjs test/exec-cwd.mjs test/exec-cwd-rules.mjs test/login-command.mjs test/tunnel-crash.mjs test/reconnect-recovery.mjs test/issues-50-51.mjs test/log-boundaries.mjs test/sftp-pipeline.mjs test/upload-tasks.mjs test/network-cli.mjs test/terminal-pool.mjs test/terminal-theme.mjs test/pane-selection.mjs test/profile-connection.mjs test/active-connection.mjs test/agent-connect.mjs test/agent-connection-poll.mjs test/sidebar-integration.mjs test/settings-nav-icon.mjs test/sidebar-lifecycle.mjs test/review-regressions.mjs test/project-directory.mjs test/remote-workspace.mjs test/remote-workspace-service.mjs test/remote-workspace-ui.mjs test/domain-records.mjs test/db-lazy-load.mjs test/db-extra-drivers.mjs test/typert-sync.mjs test/sftp-files-ui.mjs test/sftp-editor-save.mjs test/remote-file-search.mjs test/socks5.mjs test/session-log.mjs test/terminal-text.mjs test/terminal-search.mjs test/shell-integration.mjs test/local-sshd-sftp.mjs test/resource-group-collapse.mjs test/resource-card-layout.mjs test/i18n.mjs test/exec-policy.mjs test/update-guidance.mjs test/ssh-read-incremental.mjs test/terminal-zoom.mjs test/log-highlight.mjs test/ask-gate.mjs",
     "install:dev": "node scripts/install-dev.mjs",
     "pack:release": "npm run build && node scripts/package-release.mjs",
     "i18n:extract": "node scripts/i18n-extract.mjs"
+  },
+  "overrides": {
+    "minimatch": "^11.0.5"
   }
 }

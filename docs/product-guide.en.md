@@ -6,7 +6,7 @@
 
 > Drive your servers from the DSH main conversation while keeping a real interactive terminal on the right — plus file management, port forwarding, database access, and multi-server batch execution, all in one plugin.
 
-**Version 0.4.5** · MIT License · [GitHub repository](https://github.com/caoyiwei850/dsh-ssh-ops) · [Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases)
+**Version 0.4.6** · MIT License · [GitHub repository](https://github.com/caoyiwei850/dsh-ssh-ops) · [Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases)
 
 ---
 
@@ -62,7 +62,7 @@ The AI in the main conversation gains **40 tools** in total (see the appendix fo
 **GitHub channel (recommended)**:
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.5
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.6
 ```
 
 This installs source and builds automatically during install. Note that pnpm ≥ 10 blocks build scripts of dependencies by default — if the SSH tab does not appear after a restart, go into `node_modules/dsh-ssh-ops/`, run `npm install && npm run build`, and restart (see [INSTALL.md](../INSTALL.md) for details).
@@ -115,6 +115,14 @@ The AI sends commands to the currently connected server, and **the commands and 
 ### Step 4: Manage files
 
 The "Files" sub-tab is an SFTP file manager: upload, download, create directories, delete, rename, drag-and-drop upload, a built-in text editor (up to 10 MB), and favorite paths. You can also just tell the AI "download this directory to my machine".
+
+Browsers with the file save API can stream downloads to a chosen location with progress, speed, estimated time, and cancellation. Other browsers retain the original size-limited download. The editor offers a side-by-side preview, checks original bytes before saving, and creates a private backup in the same directory; the panel can restore the most recent save while it remains open. Backups remain on the server and may contain sensitive configuration. SFTP does not provide atomic compare-and-write, so a small concurrent-change window remains.
+
+Changed regions are highlighted in the editor preview. After reopening the panel, select a `.dsh-backup-` file and choose **Restore backup**; the current file is backed up first. Backup files can also be removed using the file list.
+
+Streaming downloads read the remote file once to calculate its SHA-256 and compare it with the downloaded bytes before committing the local file. Large files can take time to start and are read twice on the server. An interrupted transfer can automatically resume up to three times while the panel remains open, rechecking the remote hash each time.
+
+In supported browsers, the optional restartable download setting stores incomplete bytes unencrypted in browser-private local storage. After reconnecting to the same server, use the Files panel to resume or remove them. Checkpoints are written every 4 MiB; a crash may lose the most recent progress, and the browser may evict its storage. Cancelling retains staged data until removed. The chosen destination is written only after complete verification.
 
 ![SFTP file management and cd in the official sidebar](../assets/screenshots/official-sidebar-files-cd.png)
 
@@ -253,7 +261,7 @@ Omitting `connection_id` / `db_connection_id` targets the currently active conne
 
 **Session logs (3)**: `ssh_session_log_list` / `ssh_session_log_read` / `ssh_session_log_search`
 
-**SFTP (9)**: `sftp_list` · `sftp_read` (4 MiB default cap) · `sftp_write` · `sftp_mkdir` · `sftp_delete` (never executes directly — requires host in-conversation approval; simple literal paths move to the trash when possible) · `sftp_rename` · `sftp_upload_file` (pipelined single-file upload with verification and in-process resume) · `sftp_upload_dir` · `sftp_download_dir` (batch tree transfer; small files concurrent, large files exclusive, single-file failures never abort the batch)
+**SFTP (9)**: `sftp_list` · `sftp_read` (4 MiB default cap) · `sftp_write` · `sftp_mkdir` · `sftp_delete` (never executes directly — requires host in-conversation approval; simple literal paths move to the trash when possible) · `sftp_rename` · `sftp_upload_file` (pipelined single-file upload with verification and resume or partial cleanup after reconnecting to the same server) · `sftp_upload_dir` · `sftp_download_dir` (batch tree transfer; small files concurrent, large files exclusive, single-file failures never abort the batch)
 
 **Port forwarding (3)**: `tunnel_start` (`local` / `remote` / `dynamic` SOCKS5) · `tunnel_list` · `tunnel_stop`
 
@@ -263,4 +271,4 @@ Omitting `connection_id` / `db_connection_id` targets the currently active conne
 
 ---
 
-*This document matches v0.4.5; for the fine detail consult the [README](../README.en.md) and the [CHANGELOG](../CHANGELOG.md).*
+*This document matches v0.4.6; for the fine detail consult the [README](../README.en.md) and the [CHANGELOG](../CHANGELOG.md).*

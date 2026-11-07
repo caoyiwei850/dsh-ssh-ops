@@ -6,7 +6,7 @@
 
 > 在 DSH 主对话里指挥服务器干活，右侧始终留着一台真实交互终端——外加文件管理、端口转发、数据库操作与多机批量执行，全部在一个插件里。
 
-**版本 0.4.5** · MIT 协议 · [GitHub 仓库](https://github.com/caoyiwei850/dsh-ssh-ops) · [Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases)
+**版本 0.4.6** · MIT 协议 · [GitHub 仓库](https://github.com/caoyiwei850/dsh-ssh-ops) · [Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases)
 
 ---
 
@@ -62,7 +62,7 @@
 **GitHub 渠道（推荐）**：
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.5
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.6
 ```
 
 装的是源码，安装期自动构建。注意 pnpm ≥ 10 默认拦截依赖构建脚本——若重启后 SSH 标签没出现，进 `node_modules/dsh-ssh-ops/` 手动执行 `npm install && npm run build` 后再重启（详见 [INSTALL.md](../INSTALL.md)）。
@@ -115,6 +115,14 @@ AI 会把命令下发到当前连接的服务器，**命令和回显实时出现
 ### 第 4 步：管文件
 
 右侧「文件」页签就是 SFTP 文件管理器：上传、下载、新建目录、删除、重命名、拖拽上传、内置文本编辑器（10 MB 内）、收藏路径。也可以直接对 AI 说「把这个目录下载到本地」。
+
+支持文件保存 API 的浏览器可选择保存位置并流式下载，面板显示进度、速度和预计剩余时间，支持取消；其他浏览器使用原有大小受限的下载方式。编辑文件时可并排预览修改；保存前会核对原始内容并在同目录创建私有备份，面板保留最近一次保存的恢复按钮。备份留在服务器上，可能包含敏感配置，应按需清理。SFTP 不提供原子比较并写入，并发修改仍有短暂窗口。
+
+编辑预览以颜色标记变化区域。重新打开面板后，可以在文件列表选中 `.dsh-backup-` 备份并点击「恢复备份」；恢复前会先备份当前文件。选中备份后也可用「删除」手动清理。
+
+流式下载会先完整读取一次远端文件以计算 SHA-256，传输后再次核对；校验失败时不提交本地文件。大文件开始传输前可能需要等待，且服务器将读取文件两次。传输中断时面板会自动尝试续传最多三次，每次重新计算远端哈希。
+
+支持的浏览器中可勾选「允许下载跨重启续传」：未完成内容以明文保存在浏览器本地私有存储，占用磁盘空间，重新连接相同服务器后可从文件面板续传或清理。每 4 MiB 保存一次检查点；异常退出可能损失最近的未保存进度，浏览器也可能清理本地存储。取消时已暂存的内容仍会保留，需手动清理；完整校验成功后才写入用户选择的目标文件。
 
 ![官方侧栏中的 SFTP 文件管理与 cd](../assets/screenshots/official-sidebar-files-cd.png)
 
@@ -253,7 +261,7 @@ AI 会把命令下发到当前连接的服务器，**命令和回显实时出现
 
 **会话日志（3）**：`ssh_session_log_list` / `ssh_session_log_read` / `ssh_session_log_search`
 
-**SFTP（9）**：`sftp_list` · `sftp_read`（默认上限 4 MiB）· `sftp_write` · `sftp_mkdir` · `sftp_delete`（不直接执行，经宿主会话内审批；简单字面路径优先移入回收站）· `sftp_rename` · `sftp_upload_file`（单文件并发上传，校验后提交；运行期间可用任务 ID 续传） · `sftp_upload_dir` · `sftp_download_dir`（目录批量，小文件并发、大文件独占、单文件失败不断整批）
+**SFTP（9）**：`sftp_list` · `sftp_read`（默认上限 4 MiB）· `sftp_write` · `sftp_mkdir` · `sftp_delete`（不直接执行，经宿主会话内审批；简单字面路径优先移入回收站）· `sftp_rename` · `sftp_upload_file`（单文件并发上传，校验后提交；重新连接同一服务器后可用任务 ID 续传或手动清理残留） · `sftp_upload_dir` · `sftp_download_dir`（目录批量，小文件并发、大文件独占、单文件失败不断整批）
 
 **端口转发（3）**：`tunnel_start`（`local` 本地 / `remote` 远程 / `dynamic` SOCKS5）· `tunnel_list` · `tunnel_stop`
 
@@ -263,4 +271,4 @@ AI 会把命令下发到当前连接的服务器，**命令和回显实时出现
 
 ---
 
-*文档对应版本 v0.4.5，功能细节以 [README](../README.md) 与 [CHANGELOG](../CHANGELOG.md) 为准。*
+*文档对应版本 v0.4.6，功能细节以 [README](../README.md) 与 [CHANGELOG](../CHANGELOG.md) 为准。*

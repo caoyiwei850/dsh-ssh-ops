@@ -576,6 +576,12 @@ export const sftpWriteResultSchema = resultSchema(
   z.object({ path: z.string(), bytes: z.number() })
 );
 
+export const sftpEditorSaveRequestSchema = z.object({
+  connectionId: z.string().optional(), path: z.string().min(1),
+  expected: z.string().max(14 * 1024 * 1024), data: z.string().max(14 * 1024 * 1024)
+});
+export const sftpEditorSaveResultSchema = resultSchema(z.object({ backup: z.string(), bytes: z.number() }));
+
 // ── SCP fallback (single-file upload/download only) ─────────────────────────
 
 export const scpReadRequestSchema = z.object({
@@ -633,6 +639,7 @@ export const sftpTransferListResultSchema = resultSchema(z.object({ transfers: z
 })) }));
 export const sftpTransferCancelRequestSchema = z.object({ connectionId: z.string().min(1), id: z.string().min(1) });
 export const sftpTransferCancelResultSchema = resultSchema(z.object({ cancelled: z.boolean() }));
+export const sftpTransferDiscardResultSchema = resultSchema(z.object({ discarded: z.boolean() }));
 
 export const sftpUploadDirRequestSchema = z.object({
   connectionId: z.string().optional(),

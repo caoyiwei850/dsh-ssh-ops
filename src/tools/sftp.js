@@ -8,6 +8,7 @@ import { defineTool } from "@deepseek-ai/dsh-tools";
 import { shellQuote } from "../safety.js";
 import { buildTrashCommand, parseSimpleDeleteCommand } from "../trash.js";
 import { t } from "../i18n/core.js";
+import { posixLoginShell } from "../exec-cwd.js";
 import { askOperatorApproval } from "./ssh-session.js";
 
 export function registerSftpTools(ctx, service) {
@@ -37,13 +38,15 @@ export function registerSftpTools(ctx, service) {
       } catch {
         return typeof next === "function" ? next() : undefined; // bad path: let the tool report the honest error
       }
-      const conn = service.connections?.get(preview.connectionId);
-      const host = conn?.host ?? preview.connectionId;
+      const selected = service.resolveConnection(preview.connectionId);
+      if (!selected.ok) return { kind: "deny", reason: selected.error.message };
+      const connectionId = selected.connectionId;
+      const host = selected.connection?.host ?? connectionId;
       const command = `rm -rf ${shellQuote(preview.path)}`;
-      const reason = t(`AI 请求删除 ${host} 上的：\n${preview.path}\n（等价于 \`${command}\`）。批准后优先执行移入回收站的可逆删除；拒绝则不会删除任何内容。`);
+      const reason = t(`AI 请求删除 ${host} 上的：\n${preview.path}\n批准后优先执行移入回收站的可逆删除；拒绝则不会删除任何内容。`);
       const { outcome } = await askOperatorApproval(ctx, execution, reason);
       if (outcome === "allowed-once") {
-        service.recordOperatorApproval(execution.callId, preview.connectionId, command);
+        service.recordOperatorApproval(execution.callId, connectionId, command);
         return typeof next === "function" ? next() : undefined;
       }
       const denied = outcome === "rejected"
@@ -180,12 +183,12 @@ export function registerSftpTools(ctx, service) {
       path: { type: "string", required: true, description: "Remote path to delete. A relative path resolves under the remote workspace root." }
     },
     output: {
-      schema: { type: "object", additionalProperties: false, properties: { path: { type: "string", required: true }, isDirectory: { type: "boolean" }, blocked: { type: "boolean" }, reason: { type: "string" }, command: { type: "string" } } },
+      schema: { type: "object", additionalProperties: false, properties: { path: { type: "string", required: true }, isDirectory: { type: "boolean" }, trashPath: { type: "string" }, blocked: { type: "boolean" }, reason: { type: "string" }, command: { type: "string" } } },
       render(args, value) {
         if (value.blocked) {
           return [{ type: "text", text: t(`⚠️ 已拦截：${value.reason ?? ""}\n未删除任何内容。删除必须由操作者确认，本次调用没有获得批准（操作者拒绝，或宿主没有可用的审批通道）。\n\`\`\`bash\n${value.command ?? ""}\n\`\`\`\n请勿重试或换路径绕行；把删除交给操作者自行处理。`) }];
         }
-        return [{ type: "text", text: `Deleted ${value.path}` }];
+        return [{ type: "text", text: value.trashPath ? `Moved ${value.path} to remote trash: ${value.trashPath}` : `Deleted ${value.path}` }];
       }
     },
     async execute(args, exec) {
@@ -194,15 +197,24 @@ export function registerSftpTools(ctx, service) {
       // In a remote workspace the ask always names the resolved absolute
       // path, so the operator sees exactly what would be removed.
       const resolved = await resolveTarget(exec, args.connection_id, args.path);
+      const selected = service.resolveConnection(resolved.connectionId);
+      if (!selected.ok) throw new Error(`sftp_delete failed: ${selected.error.message}`);
+      const connectionId = selected.connectionId;
       const command = `rm -rf ${shellQuote(resolved.path)}`;
       const parsed = parseSimpleDeleteCommand(command);
       const trashScript = parsed ? buildTrashCommand(parsed.targets) : null;
-      if (!(exec?.callId !== undefined && service.consumeOperatorApproval(exec.callId, resolved.connectionId, command))) {
+      if (!(exec?.callId !== undefined && service.consumeOperatorApproval(exec.callId, connectionId, command))) {
         return { path: resolved.path, blocked: true, reason: t("删除文件或目录（SFTP）"), command };
       }
       // Approved: the reversible trash move is what actually runs whenever
       // the path allows it; only a non-parseable path deletes for real.
-      const result = await service.runPreparedExec(resolved.connectionId, trashScript ?? command, command, true, 30000, false, false);
+      const shell = await service.resolveLoginShell(selected.connection);
+      if (!posixLoginShell(shell)) {
+        const moved = await service.moveSftpToTrash(connectionId, resolved.path);
+        if (!moved.ok) throw new Error(`sftp_delete failed: ${moved.error.message}`);
+        return { path: resolved.path, trashPath: moved.value.trashPath };
+      }
+      const result = await service.runPreparedExec(connectionId, trashScript ?? command, command, true, 30000, false, false);
       if (!result.ok) throw new Error(`sftp_delete failed: ${result.error.message}`);
       if (result.value.timedOut || result.value.exitCode !== 0) {
         const detail = result.value.stderr?.trim() || `exit code ${result.value.exitCode ?? "unknown"}`;
@@ -235,12 +247,12 @@ export function registerSftpTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "sftp_upload_file",
-    description: "Upload one local file over the active SSH connection using bounded pipelined SFTP. A failed or cancelled task may be resumed in the same plugin runtime using its task id; the source and remote prefix are verified. The destination is replaced only after completion.",
+    description: "Upload one local file over the active SSH connection using bounded pipelined SFTP. A failed or cancelled task may be resumed after reconnecting to the same server using its task id; the source and remote prefix are verified. The destination is replaced only after completion.",
     parameters: {
       connection_id: { type: "string", description: "SSH connection id; omit for the active connection." },
       local_path: { type: "string", required: true, description: "Local source file path." },
       remote_path: { type: "string", required: true, description: "Remote destination file path." },
-      resume_id: { type: "string", description: "ID of a failed or cancelled upload to resume in this plugin runtime." }
+      resume_id: { type: "string", description: "ID of a failed or cancelled upload to resume on the same server." }
     },
     output: {
       schema: { type: "object", additionalProperties: false, properties: {

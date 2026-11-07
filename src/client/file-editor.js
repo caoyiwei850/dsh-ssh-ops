@@ -47,6 +47,23 @@ export function encodeEditableText(text) {
   return new TextEncoder().encode(text);
 }
 
+/** Identify the common line prefix and suffix in linear time and space. */
+export function changedLineRegions(before, after) {
+  const left = before.split("\n");
+  const right = after.split("\n");
+  let prefix = 0;
+  while (prefix < left.length && prefix < right.length && left[prefix] === right[prefix]) prefix++;
+  let suffix = 0;
+  while (suffix < left.length - prefix && suffix < right.length - prefix
+    && left[left.length - suffix - 1] === right[right.length - suffix - 1]) suffix++;
+  const split = (lines) => ({
+    before: lines.slice(0, prefix).join("\n"),
+    changed: lines.slice(prefix, lines.length - suffix).join("\n"),
+    after: suffix ? lines.slice(-suffix).join("\n") : ""
+  });
+  return { left: split(left), right: split(right) };
+}
+
 /** Case-insensitive substring filter over the current directory listing. */
 export function filterEntries(entries, query) {
   const needle = String(query ?? "").trim().toLowerCase();
