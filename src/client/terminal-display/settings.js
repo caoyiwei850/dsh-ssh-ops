@@ -1,6 +1,6 @@
 import { COLORS } from "./rules.js";
 import { normalizeCustomRules, MAX_CUSTOM_RULES } from "./custom-rules.js";
-import { normalizeScheme, getScheme, defaultScheme } from "./scheme.js";
+import { normalizeScheme, getScheme, defaultScheme, parseSchemeBackup } from "./scheme.js";
 
 const KEY = "dsh-ssh-ops.terminal-display.v1";
 const LEGACY_KEY = "dsh-ssh-ops.private-output-highlight.enabled";
@@ -106,6 +106,20 @@ const settings = createDisplaySettings();
 export const getDisplaySettings = settings.getSnapshot;
 export const setDisplaySettings = settings.update;
 export const subscribeDisplaySettings = settings.subscribe;
+
+export function restoreDisplayBackup(text) {
+  const restored = parseSchemeBackup(text);
+  settings.update((state) => {
+    const schemes = { ...state.schemes };
+    if (state.builtinEnabled === false) {
+      const other = restored.theme === "dark" ? "light" : "dark";
+      schemes[other] = getScheme(state, other);
+    }
+    schemes[restored.theme] = restored.entries;
+    return { builtinEnabled: true, schemes, backgrounds: { ...state.backgrounds, [restored.theme]: restored.background } };
+  });
+  return restored.theme;
+}
 
 export function updateScheme(theme, update) {
   if (!["dark", "light"].includes(theme)) return;

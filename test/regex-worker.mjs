@@ -15,6 +15,16 @@ test("real regex worker supports groups, Unicode and zero-length matches with bo
   } finally { lease.release(); }
 });
 
+test("dense output reserves the match budget for the newest rows", async () => {
+  const lease = createRegexRunner({ createWorker: createNodeHighlightWorker, startupMs: 5000, timeoutMs: 5000 }).acquire();
+  try {
+    const result = await lease.match(scheme("ERROR"), Array.from({ length: 200 }, () => "ERROR ".repeat(40)));
+    assert.equal(result.lines[199].length, 40);
+    assert.equal(result.lines[0].length, 0);
+    assert.equal(result.lines.reduce((sum, row) => sum + row.length, 0), 4096);
+  } finally { lease.release(); }
+});
+
 test("catastrophic regex times out off-thread, is quarantined, and valid edits recover", async () => {
   const lease = createRegexRunner({ createWorker: createNodeHighlightWorker, timeoutMs: 75, startupMs: 5000 }).acquire();
   let ticks = 0;

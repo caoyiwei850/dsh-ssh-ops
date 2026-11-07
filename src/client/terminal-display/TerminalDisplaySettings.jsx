@@ -1,9 +1,9 @@
 import * as React from "react";
 import { t } from "../../i18n/core.js";
 import { useLanguage } from "../locale.js";
-import { getDisplaySettings, setDisplaySettings, subscribeDisplaySettings, updateScheme, resetScheme, setDisplayBackground, resetDisplayBackground } from "./settings.js";
+import { getDisplaySettings, setDisplaySettings, subscribeDisplaySettings, updateScheme, resetScheme, setDisplayBackground, resetDisplayBackground, restoreDisplayBackup } from "./settings.js";
 import { terminalTheme, resolveDisplayTheme, subscribeHostTheme, getHostTheme, DEFAULT_BACKGROUNDS } from "./theme.js";
-import { getScheme, exportScheme, MAX_SCHEME_ENTRIES } from "./scheme.js";
+import { getScheme, exportScheme, parseSchemeBackup, MAX_SCHEME_ENTRIES } from "./scheme.js";
 import { EditablePreview } from "./EditablePreview.jsx";
 import { PatternTags } from "./PatternTags.jsx";
 import { dropSlot, dropIndex, previewShifts, insertionOffset } from "./drag-order.js";
@@ -184,6 +184,8 @@ export function TerminalDisplaySettings() {
   const settings = React.useSyncExternalStore(subscribeDisplaySettings, getDisplaySettings);
   React.useSyncExternalStore(subscribeHostTheme, getHostTheme);
   const [preview, setPreview] = React.useState(DEFAULT_PREVIEW_TEXT);
+  const [importMessage, setImportMessage] = React.useState("");
+  const importRef = React.useRef(null);
   const [exported, setExported] = React.useState(false);
   const [confirmReset, setConfirmReset] = React.useState(false);
   const [dragId, setDragId] = React.useState(null);
@@ -223,6 +225,20 @@ export function TerminalDisplaySettings() {
     document.body.appendChild(link); link.click(); link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
     showExported();
+  };
+  const restoreBackup = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    try {
+      if (file.size > 1024 * 1024) throw new Error("invalid-backup");
+      const text = await file.text();
+      const restored = parseSchemeBackup(text);
+      const name = restored.theme === "light" ? t("浅色主题") : t("深色主题");
+      if (!globalThis.confirm?.(t(`导入将覆盖${name}的配色和背景，继续吗？`))) return;
+      restoreDisplayBackup(text);
+      setImportMessage(t("已导入配色方案。"));
+    } catch { setImportMessage(t("导入失败：文件不是有效的配色方案备份。")); }
   };
 
   const resetRef = React.useRef(null);
@@ -546,6 +562,9 @@ export function TerminalDisplaySettings() {
           {exported && <span className="dsh-export-toast" role="status" aria-live="polite">{t("已导出当前主题配色方案（JSON）。")}</span>}
         </span>
       </div>
+      <input ref={importRef} type="file" accept="application/json,.json" onChange={restoreBackup} style={{ display: "none" }} />
+      <button type="button" style={button} onClick={() => importRef.current?.click()}>{t("导入配色备份")}</button>
+      {importMessage && <span role="status">{importMessage}</span>}
       {confirmReset && <div ref={confirmRef} className="dsh-reset-popover" role="alertdialog" aria-label={t("恢复默认配色方案确认")}>
         <span style={{ flex: "1 1 200px", lineHeight: 1.5 }}>{t("将恢复当前主题的默认配色方案，当前修改会被覆盖。建议先备份。")}</span>
         <button type="button" style={button} onClick={backup}>{t("先备份")}</button>

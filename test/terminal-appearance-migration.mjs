@@ -21,6 +21,7 @@ import {
   getScheme,
   compileScheme,
   exportScheme,
+  parseSchemeBackup,
 } from "../src/client/terminal-display/scheme.js";
 
 const BUILTIN_IDS = Object.keys(COLORS);
@@ -317,4 +318,18 @@ test("exportScheme：格式标识、版本 2、往返一致", () => {
   assert.equal(r1.mode, "regex");
   // 旧版本/缺字段的导出形状不爆炸
   assert.equal(normalizeScheme({ format: "dsh-ssh-ops.color-scheme", version: 1 }), undefined);
+});
+
+test("backup import validates all entries and preserves theme and background", () => {
+  const json = exportScheme({ backgrounds: { light: "#123456" } }, "light");
+  const result = parseSchemeBackup(json);
+  assert.equal(result.theme, "light");
+  assert.equal(result.background, "#123456");
+  assert.deepEqual(result.entries, getScheme({}, "light"));
+  const malformed = JSON.parse(json);
+  malformed.entries.push(malformed.entries[0]);
+  assert.throws(() => parseSchemeBackup(JSON.stringify(malformed)), /invalid-backup/);
+  malformed.entries.pop(); malformed.background = "bad";
+  assert.throws(() => parseSchemeBackup(JSON.stringify(malformed)), /invalid-backup/);
+  assert.throws(() => parseSchemeBackup("not json"), /invalid-backup/);
 });

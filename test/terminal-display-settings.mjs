@@ -299,6 +299,39 @@ test("custom backgrounds are validated, persisted per theme and reset to the DSH
   } finally { resetDisplayBackgrounds(); setDisplaySettings(original); }
 });
 
+test("restoring a backup changes only its own theme and rejects invalid files atomically", async () => {
+  const { exportScheme, getScheme } = await import("../src/client/terminal-display/scheme.js");
+  const { restoreDisplayBackup } = await import("../src/client/terminal-display/settings.js");
+  const original = getDisplaySettings();
+  try {
+    setDisplayBackground("dark", "#101010");
+    const backup = exportScheme(getDisplaySettings(), "dark");
+    setDisplayBackground("dark", "#202020");
+    setDisplayBackground("light", "#eeeeee");
+    restoreDisplayBackup(backup);
+    assert.equal(getDisplaySettings().backgrounds.dark, "#101010");
+    assert.equal(getDisplaySettings().backgrounds.light, "#eeeeee");
+    assert.deepEqual(getScheme(getDisplaySettings(), "dark"), JSON.parse(backup).entries);
+    const before = getDisplaySettings();
+    assert.throws(() => restoreDisplayBackup('{"version":2}'), /invalid-backup/);
+    assert.equal(getDisplaySettings(), before);
+  } finally { setDisplaySettings(() => ({ ...original, schemes: original.schemes, backgrounds: original.backgrounds })); }
+});
+
+test("restoring a backup preserves the other theme when legacy built-ins are disabled", async () => {
+  const { exportScheme, getScheme } = await import("../src/client/terminal-display/scheme.js");
+  const { restoreDisplayBackup } = await import("../src/client/terminal-display/settings.js");
+  const original = getDisplaySettings();
+  try {
+    const backup = exportScheme({}, "dark");
+    setDisplaySettings({ builtinEnabled: false, schemes: undefined, customRules: [] });
+    const other = getScheme(getDisplaySettings(), "light");
+    restoreDisplayBackup(backup);
+    assert.deepEqual(getScheme(getDisplaySettings(), "light"), other);
+    assert.deepEqual(getScheme(getDisplaySettings(), "dark"), JSON.parse(backup).entries);
+  } finally { setDisplaySettings(() => ({ ...original, builtinEnabled: original.builtinEnabled, schemes: original.schemes, customRules: original.customRules, backgrounds: original.backgrounds })); }
+});
+
 test("terminalTheme merges the DSH chrome with the ANSI palette and re-picks the foreground by luminance", () => {
   assert.equal(terminalTheme("dark").background, DARK_THEME.background);
   assert.equal(terminalTheme("light").background, LIGHT_THEME.background);

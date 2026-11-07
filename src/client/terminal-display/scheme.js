@@ -339,3 +339,16 @@ export function exportScheme(settings, theme) {
     2
   );
 }
+
+/** Validate a complete exported backup before replacing any preferences. */
+export function parseSchemeBackup(text) {
+  if (typeof text !== "string" || text.length > 1024 * 1024) throw new Error("invalid-backup");
+  let value;
+  try { value = JSON.parse(text); } catch { throw new Error("invalid-backup"); }
+  if (!value || value.format !== "dsh-ssh-ops.color-scheme" || value.version !== 2
+    || !["dark", "light"].includes(value.theme) || typeof value.background !== "string"
+    || !HEX6.test(value.background) || !Array.isArray(value.entries) || value.entries.length > MAX_SCHEME_ENTRIES) throw new Error("invalid-backup");
+  const entries = normalizeScheme(value.entries);
+  if (!entries || entries.length !== value.entries.length) throw new Error("invalid-backup");
+  return { theme: value.theme, background: value.background.toLowerCase(), entries };
+}

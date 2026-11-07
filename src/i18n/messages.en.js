@@ -9,6 +9,10 @@
  * `npm run i18n:extract` — it reports missing and orphaned entries.
  */
 export const en = {
+  "导入配色备份": "Import color scheme backup",
+  "已导入配色方案。": "Color scheme imported.",
+  "导入失败：文件不是有效的配色方案备份。": "Import failed: the file is not a valid color scheme backup.",
+  "导入将覆盖${name}的配色和背景，继续吗？": "Import will replace the colors and background for ${name}. Continue?",
   "更新指引": "Update guidance",
   "插件更新": "Plugin update",
   "当前版本：v${PLUGIN_VERSION}": "Current version: v${PLUGIN_VERSION}",
