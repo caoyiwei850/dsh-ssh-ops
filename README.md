@@ -4,13 +4,13 @@
 
 # DSH SSH Ops
 
-> **v0.4.6**：新增流式下载校验、断线及可选跨重启续传，文件编辑差异预览和备份恢复；修复会话日志脱敏与 SFTP 删除目标解析，并更新依赖。跨重启续传会在浏览器本地明文暂存未完成文件，默认关闭。Desktop 新增界面完整交互尚待实机验证。
+> **v0.4.7**：新增流式下载校验、断线及可选跨重启续传，文件编辑差异预览和备份恢复；修复会话日志脱敏与 SFTP 删除目标解析，并更新依赖。跨重启续传会在浏览器本地明文暂存未完成文件，默认关闭。Desktop 新增界面完整交互尚待实机验证。
 
 > DeepSeek Harness 的 SSH 运维插件：在主对话中驱动当前服务器，同时在右侧保留真实的交互式终端，并集成文件管理、端口转发与数据库管理。
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.4.6-blue)
+![version](https://img.shields.io/badge/version-0.4.7-blue)
 [![dsh.so risk](https://www.dsh.so/badge/dsh-ssh-ops.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![dsh.so install · dsh 0.2.0-rc.2](https://www.dsh.so/badge/install/dsh-ssh-ops@0.2.0-rc.2.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/caoyiwei850/dsh-ssh-ops)
@@ -125,7 +125,7 @@ Agent 命中上述黑名单时不会被静默拒绝：整个工具调用会在�
 ### 从 GitHub 安装
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.6
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.7
 ```
 
 git 渠道装的是源码，安装期由 `prepare` 钩子自动执行 `npm run build` 生成入口 `lib/`，无需手动构建。**注意：pnpm ≥ 10 默认拦截依赖包的构建脚本**——若重启后 SSH 标签未出现，按 [INSTALL.md](INSTALL.md) 第 3 步检查 `node_modules/dsh-ssh-ops/lib/`：缺失说明构建被拦，进入该包目录执行 `npm install && npm run build`（或在该 profile 的 pnpm 配置 `onlyBuiltDependencies` 中放行 `dsh-ssh-ops`）后重启即可。
@@ -140,14 +140,14 @@ dsh web
 
 ### 从发布压缩包安装
 
-从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.4.6) 下载 `dsh-ssh-ops-0.4.6.tgz` 后：
+从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.4.7) 下载 `dsh-ssh-ops-0.4.7.tgz` 后：
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.4.6.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.4.7.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.4.6.zip` 适用于离线审阅或二次开发；解压后在目录中执行 `npm install`（构建自动完成）。
+`dsh-ssh-ops-0.4.7.zip` 适用于离线审阅或二次开发；解压后在目录中执行 `npm install`（构建自动完成）。
 
 ## 使用方式
 
@@ -270,8 +270,8 @@ npm run pack:release
 
 生成物位于 `release/`：
 
-- `dsh-ssh-ops-0.4.6.tgz`：可直接被 DSH 安装。
-- `dsh-ssh-ops-0.4.6.zip`：完整离线源码包。
+- `dsh-ssh-ops-0.4.7.tgz`：可直接被 DSH 安装。
+- `dsh-ssh-ops-0.4.7.zip`：完整离线源码包。
 
 ## 许可
 

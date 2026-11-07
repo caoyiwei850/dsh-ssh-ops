@@ -113,16 +113,26 @@ try {
     "the root holds our seed plus the server's samples (mounted over the given root)");
   await call(sftp, "mkdir", "/work");
   await call(sftp, "writeFile", "/work/app.conf", "listen 8080\n");
-  const savedEditor = await saveEditorFile(sftp, "/work/app.conf", Buffer.from("listen 8080\n"), Buffer.from("listen 8081\n"));
-  assert.equal(String(await call(sftp, "readFile", savedEditor.backup)), "listen 8080\n");
-  assert.equal((await call(sftp, "stat", savedEditor.backup)).mode & 0o077, 0, "backup is not readable by group or others");
-  await assert.rejects(saveEditorFile(sftp, "/work/app.conf", Buffer.from("listen 8080\n"), Buffer.from("stale")), /changed/);
-  const restoredEditor = await service.sftpEditorSave({ connectionId: "local-ssh", path: "/work/app.conf", expected: Buffer.from("listen 8081\n").toString("base64"), data: Buffer.from("listen 8080\n").toString("base64") });
-  assert.equal(restoredEditor.ok, true, restoredEditor.error?.message);
-  assert.equal(String(await call(sftp, "readFile", "/work/app.conf")), "listen 8080\n");
-  assert.equal(String(await call(sftp, "readFile", restoredEditor.value.backup)), "listen 8081\n");
-  await call(sftp, "unlink", restoredEditor.value.backup);
-  await call(sftp, "unlink", savedEditor.backup);
+  if (process.platform === "win32") {
+    // The test server maps permissions to the Windows filesystem, which does
+    // not provide Unix 0600 semantics. The production guard must fail closed.
+    await assert.rejects(saveEditorFile(sftp, "/work/app.conf", Buffer.from("listen 8080\n"), Buffer.from("listen 8081\n")), /Backup permissions are not private/);
+    assert.equal(String(await call(sftp, "readFile", "/work/app.conf")), "listen 8080\n");
+    for (const entry of await call(sftp, "readdir", "/work")) {
+      if (entry.filename.startsWith("app.conf.dsh-backup-")) await call(sftp, "unlink", `/work/${entry.filename}`);
+    }
+  } else {
+    const savedEditor = await saveEditorFile(sftp, "/work/app.conf", Buffer.from("listen 8080\n"), Buffer.from("listen 8081\n"));
+    assert.equal(String(await call(sftp, "readFile", savedEditor.backup)), "listen 8080\n");
+    assert.equal((await call(sftp, "stat", savedEditor.backup)).mode & 0o077, 0, "backup is not readable by group or others");
+    await assert.rejects(saveEditorFile(sftp, "/work/app.conf", Buffer.from("listen 8080\n"), Buffer.from("stale")), /changed/);
+    const restoredEditor = await service.sftpEditorSave({ connectionId: "local-ssh", path: "/work/app.conf", expected: Buffer.from("listen 8081\n").toString("base64"), data: Buffer.from("listen 8080\n").toString("base64") });
+    assert.equal(restoredEditor.ok, true, restoredEditor.error?.message);
+    assert.equal(String(await call(sftp, "readFile", "/work/app.conf")), "listen 8080\n");
+    assert.equal(String(await call(sftp, "readFile", restoredEditor.value.backup)), "listen 8081\n");
+    await call(sftp, "unlink", restoredEditor.value.backup);
+    await call(sftp, "unlink", savedEditor.backup);
+  }
   const nested = (await call(sftp, "readdir", "/work")).map((entry) => entry.filename);
   assert.deepEqual(nested, ["app.conf"]);
 
