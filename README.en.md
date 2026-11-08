@@ -4,7 +4,7 @@
 
 # DSH SSH Ops
 
-> **v0.4.7** adds verified streaming downloads with reconnect and optional restart recovery, editor change previews and backup restore, fixes session-log redaction and SFTP deletion target handling, and updates dependencies. Restart recovery is disabled by default and stores unfinished data unencrypted in browser-local storage. The new Desktop interface flows have not yet been fully validated interactively.
+> **v0.4.8** adds encrypted server configuration export and import for migration between computers, plus SSH terminal appearance settings and optional semantic text highlighting. Requires DSH 0.2.0 or later. See the [release notes](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.4.8).
 
 > An SSH operations plugin for DeepSeek Harness: drive the current server from the main conversation while keeping a real interactive terminal on the right, with built-in file management, port forwarding, and database management.
 
@@ -16,6 +16,8 @@
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/caoyiwei850/dsh-ssh-ops)
 
 📖 **New here? Start with the [Product Guide](./docs/product-guide.en.md)** — a ten-minute quick start, a feature walkthrough, the security model, and ready-made recipes.
+
+> **v0.4.7** adds verified streaming downloads with reconnect and optional restart recovery, editor change previews and backup restore, fixes session-log redaction and SFTP deletion target handling, and updates dependencies. Restart recovery is disabled by default and stores unfinished data unencrypted in browser-local storage. The new Desktop interface flows have not yet been fully validated interactively.
 
 > **v0.4.5**: adds pipelined single-file uploads with AI task progress, cancellation, verified in-process resume, and remote integrity checks before committing. Fixes `ssh2` import compatibility on affected hosts, contains unexpected auto-reconnect failures, fills in the English tool documentation, and clarifies when DSH registry plugin updates apply. See [CHANGELOG.md](./CHANGELOG.md).
 
