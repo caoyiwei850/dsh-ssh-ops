@@ -12,7 +12,7 @@
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
 ![version](https://img.shields.io/badge/version-0.4.8-blue)
 [![dsh.so risk](https://www.dsh.so/badge/dsh-ssh-ops.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
-[![dsh.so install · dsh 0.2.0-rc.2](https://www.dsh.so/badge/install/dsh-ssh-ops@0.2.0-rc.2.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
+[![dsh.so install · dsh 0.2.2-rc.1](https://cdn.dsh.so/badge/install/dsh-ssh-ops@0.2.2-rc.1.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/?ref=badge-install)
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/caoyiwei850/dsh-ssh-ops)
 
 📖 **New here? Start with the [Product Guide](./docs/product-guide.en.md)** — a ten-minute quick start, a feature walkthrough, the security model, and ready-made recipes.

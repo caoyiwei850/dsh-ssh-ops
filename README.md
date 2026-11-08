@@ -12,7 +12,7 @@
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
 ![version](https://img.shields.io/badge/version-0.4.8-blue)
 [![dsh.so risk](https://www.dsh.so/badge/dsh-ssh-ops.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
-[![dsh.so install · dsh 0.2.0-rc.2](https://www.dsh.so/badge/install/dsh-ssh-ops@0.2.0-rc.2.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
+[![dsh.so install · dsh 0.2.2-rc.1](https://cdn.dsh.so/badge/install/dsh-ssh-ops@0.2.2-rc.1.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/?ref=badge-install)
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/caoyiwei850/dsh-ssh-ops)
 
 📖 **第一次使用？请从[产品文档](./docs/product-guide.md)开始**——十分钟上手、功能详解、安全模型与场景配方。
