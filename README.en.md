@@ -10,7 +10,7 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.4.7-blue)
+![version](https://img.shields.io/badge/version-0.4.8-blue)
 [![dsh.so risk](https://www.dsh.so/badge/dsh-ssh-ops.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![dsh.so install · dsh 0.2.0-rc.2](https://www.dsh.so/badge/install/dsh-ssh-ops@0.2.0-rc.2.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/caoyiwei850/dsh-ssh-ops)
@@ -77,6 +77,7 @@ The Files tab provides SFTP management and can `cd` the interactive terminal int
 - **Official right-Sidebar integration (current DSH)**: the SSH terminal is a tab of the official right Sidebar, beside the built-in Files tab. The **SSH** button in the conversation header opens or focuses that tab (repeated clicks focus instead of duplicating). Use the official split view to see files and the terminal together; drag-resize, fullscreen, and collapse are the sidebar's, and the terminal re-fits automatically. **Each split pane is independent**: it keeps its own visible servers and selection, a new pane starts empty and never inherits another pane's servers, opening the same server in both panes gives each its own connection (reuse is opt-in), closing it in one pane leaves the other alone, and the host session is disconnected only once no pane shows it any more. The connection the agent is using carries an **Agent** badge — click the other pane to move the agent there. **Connection lifetime is independent of the tab**: switching tabs, collapsing the sidebar, closing the tab, or switching chats never disconnects SSH; terminal instances live in a client-side pool, so reopening restores the full scrollback while host-buffered output from the hidden period replays on return.
 - **Terminal display settings**: the palette button on the server bar offers follow-DSH or fixed dark/light themes, per-theme backgrounds and optional semantic highlighting (off by default). Edit colors and regex tags, reorder with drag or Alt+↑/↓, try an editable live preview, reset the current theme or export a JSON backup. Changes apply to all terminals and split panes, persist in the current browser and synchronize same-origin windows. Remote ANSI/truecolor and font styles take priority; recorded-log highlighting remains independent. See [terminal display settings](./docs/terminal-display.md).
 - Manage any number of servers and groups under **Settings → SSH Resources**. It is a first-class left-menu item beside General and Models, not a Plugins sub-tab. The top **SSH** button only opens or focuses the right-side terminal tab — it never disconnects.
+- **Move to another computer**: export an encrypted backup of server settings, groups, shared credentials, passwords, private keys, jump-host relationships, and trusted host fingerprints. Import adds servers and reuses groups with the same name without replacing existing servers. Database connections, global AI policy, and machine-local workspace bindings are not included.
 - **Saved remote project directory**: a server resource can hold one optional absolute default project path. **Enter project** connects, opens the terminal, changes directory only after the existing idle-shell/single-PTY guard succeeds, and starts SFTP at the same path. Relative paths and control characters are rejected; resources without a project path retain the normal login-directory and SFTP-root behavior.
 - **Login command (optional)**: a saved server can carry one login command under "Advanced options" that replaces the server's default shell for the terminal session (an exec+pty channel with `ssh -t` semantics) — for servers whose default shell is incompatible (e.g. `bash -l` on a zsh machine), or to make `tmux attach` / cd-then-shell the fixed login session. The command IS the whole login session: include `-l` (`bash -l`, not bare `bash`) for normal profile loading; single line, no control characters; leave empty — or use a temporary connection — for the server's own shell. Agent forwarding and terminal resize behave identically on this path.
 - **Remote workspace**: under **Edit SSH resource → Advanced** (right below the default project directory) you can bind one DSH workspace to *this server plus an absolute remote path*. Inside that workspace the agent's `sftp_*` calls default to that remote directory (relative paths resolve against it) and to the bound server, and the conversation states that the files live remotely — so the agent stops treating an empty local directory as the project. The boundary is stated out loud rather than implied: DSH's native `read`/`write`/`edit`/`glob`/`grep` and local bash stay on your machine (the host mounts exactly one filesystem backend, and this plugin does not touch it), so *remote workspace* is not a remote mount — read and write remotely with `sftp_*` or `ssh_exec`. Built for [#38](https://github.com/caoyiwei850/dsh-ssh-ops/issues/38). A binding may auto-connect on file operations, still gated by the settings switch that allows the agent to connect saved servers; an auto-connected machine is revealed in the right-side panel, so the operator always sees which server is in play.
@@ -122,7 +123,7 @@ Local `link:`, Git, and archive installations do not display the host's registry
 ### From GitHub
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.7
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.8
 ```
 
 The git channel installs source; the `prepare` hook runs `npm run build` during install to produce the `lib/` entry files, so no manual build is needed. **Note: pnpm ≥ 10 blocks dependency build scripts by default** — if the SSH tab does not appear after restart, check `node_modules/dsh-ssh-ops/lib/` as described in [INSTALL.md](INSTALL.md) step 3: if it is missing, the build was blocked; run `npm install && npm run build` inside that package directory (or allowlist `dsh-ssh-ops` in the profile's pnpm `onlyBuiltDependencies`) and restart.
@@ -137,14 +138,14 @@ Open any session, click the top **SSH** tab, and use the right-side panel to con
 
 ### From a release archive
 
-Download `dsh-ssh-ops-0.4.7.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.4.7), then:
+Download `dsh-ssh-ops-0.4.8.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.4.8), then:
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.4.7.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.4.8.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.4.7.zip` is for offline review or further development; extract it and run `npm install` in the directory (the build runs automatically).
+`dsh-ssh-ops-0.4.8.zip` is for offline review or further development; extract it and run `npm install` in the directory (the build runs automatically).
 
 ## Usage
 
@@ -267,8 +268,8 @@ Pushing a `vX.Y.Z` tag that matches `package.json.version` runs tests, builds th
 
 Artifacts are written to `release/`:
 
-- `dsh-ssh-ops-0.4.7.tgz`: installable directly by DSH.
-- `dsh-ssh-ops-0.4.7.zip`: full offline source archive.
+- `dsh-ssh-ops-0.4.8.tgz`: installable directly by DSH.
+- `dsh-ssh-ops-0.4.8.zip`: full offline source archive.
 
 ## License
 

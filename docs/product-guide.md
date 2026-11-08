@@ -6,7 +6,7 @@
 
 > 在 DSH 主对话里指挥服务器干活，右侧始终留着一台真实交互终端——外加文件管理、端口转发、数据库操作与多机批量执行，全部在一个插件里。
 
-**版本 0.4.7** · MIT 协议 · [GitHub 仓库](https://github.com/caoyiwei850/dsh-ssh-ops) · [Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases)
+**版本 0.4.8** · MIT 协议 · [GitHub 仓库](https://github.com/caoyiwei850/dsh-ssh-ops) · [Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases)
 
 ---
 
@@ -69,7 +69,7 @@
 **GitHub 渠道（推荐）**：
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.7
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.8
 ```
 
 装的是源码，安装期自动构建。注意 pnpm ≥ 10 默认拦截依赖构建脚本——若重启后 SSH 标签没出现，进 `node_modules/dsh-ssh-ops/` 手动执行 `npm install && npm run build` 后再重启（详见 [INSTALL.md](../INSTALL.md)）。
@@ -87,6 +87,12 @@ dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.7
 插件界面的 **设置 → SSH 资源** 提供版本信息和更新指引：线上安装使用宿主插件管理页面；旧宿主请参考安装说明。插件不自行安装更新。SSH 资源、已知主机指纹、凭据都存在 DSH 独立本地存储，不在插件包内，常规升级不丢数据。
 
 ## 5. 十分钟上手
+
+### 迁移 SSH 服务器到另一台电脑
+
+在「设置 → SSH 资源 → 服务器分组」中，使用「导出」生成加密备份。设置至少 12 个字符的口令，妥善保存口令和备份文件；口令遗失后无法恢复。新电脑安装本插件后，在相同位置选择「导入」、选择文件并输入口令。
+
+备份包含服务器配置、分组、共享凭据、密码、私钥、跳板关系和已信任的主机指纹。导入以新增方式处理服务器和凭据，同名分组会复用；重复导入会产生重复服务器。若备份的主机指纹与目标电脑已有信任记录冲突，导入会拒绝并保留现有记录。导入失败时会尝试回滚新建记录，若回滚不完整会明确提示检查。数据库连接、全局 AI 策略和本机工作区绑定不包含在内。
 
 ### 第 1 步：添加一台服务器
 
@@ -278,4 +284,4 @@ AI 会把命令下发到当前连接的服务器，**命令和回显实时出现
 
 ---
 
-*文档对应版本 v0.4.7，功能细节以 [README](../README.md) 与 [CHANGELOG](../CHANGELOG.md) 为准。*
+*文档对应版本 v0.4.8，功能细节以 [README](../README.md) 与 [CHANGELOG](../CHANGELOG.md) 为准。*

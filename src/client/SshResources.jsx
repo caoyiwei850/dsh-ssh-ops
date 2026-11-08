@@ -376,6 +376,47 @@ function Check({ label, checked, onChange }) {
   return <label style={styles.check}><input type="checkbox" checked={checked} onChange={onChange} />{label}</label>;
 }
 
+function ResourceBackupDialog({ mode, api, onClose, onImported }) {
+  const [password, setPassword] = useState("");
+  const [confirmation, setConfirmation] = useState("");
+  const [file, setFile] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+  const submit = async () => {
+    if (password.length < 12) return setError(t("备份口令至少需要 12 个字符。"));
+    if (mode === "export" && password !== confirmation) return setError(t("两次输入的备份口令不一致。"));
+    if (mode === "import" && !file) return setError(t("请选择加密备份文件。"));
+    if (file?.size > 64 * 1024 * 1024) return setError(t("备份文件超过 64 MB。"));
+    setBusy(true); setError("");
+    try {
+      if (mode === "export") {
+        const { archive } = await api.resourceBackupExport(password);
+        const url = URL.createObjectURL(new Blob([archive], { type: "application/json" }));
+        const link = document.createElement("a"); link.href = url; link.download = `dsh-ssh-resources-${new Date().toISOString().slice(0, 10)}.json`;
+        document.body.appendChild(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+        setSuccess(t("加密备份已生成，请妥善保存文件和口令。"));
+      } else {
+        const result = await api.resourceBackupImport(password, await file.text());
+        await onImported();
+        setSuccess(t(`已导入 ${result.profiles} 台服务器、${result.groups} 个分组和 ${result.credentials} 个共享凭据。`));
+      }
+      setPassword(""); setConfirmation("");
+    } catch (cause) { setError(cause?.message ?? t("备份操作失败。")); }
+    finally { setBusy(false); }
+  };
+  return <div style={styles.backdrop}><div className="dsh-ssh-ops-resource-modal" style={styles.dialog} role="dialog" aria-modal="true" aria-label={mode === "export" ? t("导出服务器") : t("导入服务器")}>
+    <div style={styles.dialogTitle}>{mode === "export" ? t("导出服务器") : t("导入服务器")}</div>
+    <p style={styles.hint}>{mode === "export" ? t("备份包含服务器配置、分组、共享凭据、密码、私钥和已信任的主机指纹。文件使用口令加密；忘记口令将无法恢复。") : t("导入会新增服务器和凭据，相同名称的分组会复用，不会覆盖现有服务器。重复导入会产生重复服务器；主机指纹冲突时会拒绝导入。")}</p>
+    <p style={styles.hint}>{t("备份不包含数据库连接、全局 AI 策略或本机工作区绑定。")}</p>
+    {mode === "import" && <Field label={t("加密备份文件")}><input type="file" accept=".json,application/json" onChange={(event) => setFile(event.target.files?.[0] ?? null)} /></Field>}
+    <Field label={t("备份口令")}><input type="password" autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} style={styles.input} /></Field>
+    {mode === "export" && <Field label={t("再次输入口令")}><input type="password" autoComplete="new-password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} style={styles.input} /></Field>}
+    {error && <div role="alert" style={styles.error}>{error}</div>}{success && <div role="status">{success}</div>}
+    <div style={styles.actions}><button type="button" onClick={onClose} disabled={busy} style={styles.secondary}>{t("关闭")}</button><button type="button" onClick={submit} disabled={busy || Boolean(success)} style={styles.primary}>{busy ? t("处理中…") : mode === "export" ? t("导出") : t("导入")}</button></div>
+  </div></div>;
+}
+
 function SharedCredentialEditor({ initial, credentials, api, onClose, onSaved }) {
   const [name, setName] = useState(initial?.name ?? ""); const [authKind, setAuthKind] = useState(initial?.authKind ?? "key"); const [secret, setSecret] = useState(""); const [passphrase, setPassphrase] = useState(""); const [secondary, setSecondary] = useState(""); const [error, setError] = useState(null); const [busy, setBusy] = useState(false); const fileInput = useRef(null);
   const importKey = async (file) => {
@@ -434,6 +475,7 @@ export function SshResources({ api, credentials, pluginManager, openPluginManage
   const [profiles, setProfiles] = useState([]);
   const [sharedCredentials, setSharedCredentials] = useState([]);
   const [credentialEditor, setCredentialEditor] = useState(null);
+  const [backupMode, setBackupMode] = useState(null);
   const [groups, setGroups] = useState([]);
   // Resource groups begin collapsed, keeping a long server list compact until
   // the user opens the group they need. This is display-only state.
@@ -778,7 +820,7 @@ export function SshResources({ api, credentials, pluginManager, openPluginManage
         <button type="button" role="tab" aria-selected={setupTab === "policy"} onClick={() => setSetupTab("policy")} className="dsh-ssh-ops-segment" style={setupTab === "policy" ? styles.segmentActive : styles.segment}>{t("AI 命令执行策略")}</button>
       </div>
       {setupTab === "groups" && <section style={styles.groupPanel}>
-        <div style={styles.groupCreate}><input value={newGroupName} onChange={(event) => setNewGroupName(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") createGroup(); }} placeholder={t("例如：生产环境")} style={{ ...styles.input, flex: 1, minWidth: 0, maxWidth: 340 }} /><button type="button" disabled={creatingGroup || !newGroupName.trim()} onClick={createGroup} style={styles.secondary}>{creatingGroup ? t("创建中…") : t("创建")}</button></div>
+        <div style={styles.groupCreate}><input value={newGroupName} onChange={(event) => setNewGroupName(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") createGroup(); }} placeholder={t("例如：生产环境")} style={{ ...styles.input, flex: 1, minWidth: 0, maxWidth: 340 }} /><button type="button" disabled={creatingGroup || !newGroupName.trim()} onClick={createGroup} style={styles.secondary}>{creatingGroup ? t("创建中…") : t("创建")}</button><button type="button" onClick={() => setBackupMode("export")} style={styles.secondary}>{t("导出")}</button><button type="button" onClick={() => setBackupMode("import")} style={styles.secondary}>{t("导入")}</button></div>
         {groups.length > 0 && <div style={styles.groupChips}>{groups.map((group) => <span key={group.groupId} style={styles.groupChip}>{t(`${group.name}（${group.profileCount}）`)}<button type="button" onClick={() => deleteGroup(group)} title={t(`删除分组 ${group.name}`)} style={styles.chipDelete}>×</button></span>)}</div>}
       </section>}
       {setupTab === "credentials" && <section style={styles.groupPanel}><button type="button" onClick={() => setCredentialEditor({})} style={styles.secondary}>{t("新增共享凭据")}</button>{sharedCredentials.length > 0 && <div style={styles.credentialList}>{sharedCredentials.map((item) => <div key={item.credentialId} style={styles.credentialRow}><span title={item.name} style={styles.credentialLabel}>{item.name} · {item.authKind === "key" ? t("私钥") : t("密码")}{item.secondaryConfigured ? " + " + (item.authKind === "key" ? t("密码") : t("私钥")) : ""} · {item.credentialConfigured ? t("已保存") : t("未配置")}</span><span style={styles.credentialActions}><button type="button" onClick={() => setCredentialEditor(item)} title={t(`编辑共享凭据 ${item.name}`)} aria-label={t(`编辑共享凭据 ${item.name}`)} style={styles.iconButton}>✎</button><button type="button" onClick={async () => { if (!window.confirm(t(`删除共享凭据“${item.name}”？仍被服务器或跳板机引用时不会删除。`))) return; try { await api.credentialDelete(item.credentialId); await refresh({ showLoading: false }); } catch (cause) { setError(cause?.message ?? String(cause)); } }} title={t(`删除共享凭据 ${item.name}`)} aria-label={t(`删除共享凭据 ${item.name}`)} style={{ ...styles.iconButton, color: "#f07171" }}>×</button></span></div>)}</div>}</section>}
@@ -887,6 +929,7 @@ export function SshResources({ api, credentials, pluginManager, openPluginManage
       )}
       {editor && <ResourceEditor initial={editor.profile} groups={groups} profiles={profiles} sharedCredentials={sharedCredentials} api={api} credentials={credentials} defaultUsername={defaultUsername} onClose={() => setEditor(null)} onSaved={(saved) => { if (saved?.username) setDefaultUsername(saved.username); return refresh(); }} />}
       {credentialEditor && <SharedCredentialEditor initial={credentialEditor.credentialId ? credentialEditor : null} credentials={credentials} api={api} onClose={() => setCredentialEditor(null)} onSaved={refresh} />}
+      {backupMode && <ResourceBackupDialog mode={backupMode} api={api} onClose={() => setBackupMode(null)} onImported={() => refresh({ showLoading: false })} />}
     </div>
   );
 }
@@ -935,7 +978,7 @@ const styles = {
   segmentThumb: { position: "absolute", top: 3, bottom: 3, left: 3, boxSizing: "border-box", width: "calc(33.333% - 4px)", borderRadius: 6, border: "1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.3))", background: "var(--dsw-alias-button-elevated-fill, #fff)", boxShadow: "0 1px 2px rgba(0,0,0,.18)", transition: "transform .18s cubic-bezier(.4,0,.2,1)", pointerEvents: "none" },
   segment: { position: "relative", zIndex: 1, flex: "1 1 0", minWidth: 0, border: "1px solid transparent", borderRadius: 6, padding: "6px 10px", background: "transparent", color: "var(--dsw-alias-label-secondary, inherit)", cursor: "pointer", font: "inherit", fontSize: 13, lineHeight: "20px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
   segmentActive: { position: "relative", zIndex: 1, flex: "1 1 0", minWidth: 0, border: "1px solid transparent", borderRadius: 6, padding: "6px 10px", background: "transparent", color: "var(--dsw-alias-label-primary, inherit)", cursor: "default", font: "inherit", fontSize: 13, lineHeight: "20px", fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
-  groupTitle: { fontSize: 13, fontWeight: 650, marginBottom: 8 }, groupCreate: { display: "flex", gap: 8, flexWrap: "nowrap", alignItems: "center" }, groupChips: { display: "flex", gap: 7, flexWrap: "wrap", marginTop: 10 }, groupChip: { display: "inline-flex", alignItems: "center", gap: 5, padding: "4px 7px", borderRadius: 99, background: "rgba(127,127,127,.16)", fontSize: 12 }, chipDelete: { border: 0, background: "transparent", color: "#f07171", cursor: "pointer", padding: 0, fontSize: 15, lineHeight: 1 }, credentialList: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 6, maxHeight: 168, overflowY: "auto", marginTop: 8, paddingRight: 2 }, credentialRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 5, minWidth: 0 }, credentialActions: { display: "flex", alignItems: "center", gap: 2 }, credentialLabel: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12 }, groupedList: { display: "grid", gap: 18 }, groupHeadingButton: { border: 0, padding: 0, margin: "0 0 8px", background: "transparent", color: "inherit", cursor: "pointer", textAlign: "left" }, groupHeading: { fontSize: 14, fontWeight: 650 }, groupCount: { fontWeight: 400, opacity: 0.72 }, groupEmpty: { padding: 12, color: "inherit", opacity: 0.76, border: "1px dashed rgba(127,127,127,.55)", borderRadius: 8, fontSize: 12 },
+  groupTitle: { fontSize: 13, fontWeight: 650, marginBottom: 8 }, groupCreate: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }, groupChips: { display: "flex", gap: 7, flexWrap: "wrap", marginTop: 10 }, groupChip: { display: "inline-flex", alignItems: "center", gap: 5, padding: "4px 7px", borderRadius: 99, background: "rgba(127,127,127,.16)", fontSize: 12 }, chipDelete: { border: 0, background: "transparent", color: "#f07171", cursor: "pointer", padding: 0, fontSize: 15, lineHeight: 1 }, credentialList: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 6, maxHeight: 168, overflowY: "auto", marginTop: 8, paddingRight: 2 }, credentialRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 5, minWidth: 0 }, credentialActions: { display: "flex", alignItems: "center", gap: 2 }, credentialLabel: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12 }, groupedList: { display: "grid", gap: 18 }, groupHeadingButton: { border: 0, padding: 0, margin: "0 0 8px", background: "transparent", color: "inherit", cursor: "pointer", textAlign: "left" }, groupHeading: { fontSize: 14, fontWeight: 650 }, groupCount: { fontWeight: 400, opacity: 0.72 }, groupEmpty: { padding: 12, color: "inherit", opacity: 0.76, border: "1px dashed rgba(127,127,127,.55)", borderRadius: 8, fontSize: 12 },
   snippetForm: { display: "grid", gridTemplateColumns: "minmax(100px,.8fr) minmax(180px,2fr) minmax(110px,.7fr) auto", gap: 8, marginTop: 10, alignItems: "center" }, snippetList: { display: "grid", gap: 7, marginTop: 10 }, snippetItem: { display: "flex", justifyContent: "space-between", gap: 12, padding: "8px 10px", border: "1px solid rgba(127,127,127,.4)", borderRadius: 7, fontSize: 12 }, snippetScope: { marginLeft: 7, opacity: .7 }, snippetCommand: { marginTop: 4, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", opacity: .82, overflowWrap: "anywhere" }, fingerprint: { marginTop: 8, maxWidth: 560, overflowWrap: "anywhere", fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", fontSize: 12, lineHeight: 1.45, opacity: 0.86 }, backdrop: { position: "fixed", inset: 0, zIndex: 2000, background: "rgba(0,0,0,.42)", display: "flex", alignItems: "center", justifyContent: "center" }, dialog: { width: 440, maxWidth: "calc(100vw - 32px)", maxHeight: "calc(100vh - 32px)", overflow: "auto", background: "var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-overlay, #fff))", color: "var(--dsw-alias-label-primary, inherit)", borderRadius: 12, padding: 18, boxShadow: "0 20px 60px rgba(0,0,0,.28)", display: "flex", flexDirection: "column", gap: 11 }, dialogTitle: { fontSize: 16, fontWeight: 650 },
   field: { display: "flex", flexDirection: "column", gap: 5, fontSize: 13 }, hint: { color: "var(--dsw-alias-label-secondary, inherit)", fontWeight: 400 },
   formGrid: { display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 10 }, advNotice: { padding: "10px 12px", borderRadius: 8, border: "1px dashed rgba(127,127,127,.5)", fontSize: 12, lineHeight: 1.6, color: "var(--dsw-alias-label-secondary, inherit)" },

@@ -6,7 +6,7 @@
 
 > Drive your servers from the DSH main conversation while keeping a real interactive terminal on the right — plus file management, port forwarding, database access, and multi-server batch execution, all in one plugin.
 
-**Version 0.4.7** · MIT License · [GitHub repository](https://github.com/caoyiwei850/dsh-ssh-ops) · [Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases)
+**Version 0.4.8** · MIT License · [GitHub repository](https://github.com/caoyiwei850/dsh-ssh-ops) · [Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases)
 
 ---
 
@@ -69,7 +69,7 @@ The AI in the main conversation gains **40 tools** in total (see the appendix fo
 **GitHub channel (recommended)**:
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.7
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.8
 ```
 
 This installs source and builds automatically during install. Note that pnpm ≥ 10 blocks build scripts of dependencies by default — if the SSH tab does not appear after a restart, go into `node_modules/dsh-ssh-ops/`, run `npm install && npm run build`, and restart (see [INSTALL.md](../INSTALL.md) for details).
@@ -87,6 +87,12 @@ After installing or upgrading, **fully quit and restart DSH** (system tray → r
 The **Settings → SSH Resources** page shows the version and update guidance. Use the host's Plugins page for registry installations; older hosts can follow the installation guide. The plugin does not install updates itself. SSH resources, trusted host fingerprints, and credentials live in DSH's separate local storage — outside the plugin package — so regular upgrades keep them.
 
 ## 5. Ten-minute quick start
+
+### Move SSH servers to another computer
+
+In **Settings → SSH Resources → Server groups**, choose **Export** and set a passphrase of at least 12 characters. Keep both the encrypted backup and passphrase safe: the backup cannot be restored without the passphrase. Install the plugin on the new computer and use **Import** in the same location.
+
+The backup contains server configuration, groups, shared credentials, passwords, private keys, jump-host relationships, and trusted host fingerprints. Import adds servers and credentials and reuses groups with the same name; importing twice creates duplicates. Conflicting existing host fingerprints prevent import. On failure, newly created records are rolled back where possible, and incomplete rollback is reported. Database connections, global AI policy, and machine-local workspace bindings are not included.
 
 ### Step 1: Add your first server
 
@@ -278,4 +284,4 @@ Omitting `connection_id` / `db_connection_id` targets the currently active conne
 
 ---
 
-*This document matches v0.4.7; for the fine detail consult the [README](../README.en.md) and the [CHANGELOG](../CHANGELOG.md).*
+*This document matches v0.4.8; for the fine detail consult the [README](../README.en.md) and the [CHANGELOG](../CHANGELOG.md).*

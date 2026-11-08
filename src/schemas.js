@@ -210,6 +210,10 @@ export const languageSaveRequestSchema = z.object({ language: languageValueSchem
 const profileIdSchema = z.string().uuid();
 const groupIdSchema = z.string().uuid();
 const credentialIdSchema = z.string().uuid();
+export const resourceBackupExportRequestSchema = z.object({ password: z.string().min(12).max(1024) });
+export const resourceBackupExportResultSchema = resultSchema(z.object({ archive: z.string() }));
+export const resourceBackupImportRequestSchema = z.object({ password: z.string().min(12).max(1024), archive: z.string().max(64 * 1024 * 1024) });
+export const resourceBackupImportResultSchema = resultSchema(z.object({ profiles: z.number().int(), groups: z.number().int(), credentials: z.number().int() }));
 export const profileAuthKindSchema = z.enum(["password", "key"]);
 // A saved project directory is deliberately an absolute POSIX path.  It is
 // passed to SFTP and to the guarded `changeDirectory` RPC, so accepting shell

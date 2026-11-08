@@ -10,7 +10,7 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.4.7-blue)
+![version](https://img.shields.io/badge/version-0.4.8-blue)
 [![dsh.so risk](https://www.dsh.so/badge/dsh-ssh-ops.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![dsh.so install · dsh 0.2.0-rc.2](https://www.dsh.so/badge/install/dsh-ssh-ops@0.2.0-rc.2.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/caoyiwei850/dsh-ssh-ops)
@@ -75,6 +75,7 @@
 - **官方右侧边栏集成（新版 DSH）**：SSH 终端是官方右侧边栏的一个标签页（与内置「文件」并列），聊天顶部的 **SSH** 按钮打开或聚焦该标签（重复点击只聚焦、不重复创建）；需要同时看文件和终端时使用官方分栏，拖宽、全屏、收起全部由官方管理，终端尺寸随之自动重算。**分栏时每个窗格独立**：各自维护可见的服务器与选中项，新窗格默认空白、不继承已有服务器；同一台服务器在两栏打开会各建一条独立连接（可在连接对话框勾选复用），关掉其中一栏不影响另一栏，某台服务器不再被任何窗格显示时才真正断开宿主连接。被 Agent 使用的连接带「Agent」徽标，点另一栏即可把 Agent 切过去。**连接生命周期与标签显示分离**：切换标签、收起侧栏、关闭标签、切换聊天都不会断开 SSH；终端实例常驻内存池，重新打开即恢复完整回看，隐藏期间服务器输出由宿主缓冲、重开时自动补齐。
 - **终端显示设置**：服务器栏的调色盘按钮提供跟随 DSH／固定深浅主题、按主题自定义背景和可选语义高亮（默认关闭）。配色方案支持颜色与正则标签编辑、拖动或 Alt+↑/↓ 排序、实时可编辑预览、当前主题重置和 JSON 备份。设置即时应用到所有终端和分栏，保存在当前浏览器并同步同源窗口；远端 ANSI/truecolor 和字体样式优先，日志页签原有高亮保持独立。详见[终端显示说明](./docs/terminal-display.md)。
 - 在 **设置 → SSH 资源** 中管理任意数量的服务器和分组；它作为左侧菜单的一等项，与通用设置、模型并列，不再藏在“插件”下。顶部的 **SSH** 仅打开或聚焦右侧终端标签，不断开连接。
+- **跨电脑迁移**：服务器分组旁可导出和导入加密备份，包含服务器配置、分组、共享凭据、密码、私钥、跳板关系和已信任主机指纹。备份使用独立口令加密；导入新增服务器并复用同名分组，不覆盖已有服务器。数据库连接、全局 AI 策略和本机工作区绑定不包含在内。
 - **固定远程项目目录**：每台保存的服务器可选填一个绝对路径作为默认项目目录。资源卡片上的“进入项目”会建立连接、在经过空闲 shell 与单 PTY 校验后切换终端目录，并让 SFTP 从同一路径载入；目录不接受相对路径或控制字符。未设置的资源仍从登录目录和 SFTP 根目录开始。
 - **远程工作区**：在「编辑 SSH 资源 → 高级选项」里（就在「默认项目目录」下面）可以把某个 DSH 工作区绑定到「这台服务器 + 一个远端绝对路径」——之后该工作区里 Agent 调用的 `sftp_*` 默认落到远端这个目录（相对路径以它为根）、默认使用绑定的服务器，对话上下文里也会写明文件在远端，Agent 不再把本地空目录当成项目。**边界是明说的**：DSH 原生的 `read`/`write`/`edit`/`glob`/`grep` 与本地 bash 仍在你自己机器上（宿主只挂载一个文件系统后端，插件不碰它），所以「远程工作区」不是远端挂载——远端读写请走 `sftp_*` 或 `ssh_exec`。开发自 [#38](https://github.com/caoyiwei850/dsh-ssh-ops/issues/38)。绑定可选「文件操作时自动连接」，但仍受设置页的「允许 AI 自动连接已保存服务器」总开关约束；自动连上的机器会在右侧面板显示，操作者始终看得见是哪台。
 - **登录命令（可选）**：每台保存的服务器可在「高级选项」里填一条登录命令，替代服务器默认 shell 作为终端会话打开（`ssh -t` 语义的 exec+伪终端）——默认 shell 不兼容的服务器（如 zsh 机器临时用 `bash -l`）、或想把 `tmux attach`、进目录后进 shell 一类动作固化为登录会话时使用。命令即整个登录会话：想要正常 profile 加载请写 `bash -l` 而非裸 `bash`；须为单行、无控制字符；留空或临时连接按服务器默认 shell。Agent 转发与终端缩放在该路径下与普通终端行为一致。
@@ -125,7 +126,7 @@ Agent 命中上述黑名单时不会被静默拒绝：整个工具调用会在�
 ### 从 GitHub 安装
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.7
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.8
 ```
 
 git 渠道装的是源码，安装期由 `prepare` 钩子自动执行 `npm run build` 生成入口 `lib/`，无需手动构建。**注意：pnpm ≥ 10 默认拦截依赖包的构建脚本**——若重启后 SSH 标签未出现，按 [INSTALL.md](INSTALL.md) 第 3 步检查 `node_modules/dsh-ssh-ops/lib/`：缺失说明构建被拦，进入该包目录执行 `npm install && npm run build`（或在该 profile 的 pnpm 配置 `onlyBuiltDependencies` 中放行 `dsh-ssh-ops`）后重启即可。
@@ -140,14 +141,14 @@ dsh web
 
 ### 从发布压缩包安装
 
-从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.4.7) 下载 `dsh-ssh-ops-0.4.7.tgz` 后：
+从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.4.8) 下载 `dsh-ssh-ops-0.4.8.tgz` 后：
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.4.7.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.4.8.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.4.7.zip` 适用于离线审阅或二次开发；解压后在目录中执行 `npm install`（构建自动完成）。
+`dsh-ssh-ops-0.4.8.zip` 适用于离线审阅或二次开发；解压后在目录中执行 `npm install`（构建自动完成）。
 
 ## 使用方式
 
@@ -270,8 +271,8 @@ npm run pack:release
 
 生成物位于 `release/`：
 
-- `dsh-ssh-ops-0.4.7.tgz`：可直接被 DSH 安装。
-- `dsh-ssh-ops-0.4.7.zip`：完整离线源码包。
+- `dsh-ssh-ops-0.4.8.tgz`：可直接被 DSH 安装。
+- `dsh-ssh-ops-0.4.8.zip`：完整离线源码包。
 
 ## 许可
 

@@ -41,6 +41,8 @@ import { pipeline as streamPipeline } from "node:stream/promises";
 import { runTransferTasks, joinRemotePath, splitRemotePath } from "./sftp-dir.js";
 import { uploadPipeline } from "./sftp-pipeline.js";
 import { saveEditorFile } from "./sftp-editor-save.js";
+import { encryptResourceBackup, decryptResourceBackup } from "./resource-backup-crypto.js";
+import { collectResourceBackup, restoreResourceBackup } from "./resource-backup-store.js";
 import { TransferTasks, hashTransferStream, transferConnectionIdentity } from "./transfer-tasks.js";
 import {
   KnownHosts,
@@ -168,6 +170,7 @@ const profileRecordSchema = z.object({
   // Host-key TOFU mode persisted per saved server; optional so records saved
   // before this feature existed still load (treated as the accept-new default).
   hostKeyMode: z.string().optional(),
+  agentForward: z.boolean().optional(),
   // Optional shared credential and jump chain.  Both are optional so the
   // domain can read every pre-0.3.3 resource without migration.
   credentialId: z.string().uuid().nullable().optional(),
@@ -1883,6 +1886,27 @@ export default class SshOpsService extends TypertRemoteService {
       return { ok: true, value: { profiles } };
     } catch (error) {
       return { ok: false, error: fail("profile-list-failed", error.message) };
+    }
+  }
+
+  async resourceBackupExport(request) {
+    try {
+      const data = await collectResourceBackup(this);
+      return { ok: true, value: { archive: await encryptResourceBackup(data, request.password) } };
+    } catch { return { ok: false, error: fail("backup-export-failed", t("导出失败，请检查服务器资源和凭据库。")) }; }
+  }
+
+  async resourceBackupImport(request) {
+    try {
+      const data = await decryptResourceBackup(request.archive, request.password);
+      return { ok: true, value: await restoreResourceBackup(this, data) };
+    } catch (error) {
+      const message = error?.message === "Import failed and rollback was incomplete; inspect SSH resources and credentials"
+        ? t("导入失败且未能完全回滚，请检查服务器资源和凭据。")
+        : error?.message === "Backup host fingerprint conflicts with an existing trusted host"
+          ? t("备份中的主机指纹与已有信任记录冲突，未导入任何服务器。")
+          : t("导入失败，请检查备份文件和口令；现有服务器未被覆盖。");
+      return { ok: false, error: fail("backup-import-failed", message) };
     }
   }
 
