@@ -4,16 +4,16 @@
 
 # DSH SSH Ops
 
-> **v0.4.8**：新增服务器配置的加密导出与导入，方便跨电脑迁移；SSH 终端新增外观设置和可选字体语义高亮。最低支持 DSH 0.2.0。详见 [版本说明](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.4.8)。
-
-> DeepSeek Harness 的 SSH 运维插件：在主对话中驱动当前服务器，同时在右侧保留真实的交互式终端，并集成文件管理、端口转发与数据库管理。
-
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
 ![version](https://img.shields.io/badge/version-0.4.8-blue)
 [![dsh.so risk](https://www.dsh.so/badge/dsh-ssh-ops.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![dsh.so install · dsh 0.2.2-rc.1](https://cdn.dsh.so/badge/install/dsh-ssh-ops@0.2.2-rc.1.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/?ref=badge-install)
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/caoyiwei850/dsh-ssh-ops)
+
+> **v0.4.8**：新增服务器配置的加密导出与导入，方便跨电脑迁移；SSH 终端新增外观设置和可选字体语义高亮。最低支持 DSH 0.2.0。详见 [版本说明](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.4.8)。
+
+> DeepSeek Harness 的 SSH 运维插件：在主对话中驱动当前服务器，同时在右侧保留真实的交互式终端，并集成文件管理、端口转发与数据库管理。
 
 📖 **第一次使用？请从[产品文档](./docs/product-guide.md)开始**——十分钟上手、功能详解、安全模型与场景配方。
 
@@ -22,31 +22,6 @@
 > **v0.4.5**：新增 `sftp_upload_file` 单文件并发上传，支持 AI 上传任务进度、取消和当前进程内校验续传；提交前校验远端文件完整性。修复部分宿主的 `ssh2` 导入兼容问题，为自动重连增加异常兜底；补齐英文工具文档，并说明 DSH 注册表插件更新的适用范围。详见 [CHANGELOG.md](./CHANGELOG.md)。
 
 > **v0.4.4**：文件面板新增**远程文件搜索**与**传输任务列表**（上传进度、取消、失败清理）；插件内一键更新移除，改为宿主插件管理与手动更新指引（防 link 挂载被静默覆盖）；适配新版宿主设置图标，修复可选服务未注入时面板空白。详见 [CHANGELOG.md](./CHANGELOG.md)。
-> **v0.4.3**：修复 macOS 27 + Desktop v0.12.1 插件市场无法安装（mongodb 拆独立懒加载 chunk 出运行依赖闭包、客户端专用 xterm 搜索扩展移出运行依赖）与 ssh_terminal_sessions/ssh_terminal_context 调用报错（补输出渲染）。详见 [CHANGELOG.md](./CHANGELOG.md)。
-> **v0.4.2**：修复 `sftp_read` 超限读取与空密码保存问题；文件面板新增上传进度、远端写入状态和完成提示，流式上传通过临时文件完成后再替换目标。详见 [CHANGELOG.md](./CHANGELOG.md)。
-> **v0.4.1**：远程工作区相对路径改以会话当前远端目录为基（`cd` 子目录后 `sftp_*` 相对路径跟随，越界仍锁绑定根）；ssh_read 增量读在缓冲翻滚后依然增量；SFTP 目录传输支持取消、空闲死线与半成品清理；工作区绑定下拉可改绑他人已绑工作区。
-> **v0.4.0**：危险命令确认整体迁移到**宿主原生会话内审批**——`ssh_exec` 与 `sftp_delete` 在操作者答复前挂起，一次性批准绑定命令与服务器，拒绝、取消或无审批通道一律 fail-closed；同时包含**远程工作区**（把 DSH 工作区绑定到已保存服务器的远端目录，`sftp_*` 自动使用绑定根与服务端）、`ssh_read` 增量读取、终端 Ctrl+滚轮缩放与选中即复制、「日志」页签中录制内容的 warning/error 整行高亮、最近用户名自动记忆；修复客户端 apply 重试残留、zsh/NAS 自定义登录 shell 的 `ssh_exec` 目录探测、官方 Desktop 一键更新通道，并加固远端路径符号链接边界与跨读取脱敏。
-> **v0.3.22**：新增 **AI 命令执行策略三档**——右侧终端左下角新增档位贴片（**标准 / 自定义放行 / 全部放行**，默认收缩为贴边色点、悬停展开；往松切需确认、切换只对本次会话生效，资源「高级选项」可按服务器覆盖，设置页第三页签管全局默认与放行类目）；**Agent 永远无法自行放宽**——档位切换是操作者专属 RPC，被拦时 Agent 只会拿到结构化拒绝与指引，多机批量的操作者勾选闸门也不受档位影响；被放行的命令按原样执行（删除不再进回收站，警示文案明示）。修复 **#33**——网络设备（华为 VRP / 华三 Comware）上 `ssh_exec` 15 秒静默卡顿后返回空输出：exec 通道超时改为**先本地结算再关闭**（对端不响应 CHANNEL_CLOSE 也不再挂死调用方），探测超时且零字节返回即判定为网络 CLI 设备、**自动改走交互终端路径**并以提示符回归为完成信号（首次调用当场降级；提示符识别覆盖 VRP/Comware/Cisco，分页自动推进，识别失败给人话错误而非空超时）。修复 **SOCKS5 动态转发（`ssh -D`）三缺陷**（外部排查报告核实后修复）：握手解析器在 CONNECT 应答后退役——转发流量不再无界累积（实测 48 MiB 转发常驻 +204 MiB 降回零）、管线化载荷不再丢失（握手窗口内残余先 flush 再 pipe）、连接计数不再双减；顺带修复 `git clean -fd`（最常见写法）因正则尾部写错**从未被拦截**的既有漏洞。
-> **v0.3.21**：修复 [#32](https://github.com/caoyiwei850/dsh-ssh-ops/issues/32) 报告的**宿主闪退**（Windows 真机，未捕获异常直接击穿 DSH 进程）——① ssh2 的 `forwardOut` 在传输断开时**同步 throw 而不走 callback**（`Not connected`），断线后隧道 listener 仍监听、迟到接入即崩宿主：三处调用点（本地隧道 / SOCKS5 / DB 隧道）全部捕获，失败只牺牲该连接；② 隧道 socket/channel 无 `error` 监听，本地 RST（`ECONNRESET`）零监听即崩：双向互相拆链 + 迟到 channel 丢弃 + 竞态接入拒绝；③ 传输丢失、显式断开、插件卸载三条路径统一关闭隧道 listener 并**同步退役依附该 SSH 连接的 DB 隧道**（事务回退、redis 断连一并处理），不再留幽灵监听；④ 顺手修复隧道面板列表渲染的 `TypeError: t2 is not a function`（渲染回调参数遮蔽了 i18n 翻译函数 `t`，0.3.10 起潜伏，隧道列表非空即崩 tab）。
-
-> **v0.3.20**：新增 SSH 资源「**登录命令**」（高级选项，`ssh -t` 语义的 exec+伪终端——默认 shell 不兼容的服务器填 `bash -l` 即可临时改用 bash，`tmux attach`、进目录后进 shell 一类动作也可固化为登录即得；命令即整个登录会话，改完保存后下一个终端即生效、无需重连）；ssh_exec 的 cwd 解析器**拒绝语义拆分**（多候选歧义与忙/非交互各占独立消息，后者带候选进程的 comm/pgrp/tpgid 摘要，现场排障一眼定性；讨论自 [#31](https://github.com/caoyiwei850/dsh-ssh-ops/issues/31)）；删除 SSH 资源时同步清除该主机的指纹信任记录，不再残留于「已信任主机」列表。
-
-> **v0.3.19**：新增 **SSH Agent 转发**（资源「高级选项」开关——跳板机上可用本机密钥继续登录更深层的机器，无需把私钥铺到每一跳；本机未运行 ssh-agent 时连接直接报错，不做静默降级）；数据库连接新增**查询超时覆盖**（`db_connect` 的 `query_timeout_ms`，慢库上的大查询/大导出不再被 35s 默认死线掐死，`0` 为不限）；认证阶段设备主动 `SSH_MSG_DISCONNECT` 时给出**人话化断开原因**（原因码 + 设备原文 + 两层排查提示）；设置页「服务器分组 / 共享 SSH 凭据」改为**滑动分段切换**；**插件页换上展示图标与双语标题/描述**（DSH 0.2.x 插件管理行，品牌蓝终端标记）；修复 **#29**——`github:` 渠道装出来没有 `lib/` 导致插件整体加载失败，现由 `prepare` 钩子在安装期自动构建。CI 同步加固：测试矩阵加 Windows 腿、npm 渠道产物冒烟作业、tarball 文件清单进断言。
-
-> **v0.3.18**：新增**界面语言钉住开关**——DSH 运行插件未内置的语言（如俄语）时，可在设置文件设 `autoApplySystemLanguage: false` + `language` 钉住插件语言，不再被强制回退中文回写；默认跟随行为不变。见「固定界面语言」说明。贡献：@alexeyfadeev（PR #28）。
-
-> **v0.3.17**：修复 0.3.16 的 [#27](https://github.com/caoyiwei850/dsh-ssh-ops/issues/27)——i18n 重构漏改变量名导致官方侧栏注册抛 `ReferenceError`、SSH 终端 UI 完全不可见；eslint 现已覆盖客户端 JSX 并新增回归断言。
-
-> **v0.3.16**：新增**中英双语界面**——始终自动跟随 DSH「设置 → 语言」（含运行中切换，无需刷新），中文为源、英文覆盖，左侧「SSH 资源」标签与终端图标随语言动态变化；设置页新增**自更新条**（版本徽标、GitHub 链接、检查更新对话框、一键更新与可复制的手工更新命令）；**lib 构建产物出库**（仓库不再提交打包产物）；资源表单布局紧凑化；移除损坏的 ~/.ssh/config 导入；已信任主机列表支持直接删除。
-
-> **v0.3.15**：新增**双因素认证**——防火墙/交换机把 `AuthenticationMethods` 配成 `password,publickey`（或反序）时，可在资源或共享凭据里为密码/私钥再配一条相反类型的第二因素，这类设备此前必然登录失败；**SQL 词法扫描加固**，修复反斜杠引号方言与 PG dollar 引用两个破坏性语句漏检（Oracle `q''` 交替引号经实测否决并固化为回归探针）；会话日志支持**多选 + 全选批量删除**；移除旧版 DSH 的浮动面板回退，官方右侧边栏成为 SSH 终端的唯一宿主形态。
-
-> **v0.3.14**：新增默认关闭的「AI 自动连接」开关。开启后，Agent 可按名称连接已保存的 SSH 资源，目标终端自动出现在右侧；关闭时，Agent 无法枚举保存资源。修复会话日志空文件读取问题。
-
-> **v0.3.13**：整轮更新——**SFTP 目录批量上传/下载**（新工具 `sftp_upload_dir` / `sftp_download_dir`：小文件并发、大文件独占、单文件失败不中断整批）；**SSH 认证失败结构化诊断**（试过哪些方法、服务器还接受什么、下一步怎么走），并新增 **keyboard-interactive 认证**（保存的密码应答交互提示/MFA 门禁，设备掐断时自动降级纯密码重试）；**数据库连接健壮性三件套**（TCP keepalive、空闲复用前活性 ping + 透明重连、断连时手工事务有界收尾）；**修复** MySQL 未知字符集文本列显示为字节对象的问题；上一版的破坏性操作可逆化（rm 回收站、危险 SQL 自动备份、DROP 隔离改名、绕过向量封堵）一并随本版发布。
-
-
-
 
 > **更新方式**：设置页提供更新指引。线上安装通过 DSH 插件管理页更新；本地链接请在源码目录更新。插件不再自行执行安装。
 
