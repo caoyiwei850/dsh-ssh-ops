@@ -10,7 +10,7 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.4.8-blue)
+![version](https://img.shields.io/badge/version-0.4.7-blue)
 [![dsh.so risk](https://www.dsh.so/badge/dsh-ssh-ops.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![dsh.so install · dsh 0.2.0-rc.2](https://www.dsh.so/badge/install/dsh-ssh-ops@0.2.0-rc.2.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/caoyiwei850/dsh-ssh-ops)
@@ -50,7 +50,7 @@
 
 ## 兼容性
 
-- **目标宿主**：DSH Desktop / Web Profile，经 `engines.dsh` 声明为无上界区间 `>=0.1.5-alpha.1`——宿主自 0.2.1-alpha.4 起优先按该字段判定插件兼容性（`includePrerelease` 语义，`engines.dsh` 单独定夺、peer 不再参与门槛），覆盖 `0.1.5` 起的全部宿主版本（含一切预发布），宿主升级无需发版跟进；四个官方包的 `peerDependencies` 保持同一区间，继续承担 npm 安装期职责。当前开发环境已验证 `0.2.0-rc.2` 桌面版。插件使用 DSH 自带的 Node.js 运行时，不要求系统另装 `ssh`、`sftp` 或独立 Node.js。
+- **目标宿主**：DSH Desktop / Web Profile，经 `engines.dsh` 声明为无上界区间 `>=0.2.0`——宿主自 0.2.1-alpha.4 起优先按该字段判定插件兼容性（`includePrerelease` 语义，`engines.dsh` 单独定夺、peer 不再参与门槛），覆盖 `0.2.0` 起的宿主版本（预发布版本的判断以宿主实现为准），宿主升级无需发版跟进；四个官方包的 `peerDependencies` 保持各自的兼容范围，继续承担 npm 安装期职责。当前开发环境已验证 `0.2.0-rc.2` 桌面版。插件使用 DSH 自带的 Node.js 运行时，不要求系统另装 `ssh`、`sftp` 或独立 Node.js。
 - **新版右侧边栏（必需）**：宿主须同时提供 `sidebarRightTabs` 与 `sidebarRight`，SSH 以官方右侧边栏标签运行，支持宿主分栏、缩放和全屏。缺少这两个 API 的旧版宿主不再有浮动面板回退（已移除）：插件宿主半（Agent 的 SSH/SFTP/数据库工具）照常工作，但不会显示终端 UI。
 - **界面语言**：自动跟随宿主语言（中文 / English），并随运行中切换即时重绘；宿主运行插件未内置的第三方语言（如俄语）时回退为默认中文并回写设置文件——此类环境可通过设置文件钉住语言（`autoApplySystemLanguage: false` + `language`，详见「使用」一节）。
 - **文件字节流**：大文件的浏览器上传／下载路由仅在 Web Profile 同时提供 `webServer` 与请求来源校验服务时注册；不具备该接口的宿主继续使用既有 SFTP 操作。目录归档下载在所有宿主上均返回 `501 archive-unavailable`，避免 SFTP chroot 与 SSH shell 命名空间不一致造成越界。
@@ -126,7 +126,7 @@ Agent 命中上述黑名单时不会被静默拒绝：整个工具调用会在�
 ### 从 GitHub 安装
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.8
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.7
 ```
 
 git 渠道装的是源码，安装期由 `prepare` 钩子自动执行 `npm run build` 生成入口 `lib/`，无需手动构建。**注意：pnpm ≥ 10 默认拦截依赖包的构建脚本**——若重启后 SSH 标签未出现，按 [INSTALL.md](INSTALL.md) 第 3 步检查 `node_modules/dsh-ssh-ops/lib/`：缺失说明构建被拦，进入该包目录执行 `npm install && npm run build`（或在该 profile 的 pnpm 配置 `onlyBuiltDependencies` 中放行 `dsh-ssh-ops`）后重启即可。
@@ -141,14 +141,14 @@ dsh web
 
 ### 从发布压缩包安装
 
-从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.4.8) 下载 `dsh-ssh-ops-0.4.8.tgz` 后：
+从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.4.7) 下载 `dsh-ssh-ops-0.4.7.tgz` 后：
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.4.8.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.4.7.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.4.8.zip` 适用于离线审阅或二次开发；解压后在目录中执行 `npm install`（构建自动完成）。
+`dsh-ssh-ops-0.4.7.zip` 适用于离线审阅或二次开发；解压后在目录中执行 `npm install`（构建自动完成）。
 
 ## 使用方式
 
@@ -271,8 +271,8 @@ npm run pack:release
 
 生成物位于 `release/`：
 
-- `dsh-ssh-ops-0.4.8.tgz`：可直接被 DSH 安装。
-- `dsh-ssh-ops-0.4.8.zip`：完整离线源码包。
+- `dsh-ssh-ops-0.4.7.tgz`：可直接被 DSH 安装。
+- `dsh-ssh-ops-0.4.7.zip`：完整离线源码包。
 
 ## 许可
 

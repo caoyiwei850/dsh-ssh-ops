@@ -10,7 +10,7 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.4.8-blue)
+![version](https://img.shields.io/badge/version-0.4.7-blue)
 [![dsh.so risk](https://www.dsh.so/badge/dsh-ssh-ops.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![dsh.so install · dsh 0.2.0-rc.2](https://www.dsh.so/badge/install/dsh-ssh-ops@0.2.0-rc.2.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/caoyiwei850/dsh-ssh-ops)
@@ -52,7 +52,7 @@
 
 ## Compatibility
 
-- **Target host**: the DSH Desktop / Web Profile, declared via `engines.dsh` as the unbounded range `>=0.1.5-alpha.1` — hosts since 0.2.1-alpha.4 evaluate plugin compatibility by this field first (`includePrerelease` semantics; `engines.dsh` alone decides, peers no longer participate in the gate), covering every host version from `0.1.5` on (all prereleases included), so host upgrades require no release follow-up. The four official-package `peerDependencies` keep the same range and continue to serve the npm install-time role. Validated on the `0.2.0-rc.2` desktop build. The plugin uses DSH's bundled Node.js runtime and does not require a system `ssh`, `sftp`, or standalone Node.js installation.
+- **Target host**: the DSH Desktop / Web Profile, declared via `engines.dsh` as the unbounded range `>=0.2.0` — hosts since 0.2.1-alpha.4 evaluate plugin compatibility by this field first (`includePrerelease` semantics; `engines.dsh` alone decides, peers no longer participate in the gate), covering host versions from `0.2.0` onward (prerelease handling depends on the host), so host upgrades require no release follow-up. The four official-package `peerDependencies` retain their own compatibility ranges and continue to serve the npm install-time role. Validated on the `0.2.0-rc.2` desktop build. The plugin uses DSH's bundled Node.js runtime and does not require a system `ssh`, `sftp`, or standalone Node.js installation.
 - **Current right Sidebar (required)**: the host must supply both `sidebarRightTabs` and `sidebarRight`; SSH then runs as an official right-Sidebar tab and uses the host's split, resize, and fullscreen behavior. Hosts without those APIs no longer get a floating-panel fallback (removed): the host half (agent SSH/SFTP/database tools) keeps working, but no terminal UI is shown.
 - **Interface language**: follows the host language automatically (中文 / English), repainting on live switches; a third-party host locale the plugin does not ship (e.g. Russian) falls back to the default Chinese and is written back to the settings file — such setups can pin the language through the settings file (`autoApplySystemLanguage: false` + `language`, see the Usage section).
 - **File byte streaming**: browser upload/download routes register only when the Web Profile exposes both `webServer` and the request-origin guard; hosts without them retain the existing SFTP operations. Directory archive download returns `501 archive-unavailable` on every host, preventing traversal across differing SFTP-chroot and SSH-shell filesystem namespaces.
@@ -123,7 +123,7 @@ Local `link:`, Git, and archive installations do not display the host's registry
 ### From GitHub
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.8
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.7
 ```
 
 The git channel installs source; the `prepare` hook runs `npm run build` during install to produce the `lib/` entry files, so no manual build is needed. **Note: pnpm ≥ 10 blocks dependency build scripts by default** — if the SSH tab does not appear after restart, check `node_modules/dsh-ssh-ops/lib/` as described in [INSTALL.md](INSTALL.md) step 3: if it is missing, the build was blocked; run `npm install && npm run build` inside that package directory (or allowlist `dsh-ssh-ops` in the profile's pnpm `onlyBuiltDependencies`) and restart.
@@ -138,14 +138,14 @@ Open any session, click the top **SSH** tab, and use the right-side panel to con
 
 ### From a release archive
 
-Download `dsh-ssh-ops-0.4.8.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.4.8), then:
+Download `dsh-ssh-ops-0.4.7.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.4.7), then:
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.4.8.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.4.7.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.4.8.zip` is for offline review or further development; extract it and run `npm install` in the directory (the build runs automatically).
+`dsh-ssh-ops-0.4.7.zip` is for offline review or further development; extract it and run `npm install` in the directory (the build runs automatically).
 
 ## Usage
 
@@ -268,8 +268,8 @@ Pushing a `vX.Y.Z` tag that matches `package.json.version` runs tests, builds th
 
 Artifacts are written to `release/`:
 
-- `dsh-ssh-ops-0.4.8.tgz`: installable directly by DSH.
-- `dsh-ssh-ops-0.4.8.zip`: full offline source archive.
+- `dsh-ssh-ops-0.4.7.tgz`: installable directly by DSH.
+- `dsh-ssh-ops-0.4.7.zip`: full offline source archive.
 
 ## License
 
