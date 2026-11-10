@@ -214,6 +214,57 @@ export const resourceBackupExportRequestSchema = z.object({ password: z.string()
 export const resourceBackupExportResultSchema = resultSchema(z.object({ archive: z.string() }));
 export const resourceBackupImportRequestSchema = z.object({ password: z.string().min(12).max(1024), archive: z.string().max(64 * 1024 * 1024) });
 export const resourceBackupImportResultSchema = resultSchema(z.object({ profiles: z.number().int(), groups: z.number().int(), credentials: z.number().int() }));
+
+// ── ~/.ssh/config discovery and bulk import ────────────────────────────────
+// The scan is read-only; the import accepts exactly the entries the scan
+// returned (the panel lets the operator untick rows and choose a group), and
+// both bounds are enforced here so a malformed client cannot ask the host to
+// write thousands of records.
+const sshConfigImportHostSchema = z.object({
+  name: z.string().min(1).max(120),
+  host: z.string().min(1).max(255),
+  port: z.number().int().min(1).max(65535).default(22),
+  username: z.string().min(1).max(128),
+  authKind: z.enum(["password", "key"]),
+  identityFilePath: z.string().max(2048).nullable().optional(),
+  proxyJump: z.string().max(255).nullable().optional(),
+  importKey: z.boolean().optional()
+});
+
+export const sshConfigScanRequestSchema = z.object({});
+export const sshConfigEntrySchema = z.object({
+  name: z.string().min(1).max(120),
+  host: z.string().min(1).max(255),
+  port: z.number().int().min(1).max(65535),
+  username: z.string().min(1).max(128),
+  identityFilePath: z.string().max(2048).nullable(),
+  keyExists: z.boolean(),
+  keyEncrypted: z.boolean(),
+  proxyJump: z.string().max(255).nullable(),
+  source: z.string().max(2048),
+  existing: z.boolean()
+});
+export const sshConfigScanResultSchema = resultSchema(z.object({
+  path: z.string().max(2048),
+  exists: z.boolean(),
+  entries: z.array(sshConfigEntrySchema).max(500),
+  warnings: z.array(z.string().max(1000)).max(50)
+}));
+export const sshConfigImportRequestSchema = z.object({
+  hosts: z.array(sshConfigImportHostSchema).min(1).max(200),
+  group: z.string().min(1).max(80).nullable().optional()
+});
+export const sshConfigImportResultSchema = resultSchema(z.object({
+  created: z.number().int(),
+  skipped: z.array(z.string().max(120)).max(200),
+  groups: z.number().int(),
+  keysImported: z.number().int(),
+  passphraseRequired: z.array(z.string().max(120)).max(200),
+  keyFailures: z.array(z.object({ name: z.string().max(120), message: z.string().max(500) })).max(200),
+  jumpLinked: z.number().int(),
+  jumpUnresolved: z.array(z.string().max(120)).max(200)
+}));
+
 export const profileAuthKindSchema = z.enum(["password", "key"]);
 // A saved project directory is deliberately an absolute POSIX path.  It is
 // passed to SFTP and to the guarded `changeDirectory` RPC, so accepting shell

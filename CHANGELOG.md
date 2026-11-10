@@ -1,5 +1,9 @@
 # Changelog
 
+## 未发布
+
+- 恢复「从 ~/.ssh/config 导入」：设置 → SSH 资源新增入口，一次读取本机 OpenSSH 配置并批量创建服务器，不再需要逐台手填。解析改用 `node:fs/promises`，修复 v0.3.16 因 fs 回调误用导致的 `The cb argument must be of type function` 报错。支持 `Include` 递归、`key=value`/`key value` 两种写法、引号、`%d %h %n %r %u %%` 展开；跳过通配符 Host 与 `Match` 块；同名服务器跳过不覆盖；可选导入 `IdentityFile` 私钥（加密私钥提示需口令），批次内 `ProxyJump` 自动关联跳板机；结果逐项报告跳过、口令、私钥失败与未解析的跳板目标。新增 `test/ssh-config.mjs` 覆盖解析、Include、首值优先、私钥识别与整条导入链路。
+
 ## 0.4.8 - 2026-11-08
 
 - 将 DSH 最低宿主版本调整为 0.2.0。

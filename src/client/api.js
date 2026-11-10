@@ -127,6 +127,8 @@ export class SshApi {
 
   resourceBackupExport(password) { return this.call("resourceBackupExport", { password }); }
   resourceBackupImport(password, archive) { return this.call("resourceBackupImport", { password, archive }); }
+  sshConfigScan() { return this.call("sshConfigScan", {}); }
+  sshConfigImport(input) { return this.call("sshConfigImport", input); }
 
   profileSave(input) {
     return this.call("profileSave", input);

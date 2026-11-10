@@ -35,7 +35,7 @@ import { SessionLogStore } from "./session-log.js";
 import { SHELL_FAMILY_PROBE, ShellIntegrationTracker, parseShellFamilyProbe, shellIntegrationCommand } from "./shell-integration.js";
 import { homedir } from "node:os";
 import { join as joinPath, dirname as dirnamePath, relative as relativePath, posix } from "node:path";
-import { mkdir as fsMkdir, readdir as fsReaddir, stat as fsStat, unlink as fsUnlink } from "node:fs/promises";
+import { mkdir as fsMkdir, readdir as fsReaddir, readFile as fsReadFile, stat as fsStat, unlink as fsUnlink } from "node:fs/promises";
 import { createReadStream, createWriteStream } from "node:fs";
 import { pipeline as streamPipeline } from "node:stream/promises";
 import { runTransferTasks, joinRemotePath, splitRemotePath } from "./sftp-dir.js";
@@ -43,6 +43,7 @@ import { uploadPipeline } from "./sftp-pipeline.js";
 import { saveEditorFile } from "./sftp-editor-save.js";
 import { encryptResourceBackup, decryptResourceBackup } from "./resource-backup-crypto.js";
 import { collectResourceBackup, restoreResourceBackup } from "./resource-backup-store.js";
+import { scanSshConfig, keyIsEncrypted } from "./ssh-config.js";
 import { TransferTasks, hashTransferStream, transferConnectionIdentity } from "./transfer-tasks.js";
 import {
   KnownHosts,
@@ -355,6 +356,19 @@ function sharedCredentialRefs(credentialId) {
     privateKey: `DSH_SSH_OPS_SHARED_${stem}_PRIVATE_KEY`,
     passphrase: `DSH_SSH_OPS_SHARED_${stem}_PASSPHRASE`
   };
+}
+
+/**
+ * Reduce a ProxyJump value (`user@host:22`, `a,b`, `none`) to the alias of its
+ * first hop so an imported profile can be linked to it by name. Unresolvable
+ * forms return null instead of inventing a host.
+ */
+function jumpAlias(value) {
+  const first = String(value).split(",")[0]?.trim() ?? "";
+  if (first === "" || first.toLocaleLowerCase() === "none") return null;
+  const withoutUser = first.includes("@") ? first.slice(first.lastIndexOf("@") + 1) : first;
+  const host = withoutUser.replace(/:\d+$/, "");
+  return host === "" ? null : host;
 }
 
 /**
@@ -1907,6 +1921,164 @@ export default class SshOpsService extends TypertRemoteService {
           ? t("备份中的主机指纹与已有信任记录冲突，未导入任何服务器。")
           : t("导入失败，请检查备份文件和口令；现有服务器未被覆盖。");
       return { ok: false, error: fail("backup-import-failed", message) };
+    }
+  }
+
+  /**
+   * Read the operator's ~/.ssh/config and return the hosts it defines.
+   * Read-only: the panel shows this list, the operator ticks rows, and
+   * sshConfigImport performs the writes. `existing` marks aliases that already
+   * have a resource with the same name so a re-scan does not look importable.
+   */
+  async sshConfigScan() {
+    try {
+      const scan = await scanSshConfig();
+      const existing = new Set([...this.requireProfileTable().values()].map((record) => record.name.toLocaleLowerCase()));
+      return {
+        ok: true,
+        value: {
+          path: scan.path,
+          exists: scan.exists,
+          entries: scan.entries.map((entry) => ({ ...entry, existing: existing.has(entry.name.toLocaleLowerCase()) })),
+          warnings: scan.warnings
+        }
+      };
+    } catch (error) {
+      return { ok: false, error: fail("ssh-config-scan-failed", `${t("读取 ~/.ssh/config 失败：")}${error.message}`) };
+    }
+  }
+
+  /**
+   * Create one saved resource per accepted config entry. The batch shares one
+   * optional group and links ProxyJump aliases to other profiles imported in
+   * the same batch; a host that cannot be written is reported rather than
+   * aborting the rest, so a single odd line never costs the whole import.
+   */
+  async sshConfigImport(request) {
+    try {
+      const profiles = this.requireProfileTable();
+      const groups = this.requireGroupTable();
+      const now = new Date().toISOString();
+      let groupId = null;
+      let groupsCreated = 0;
+      if (request.group !== null && request.group !== undefined && request.group.trim() !== "") {
+        const wanted = request.group.trim();
+        const same = [...groups.entries()].find(([, record]) => record.name.localeCompare(wanted, "zh-Hans-CN", { sensitivity: "accent" }) === 0);
+        if (same !== undefined) groupId = same[0];
+        else {
+          groupId = randomUUID();
+          await groups.put(groupId, { name: wanted, createdAt: now, updatedAt: now });
+          groupsCreated = 1;
+        }
+      }
+
+      const takenNames = new Set([...profiles.values()].map((record) => record.name.toLocaleLowerCase()));
+      const skipped = [];
+      const keyFailures = [];
+      const passphraseRequired = [];
+      /** @type {{ name: string, profileId: string, jump: string | null }[]} */
+      const createdRecords = [];
+      let keysImported = 0;
+
+      for (const host of request.hosts) {
+        const name = host.name.trim();
+        if (takenNames.has(name.toLocaleLowerCase())) {
+          skipped.push(name);
+          continue;
+        }
+        const profileId = randomUUID();
+        const record = {
+          name,
+          host: host.host.trim(),
+          port: host.port ?? 22,
+          username: host.username.trim(),
+          authKind: host.authKind,
+          hostKeyMode: DEFAULT_HOST_KEY_MODE,
+          agentForward: false,
+          credentialId: null,
+          defaultProjectPath: null,
+          loginCommand: null,
+          execPolicy: null,
+          proxyJump: [],
+          groupId,
+          createdAt: now,
+          updatedAt: now
+        };
+        try {
+          await profiles.put(profileId, record);
+        } catch (error) {
+          keyFailures.push({ name, message: error.message });
+          continue;
+        }
+        takenNames.add(name.toLocaleLowerCase());
+        createdRecords.push({ name, profileId, jump: host.proxyJump ?? null });
+
+        // Import the key material only when asked to and only for hosts that
+        // authenticate with a key. An encrypted key is still stored — the
+        // operator supplies its passphrase from the resource editor — but the
+        // result tells the panel to call that out.
+        if (host.authKind === "key" && host.importKey !== false && typeof host.identityFilePath === "string" && host.identityFilePath !== "") {
+          try {
+            const info = await fsStat(host.identityFilePath);
+            if (!info.isFile()) throw new Error(t("不是普通文件"));
+            if (info.size > 1024 * 1024) throw new Error(t("私钥文件超过 1 MB"));
+            const text = await fsReadFile(host.identityFilePath, "utf8");
+            if (!text.includes("PRIVATE KEY")) throw new Error(t("不是可识别的私钥文件"));
+            const refs = profileCredentialRefs(profileId);
+            const written = await this.ctx.credentials.set(credentialRef(refs.privateKey), text);
+            if (written?.ok === false) throw new Error(t("凭据库写入失败"));
+            keysImported += 1;
+            if (keyIsEncrypted(text)) passphraseRequired.push(name);
+          } catch (error) {
+            keyFailures.push({ name, message: error.message });
+          }
+        }
+      }
+
+      // ProxyJump is stored as a profile id chain; a config alias can only be
+      // linked when that alias was imported in this same batch. Anything else
+      // is reported so the operator can add the jump host first.
+      const byName = new Map(createdRecords.map((entry) => [entry.name.toLocaleLowerCase(), entry.profileId]));
+      const chain = new Map(createdRecords.map((entry) => [entry.profileId, null]));
+      const jumpUnresolved = [];
+      let jumpLinked = 0;
+      for (const entry of createdRecords) {
+        if (entry.jump === null || entry.jump.trim() === "") continue;
+        const alias = jumpAlias(entry.jump);
+        if (alias === null) continue;
+        const target = byName.get(alias.toLocaleLowerCase());
+        if (target === undefined || target === entry.profileId) {
+          jumpUnresolved.push(entry.name);
+          continue;
+        }
+        chain.set(entry.profileId, target);
+        // Walking the chain from the target back to this profile would make
+        // ssh2 recurse forever; drop the link instead of writing a cycle.
+        let cursor = target;
+        let steps = 0;
+        let cyclic = false;
+        while (cursor !== null && steps < 9) {
+          if (cursor === entry.profileId) { cyclic = true; break; }
+          cursor = chain.get(cursor) ?? null;
+          steps += 1;
+        }
+        if (cyclic) {
+          chain.set(entry.profileId, null);
+          jumpUnresolved.push(entry.name);
+          continue;
+        }
+        const current = profiles.get(entry.profileId);
+        if (current === undefined) continue;
+        await profiles.put(entry.profileId, { ...current, proxyJump: [{ profileId: target }], updatedAt: new Date().toISOString() });
+        jumpLinked += 1;
+      }
+
+      return {
+        ok: true,
+        value: { created: createdRecords.length, skipped, groups: groupsCreated, keysImported, passphraseRequired, keyFailures, jumpLinked, jumpUnresolved }
+      };
+    } catch (error) {
+      return { ok: false, error: fail("ssh-config-import-failed", `${t("导入 ~/.ssh/config 失败：")}${error.message}`) };
     }
   }
 

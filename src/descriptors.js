@@ -47,6 +47,11 @@ export const DESCRIPTORS = [
   def("profileList", S.profileListRequestSchema, "SshProfileListRequest", S.profileListResultSchema, "SshProfileListResult"),
   def("resourceBackupExport", S.resourceBackupExportRequestSchema, "ResourceBackupExportRequest", S.resourceBackupExportResultSchema, "ResourceBackupExportResult"),
   def("resourceBackupImport", S.resourceBackupImportRequestSchema, "ResourceBackupImportRequest", S.resourceBackupImportResultSchema, "ResourceBackupImportResult"),
+  // ~/.ssh/config discovery: panel-only, read-only. Importing re-uses the same
+  // profile records profileSave writes, but accepts a batch so a full config
+  // lands in one round trip instead of one form submission per host.
+  def("sshConfigScan", S.sshConfigScanRequestSchema, "SshConfigScanRequest", S.sshConfigScanResultSchema, "SshConfigScanResult"),
+  def("sshConfigImport", S.sshConfigImportRequestSchema, "SshConfigImportRequest", S.sshConfigImportResultSchema, "SshConfigImportResult"),
   def("profileSave", S.profileSaveRequestSchema, "SshProfileSaveRequest", S.profileSaveResultSchema, "SshProfileSaveResult"),
   def("profileDelete", S.profileDeleteRequestSchema, "SshProfileDeleteRequest", S.profileDeleteResultSchema, "SshProfileDeleteResult"),
   // Remote workspaces (issue #38): panel-only RPCs. Binding never changes

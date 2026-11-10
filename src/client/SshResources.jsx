@@ -417,6 +417,129 @@ function ResourceBackupDialog({ mode, api, onClose, onImported }) {
   </div></div>;
 }
 
+/**
+ * Import the hosts defined in the operator's ~/.ssh/config.
+ *
+ * Reading happens on the host (the browser cannot see that file); this dialog
+ * only picks which of the scanned aliases to turn into resources. Existing
+ * names are shown greyed out and cannot be selected twice, so a re-scan after
+ * a partial import stays understandable.
+ */
+function SshConfigImportDialog({ api, groups, onClose, onImported }) {
+  const [scan, setScan] = useState(null);
+  const [selected, setSelected] = useState(() => new Set());
+  const [group, setGroup] = useState("");
+  const [importKeys, setImportKeys] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [result, setResult] = useState(null);
+
+  useEffect(() => {
+    let alive = true;
+    api.sshConfigScan().then((value) => {
+      if (!alive) return;
+      setScan(value);
+      setSelected(new Set(value.entries.filter((entry) => !entry.existing).map((entry) => entry.name)));
+    }).catch((cause) => { if (alive) setError(cause?.message ?? t("读取 ~/.ssh/config 失败。")); });
+    return () => { alive = false; };
+  }, [api]);
+
+  const entries = scan?.entries ?? [];
+  const selectable = entries.filter((entry) => !entry.existing);
+  const allSelected = selectable.length > 0 && selectable.every((entry) => selected.has(entry.name));
+  const toggle = (name) => setSelected((previous) => {
+    const next = new Set(previous);
+    if (next.has(name)) next.delete(name); else next.add(name);
+    return next;
+  });
+  const toggleAll = () => setSelected(allSelected ? new Set() : new Set(selectable.map((entry) => entry.name)));
+
+  const submit = async () => {
+    const hosts = selectable.filter((entry) => selected.has(entry.name)).map((entry) => ({
+      name: entry.name,
+      host: entry.host,
+      port: entry.port,
+      username: entry.username,
+      authKind: entry.authKind,
+      ...(entry.identityFilePath ? { identityFilePath: entry.identityFilePath } : {}),
+      ...(entry.proxyJump ? { proxyJump: entry.proxyJump } : {}),
+      importKey: entry.authKind === "key" && importKeys
+    }));
+    if (hosts.length === 0) return setError(t("请至少勾选一台服务器。"));
+    setBusy(true); setError("");
+    try {
+      const value = await api.sshConfigImport({ hosts, ...(group.trim() ? { group: group.trim() } : {}) });
+      setResult(value);
+      await onImported();
+    } catch (cause) {
+      setError(cause?.message ?? t("导入失败，现有服务器未被修改。"));
+    } finally { setBusy(false); }
+  };
+
+  const skippedText = result ? result.skipped.join(t("、")) : "";
+  const passphraseText = result ? result.passphraseRequired.join(t("、")) : "";
+  const unresolvedText = result ? result.jumpUnresolved.join(t("、")) : "";
+  const failureText = result ? result.keyFailures.map((item) => `${item.name} (${item.message})`).join(t("；")) : "";
+  const summary = result && [
+    result.groups > 0 ? t(`已新增 ${result.created} 台服务器、${result.groups} 个分组。`) : t(`已新增 ${result.created} 台服务器。`),
+    result.skipped.length > 0 ? t(`跳过同名服务器 ${result.skipped.length} 台：${skippedText}`) : "",
+    result.keysImported > 0 ? t(`已导入 ${result.keysImported} 个私钥。`) : "",
+    result.passphraseRequired.length > 0 ? t(`以下私钥带口令，连接前需在资源编辑器中填写口令：${passphraseText}`) : "",
+    result.jumpLinked > 0 ? t(`已关联 ${result.jumpLinked} 台跳板机。`) : "",
+    result.jumpUnresolved.length > 0 ? t(`以下 ProxyJump 目标不在本次导入中，需先导入或手动选择跳板机：${unresolvedText}`) : "",
+    result.keyFailures.length > 0 ? t(`以下私钥未能导入（服务器已创建，可在资源编辑器中补）：${failureText}`) : ""
+  ].filter(Boolean);
+
+  return <div style={styles.backdrop} onClick={result ? onClose : undefined}>
+    <div className="dsh-ssh-ops-resource-modal" style={{ ...styles.dialog, width: 640 }} onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label={t("从 ~/.ssh/config 导入")}>
+      <div style={styles.dialogTitle}>{t("从 ~/.ssh/config 导入")}</div>
+      {scan === null && !error && <p style={styles.hint}>{t("正在读取本机 SSH 配置文件…")}</p>}
+      {scan && !scan.exists && <p style={styles.hint}>{t(`未找到配置文件 ${scan.path}；也可以先用 ssh 连接一次让它生成。`)}</p>}
+      {scan?.exists && <p style={styles.hint}>{t(`配置文件：${scan.path}。只导入 Host 别名明确的条目；通配符和 Match 块会被忽略。`)}</p>}
+      {entries.length > 0 && <>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <label style={{ ...styles.check, color: "inherit" }}><input type="checkbox" checked={allSelected} disabled={Boolean(result)} onChange={toggleAll} />{t("全选")}</label>
+          <span style={styles.meta}>{t(`共 ${entries.length} 条，可导入 ${selectable.length} 条`)}</span>
+        </div>
+        <div style={styles.importList}>
+          {entries.map((entry) => (
+            <label key={entry.name} style={{ ...styles.importRow, opacity: entry.existing ? 0.55 : 1 }}>
+              <input type="checkbox" checked={selected.has(entry.name)} disabled={entry.existing || Boolean(result)} onChange={() => toggle(entry.name)} />
+              <span style={styles.importName}>{entry.name}</span>
+              <span style={styles.importAddress}>{entry.username}@{entry.host}:{entry.port}</span>
+              <span style={styles.importBadges}>
+                {entry.authKind === "key" && <span style={styles.badge}>{t("私钥")}</span>}
+                {entry.authKind === "key" && entry.identityFilePath && !entry.keyExists && <span style={styles.badgeBad}>{t("私钥缺失")}</span>}
+                {entry.keyEncrypted && <span style={styles.badgeWarn}>{t("需口令")}</span>}
+                {entry.proxyJump && <span style={styles.badge} title={entry.proxyJump}>ProxyJump</span>}
+                {entry.existing && <span style={styles.badgeOk}>{t("已存在")}</span>}
+              </span>
+            </label>
+          ))}
+        </div>
+      </>}
+      {scan?.warnings?.length > 0 && <div style={styles.advNotice}>{scan.warnings.map((warning) => <div key={warning}>{warning}</div>)}</div>}
+      {!result && entries.length > 0 && <>
+        <Field label={t("导入到分组")} hint={t("留空则不分组；同名分组会复用")}>
+          <input value={group} onChange={(event) => setGroup(event.target.value)} list="dsh-ssh-ops-import-groups" placeholder={t("例如：生产环境")} style={styles.input} />
+          <datalist id="dsh-ssh-ops-import-groups">{groups.map((item) => <option key={item.groupId} value={item.name} />)}</datalist>
+        </Field>
+        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+          <input type="checkbox" checked={importKeys} onChange={(event) => setImportKeys(event.target.checked)} />
+          {t("同时导入 IdentityFile 私钥（保存在本机凭据库）")}
+        </label>
+        <div style={styles.hint}>{t("密码认证的服务器会创建为密码登录，密码仍需在资源编辑器中填写；导入后首次连接会校验主机指纹。")}</div>
+      </>}
+      {error && <div role="alert" style={styles.error}>{error}</div>}
+      {summary && <div style={styles.importResult}>{summary.map((line) => <div key={line}>{line}</div>)}</div>}
+      <div style={styles.actions}>
+        <button type="button" onClick={onClose} disabled={busy} style={styles.secondary}>{result ? t("关闭") : t("取消")}</button>
+        {!result && <button type="button" onClick={submit} disabled={busy || entries.length === 0} style={styles.primary}>{busy ? t("导入中…") : t("导入所选")}</button>}
+      </div>
+    </div>
+  </div>;
+}
+
 function SharedCredentialEditor({ initial, credentials, api, onClose, onSaved }) {
   const [name, setName] = useState(initial?.name ?? ""); const [authKind, setAuthKind] = useState(initial?.authKind ?? "key"); const [secret, setSecret] = useState(""); const [passphrase, setPassphrase] = useState(""); const [secondary, setSecondary] = useState(""); const [error, setError] = useState(null); const [busy, setBusy] = useState(false); const fileInput = useRef(null);
   const importKey = async (file) => {
@@ -476,6 +599,7 @@ export function SshResources({ api, credentials, pluginManager, openPluginManage
   const [sharedCredentials, setSharedCredentials] = useState([]);
   const [credentialEditor, setCredentialEditor] = useState(null);
   const [backupMode, setBackupMode] = useState(null);
+  const [sshConfigOpen, setSshConfigOpen] = useState(false);
   const [groups, setGroups] = useState([]);
   // Resource groups begin collapsed, keeping a long server list compact until
   // the user opens the group they need. This is display-only state.
@@ -810,6 +934,7 @@ export function SshResources({ api, credentials, pluginManager, openPluginManage
             <span>{t("AI 自动连接")}</span>
             <span role="tooltip" className="dsh-ssh-ops-agent-toggle-tip">{t("开启后，对话中的 AI 可按名称自行连接这里保存的服务器并切换当前连接（ssh_connect_profile）；每次连接都会在右侧面板打开终端，操作者始终可见。关闭时 AI 只能请你手动连接。默认关闭。")}</span>
           </label>
+          <button type="button" style={styles.secondary} onClick={() => setSshConfigOpen(true)}>{t("从 ~/.ssh/config 导入")}</button>
           <button type="button" style={styles.primary} onClick={() => setEditor({ mode: "new" })}>{t("新增服务器")}</button>
         </div>
       </div>
@@ -930,6 +1055,7 @@ export function SshResources({ api, credentials, pluginManager, openPluginManage
       {editor && <ResourceEditor initial={editor.profile} groups={groups} profiles={profiles} sharedCredentials={sharedCredentials} api={api} credentials={credentials} defaultUsername={defaultUsername} onClose={() => setEditor(null)} onSaved={(saved) => { if (saved?.username) setDefaultUsername(saved.username); return refresh(); }} />}
       {credentialEditor && <SharedCredentialEditor initial={credentialEditor.credentialId ? credentialEditor : null} credentials={credentials} api={api} onClose={() => setCredentialEditor(null)} onSaved={refresh} />}
       {backupMode && <ResourceBackupDialog mode={backupMode} api={api} onClose={() => setBackupMode(null)} onImported={() => refresh({ showLoading: false })} />}
+      {sshConfigOpen && <SshConfigImportDialog api={api} groups={groups} onClose={() => setSshConfigOpen(false)} onImported={() => refresh({ showLoading: false })} />}
     </div>
   );
 }
@@ -998,7 +1124,18 @@ const styles = {
   updateHeading: { margin: "0 0 6px", fontSize: 14, lineHeight: "20px", fontWeight: 600 },
   updateCommand: { display: "flex", alignItems: "flex-start", gap: 8, border: "1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.35))", borderRadius: 7, padding: 10, background: "var(--dsw-alias-bg-layer-3, var(--dsw-alias-bg-layer-1, #101418))" },
   updateCode: { minWidth: 0, flex: 1, fontFamily: "ui-monospace, SFMono-Regular, Consolas, monospace", fontSize: 12, lineHeight: "18px", whiteSpace: "pre-wrap", overflowWrap: "anywhere" },
-  agentToggle: { display: "inline-flex", alignItems: "center", gap: 7, fontSize: 13, whiteSpace: "nowrap", marginTop: 4, cursor: "pointer", color: "inherit" }, agentToggleBox: { accentColor: "#2ea44f", width: 15, height: 15, margin: 0, cursor: "pointer" }, headerActions: { display: "flex", alignItems: "flex-start", gap: 14, flexShrink: 0 }, input: { width: "100%", boxSizing: "border-box", border: "1px solid var(--dsw-alias-border-l4, rgba(127,127,127,.55))", borderRadius: 7, padding: "7px 8px", background: "var(--dsw-alias-bg-layer-1, #101418)", color: "var(--dsw-alias-label-primary, inherit)", fontSize: 13 }, credentialColumns: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10 }, jumpRow: { display: "grid", gridTemplateColumns: "1fr auto", gap: 5, alignItems: "center", marginBottom: 6 }, check: { display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#f07171" }, actions: { display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 }, error: { padding: "8px 10px", borderRadius: 7, background: "rgba(240,113,113,.15)", color: "#ff8a8a", fontSize: 13 },
+  agentToggle: { display: "inline-flex", alignItems: "center", gap: 7, fontSize: 13, whiteSpace: "nowrap", marginTop: 4, cursor: "pointer", color: "inherit" }, agentToggleBox: { accentColor: "#2ea44f", width: 15, height: 15, margin: 0, cursor: "pointer" }, headerActions: { display: "flex", alignItems: "flex-start", gap: 14, flexShrink: 0 }, input: { width: "100%", boxSizing: "border-box", border: "1px solid var(--dsw-alias-border-l4, rgba(127,127,127,.55))", borderRadius: 7, padding: "7px 8px", background: "var(--dsw-alias-bg-layer-1, #101418)", color: "var(--dsw-alias-label-primary, inherit)", fontSize: 13 }, credentialColumns: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10 }, jumpRow: { display: "grid", gridTemplateColumns: "1fr auto", gap: 5, alignItems: "center", marginBottom: 6 }, check: { display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#f07171" },
+  importList: { display: "grid", gap: 4, maxHeight: 300, overflowY: "auto", border: "1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.35))", borderRadius: 8, padding: 8 },
+  importRow: { display: "grid", gridTemplateColumns: "auto minmax(80px, 1fr) minmax(140px, 1.4fr) auto", alignItems: "center", gap: 8, fontSize: 12, padding: "3px 2px", cursor: "pointer" },
+  importName: { fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  importAddress: { fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", opacity: 0.82, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  importBadges: { display: "inline-flex", alignItems: "center", gap: 4, flexWrap: "wrap", justifyContent: "flex-end" },
+  badge: { padding: "0 5px", borderRadius: 99, background: "rgba(127,127,127,.18)", fontSize: 11, lineHeight: "17px", whiteSpace: "nowrap" },
+  badgeWarn: { padding: "0 5px", borderRadius: 99, background: "rgba(183,121,31,.2)", color: "#b7791f", fontSize: 11, lineHeight: "17px", whiteSpace: "nowrap" },
+  badgeBad: { padding: "0 5px", borderRadius: 99, background: "rgba(240,113,113,.18)", color: "#e06060", fontSize: 11, lineHeight: "17px", whiteSpace: "nowrap" },
+  badgeOk: { padding: "0 5px", borderRadius: 99, background: "rgba(50,197,108,.16)", color: "#32c56c", fontSize: 11, lineHeight: "17px", whiteSpace: "nowrap" },
+  importResult: { display: "grid", gap: 5, fontSize: 12, lineHeight: 1.6, padding: "8px 10px", borderRadius: 7, background: "rgba(50,197,108,.1)" },
+  actions: { display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 }, error: { padding: "8px 10px", borderRadius: 7, background: "rgba(240,113,113,.15)", color: "#ff8a8a", fontSize: 13 },
   // execution-policy section: width-capped and compact so it reads as a
   // settings row, not a full-bleed panel.
   policyPanel: { maxWidth: 620, padding: "10px 12px", marginBottom: 16 },
