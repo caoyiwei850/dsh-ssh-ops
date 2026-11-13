@@ -126,4 +126,25 @@ test("operator RPC returns encrypted data and wrong password never changes stora
   assert.equal(imported.ok, true);
   assert.equal(resourceBackupImportResultSchema.safeParse(imported).success, true);
   assert.equal(target.profiles.entries().length, 2);
+  const preview = await SshOpsService.prototype.resourceBackupPreview.call(target, { password: "long secure passphrase", archive: exported.value.archive });
+  assert.equal(resourceBackupImportResultSchema.safeParse(preview).success, true);
+  assert.deepEqual(preview.value.duplicates.sort(), ["App", "Jump"]);
+  assert.equal(target.profiles.entries().length, 2, "preview does not create records");
+});
+
+test("skip duplicates reuses an equivalent jump but keeps the backup jump when credentials differ", async () => {
+  const original = await source();
+  const archive = await collectResourceBackup(original);
+  for (const changed of [false, true]) {
+    const target = service();
+    await restoreResourceBackup(target, { ...archive, profiles: [archive.profiles.find(({ id }) => id === first)] });
+    const [[jumpId, jump]] = target.profiles.entries();
+    if (changed) await target.ctx.credentials.set(credentialRef(refName(jump.credentialId, "SHARED_")), "different-password");
+    const result = await restoreResourceBackup(target, archive, { skipDuplicates: true });
+    const app = target.profiles.entries().find(([, record]) => record.name === "App")[1];
+    assert.equal(result.skipped, changed ? 0 : 1);
+    assert.deepEqual(result.retained, changed ? ["Jump"] : []);
+    assert.equal(app.proxyJump[0].profileId === jumpId, !changed);
+    assert.equal(target.credentials.entries().length, changed ? 2 : 1);
+  }
 });

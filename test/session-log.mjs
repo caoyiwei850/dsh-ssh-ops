@@ -209,7 +209,7 @@ try {
     [index, /store\.append\(session\.id, text\)/, "every session chunk is appended to its log"],
     [index, /session\.logMeta = \{[\s\S]{0,200}sessionId, connectionId: request\.connectionId/, "opening a shell remembers what to record"],
     [index, /if \(!store\.has\(session\.id\)\) void store\.begin\(session\.logMeta\)/, "the log starts with the first output byte"],
-    [index, /void this\.sessionLogStore\(\)\?\.end\(session\.id, \{ exitCode: exit\?\.code \?\? null \}\)/, "a natural exit closes the log with its code"],
+    [index, /void this\.sessionLogStore\(\)\?\.end\(session\.id, \{ exitCode: exit\?\.code \?\? null, reason: exit\?\.reason \}\)/, "a natural exit closes the log with its code"],
     [index, /sessionLogEnabled: true/, "recording is on by default"],
     [panel, /setTab\("logs"\)/, "the SSH panel exposes the log tab"],
     [panel, /<SshLogs api=\{api\} \/>/, "the log tab renders the log panel"],

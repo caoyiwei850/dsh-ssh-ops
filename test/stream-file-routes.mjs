@@ -79,11 +79,22 @@ console.log("stream routes: archive namespace guard passed");
     createReadStream() { return upstream; }
   } });
   const res = new Writable({ write(_chunk, _encoding, cb) { cb(); } });
-  const pending = service.streamDownloadFile({}, res, new URL("http://localhost/?path=%2Flarge&verify=sha256"), "c1");
+  const id = "3d706ab7-640f-49bf-9a09-6bce2a82110a";
+  const pending = service.streamDownloadFile({}, res, new URL(`http://localhost/?path=%2Flarge&verify=sha256&verificationId=${id}`), "c1");
   await new Promise((resolve) => setImmediate(resolve));
+  upstream.write(Buffer.alloc(256));
+  await new Promise((resolve) => setImmediate(resolve));
+  const poll = (connectionId) => {
+    const reply = response();
+    service.handleStreamRoute({ method: "GET", url: `/ssh-ops/stream/verification?connectionId=${connectionId}&id=${id}` }, reply, { requestRejection: () => undefined });
+    return reply;
+  };
+  assert.deepEqual(JSON.parse(poll("c1").body), { bytes: 256, total: 1024 });
+  assert.equal(poll("c2").status, 404);
   res.destroy();
   await pending;
   assert.equal(upstream.destroyed, true, "cancelling during hashing destroys the SFTP reader");
+  assert.equal(poll("c1").status, 404, "progress is removed when cancelled");
 }
 
 // A browser upload must never truncate or delete an existing destination when

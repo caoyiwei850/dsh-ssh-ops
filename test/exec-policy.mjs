@@ -427,4 +427,21 @@ const conn = { profileId: "profile-1" };
   assert.equal(service2.resolveExecPolicy("c1").mode, "standard");
 }
 
+{
+  const service = Object.create(SshOpsService.prototype);
+  const rows = new Map();
+  service.settingsTable = { get: (key) => rows.get(key), put: async (key, value) => rows.set(key, value) };
+  service.connections = new Map();
+  service.profileTable = null;
+  const exact = ["rm /tmp/generated.log"];
+  assert.equal((await service.agentSettingsSave({ execPolicy: "custom", execPolicyExact: exact })).ok, true);
+  assert.equal((await service.agentSettingsSave({ agentAutoConnect: true })).ok, true);
+  assert.deepEqual(loadSettingsRecord(rows.get("main")).execPolicyExact, exact);
+  const policy = service.resolveExecPolicy("test");
+  assert.equal(assessShellCommand(exact[0], policy).ok, true);
+  assert.equal(assessShellCommand("rm /tmp/other.log", policy).ok, false);
+  assert.equal(assessShellCommand("rm /tmp/generated.log; rm /tmp/other.log", policy).ok, false);
+  assert.equal(assessShellCommand(exact[0], { ...policy, mode: "standard" }).ok, false);
+  assert.equal((await service.agentSettingsSave({ execPolicyExact: ["rm /tmp/*"] })).ok, false);
+}
 console.log("exec-policy: all assertions passed");

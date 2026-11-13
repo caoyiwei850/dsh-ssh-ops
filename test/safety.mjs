@@ -229,8 +229,11 @@ assert.equal(service.operatorApprovals.size, 0, "the mismatched voucher is still
   };
   ambiguousService.recordOperatorApproval("call-once", "live", "reboot");
   const ambiguous = await ambiguousService.execOnConnection("live", "reboot", 30000, false, "call-once");
-  assert.equal(ambiguous.ok, false);
+  assert.equal(ambiguous.error.code, "exec-outcome-unknown");
   assert.equal(ambiguousRuns, 1, "an approved dangerous command is never transparently replayed");
+  const ordinary = await ambiguousService.execOnConnection("live", "touch status");
+  assert.equal(ordinary.error.code, "exec-outcome-unknown");
+  assert.equal(ambiguousRuns, 2, "an ordinary write is dispatched only once");
 }
 
 // Approval vouchers expire even when the tool body never consumes them.

@@ -6,16 +6,18 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.4.8-blue)
+![version](https://img.shields.io/badge/version-0.4.9-blue)
 [![dsh.so risk](https://www.dsh.so/badge/dsh-ssh-ops.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![dsh.so install · dsh 0.2.2-rc.1](https://cdn.dsh.so/badge/install/dsh-ssh-ops@0.2.2-rc.1.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/?ref=badge-install)
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/caoyiwei850/dsh-ssh-ops)
 
-> **v0.4.8** adds encrypted server configuration export and import for migration between computers, plus SSH terminal appearance settings and optional semantic text highlighting. Requires DSH 0.2.0 or later. See the [release notes](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.4.8).
+> **v0.4.9** adds OpenSSH config import, backup deduplication, server search, exact command exceptions, download verification progress, and disconnect diagnostics. See the [release notes](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.4.9).
 
 > An SSH operations plugin for DeepSeek Harness: drive the current server from the main conversation while keeping a real interactive terminal on the right, with built-in file management, port forwarding, and database management.
 
 📖 **New here? Start with the [Product Guide](./docs/product-guide.en.md)** — a ten-minute quick start, a feature walkthrough, the security model, and ready-made recipes.
+
+> **v0.4.8** adds encrypted server configuration export and import for migration between computers, plus SSH terminal appearance settings and optional semantic text highlighting. Requires DSH 0.2.0 or later. See the [release notes](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.4.8).
 
 > **v0.4.7** adds verified streaming downloads with reconnect and optional restart recovery, editor change previews and backup restore, fixes session-log redaction and SFTP deletion target handling, and updates dependencies. Restart recovery is disabled by default and stores unfinished data unencrypted in browser-local storage. The new Desktop interface flows have not yet been fully validated interactively.
 
@@ -67,7 +69,7 @@ The Files tab provides SFTP management and can `cd` the interactive terminal int
 - Commands run through `ssh_exec` are echoed in the terminal and return exit code, output, `cwd`, duration, timeout, and truncation state. On Linux, the command inherits the verified directory of one idle POSIX interactive shell. Busy or ambiguous terminals and inaccessible directories are rejected; when no interactive shell is detectable, the login directory is used and clearly reported.
 - Manual terminal output is read on demand via `ssh_read`; it is never silently injected into the conversation context.
 - Output sent to the model is redacted for private keys, Bearer tokens, common passwords/API keys (including bare `sk-`-prefixed keys), and database passwords.
-- **Connection stability**: SSH connections enable keepalive (20s interval, 3 checks), so NAT/firewalls no longer silently drop idle connections. Transport drops trigger exponential-backoff auto-reconnect (capped at 30s); a command that drops mid-run is retried once transparently. Transient connection failures auto-retry 3 times (auth failures excluded). Explicit disconnect or plugin unload never triggers reconnect; remote tunnels re-register automatically after a reconnect.
+- **Connection stability**: SSH connections enable keepalive (20s interval, 3 checks), so NAT/firewalls no longer silently drop idle connections. Transport drops trigger exponential-backoff auto-reconnect (capped at 30s); a command interrupted after dispatch reports an unknown outcome. Transient connection failures auto-retry 3 times (auth failures excluded). Explicit disconnect or plugin unload never triggers reconnect; remote tunnels re-register automatically after a reconnect.
 - **Host-key verification (TOFU)**: SSH connections verify the server's host public-key fingerprint — first connect records and trusts it, later changes are rejected (guards against MITM / re-provisioned servers). Per-server `hostKeyMode` selects `accept-new` (default) / `verify` (reject unseen) / `off`; on a changed fingerprint the connection is **not retried and not auto-reconnected**. Settings → SSH Resources lets you set the mode per server and manage trusted fingerprints with one-click forget. Verification runs before user authentication, so it is independent of who logs in or which password they use — the same server with an unchanged key never blocks another admin or vendor.
 - **File management**: the Files tab supports SFTP browsing, transfers, search, and text editing. Browsers supporting the file save API can stream downloads with progress, speed, and cancellation; other browsers retain the read-size limit. The editor previews changes side by side, checks original bytes before saving, and creates a private backup in the same directory. Backups can be restored from the file list after reopening the panel. Backups remain on the server and may contain sensitive data; remove them when no longer needed. SFTP lacks atomic compare-and-write, so a small concurrent-change window remains.
 - **Port forwarding**: a Tunnels tab starts local forwards (this machine → server-reachable target) and remote forwards (server → this machine), with a live tunnel list and stop control. The `tunnel_*` tools can also be used directly.
@@ -98,7 +100,7 @@ Local `link:`, Git, and archive installations do not display the host's registry
 ### From GitHub
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.8
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.9
 ```
 
 The git channel installs source; the `prepare` hook runs `npm run build` during install to produce the `lib/` entry files, so no manual build is needed. **Note: pnpm ≥ 10 blocks dependency build scripts by default** — if the SSH tab does not appear after restart, check `node_modules/dsh-ssh-ops/lib/` as described in [INSTALL.md](INSTALL.md) step 3: if it is missing, the build was blocked; run `npm install && npm run build` inside that package directory (or allowlist `dsh-ssh-ops` in the profile's pnpm `onlyBuiltDependencies`) and restart.
@@ -113,14 +115,14 @@ Open any session, click the top **SSH** tab, and use the right-side panel to con
 
 ### From a release archive
 
-Download `dsh-ssh-ops-0.4.8.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.4.8), then:
+Download `dsh-ssh-ops-0.4.9.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.4.9), then:
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.4.8.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.4.9.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.4.8.zip` is for offline review or further development; extract it and run `npm install` in the directory (the build runs automatically).
+`dsh-ssh-ops-0.4.9.zip` is for offline review or further development; extract it and run `npm install` in the directory (the build runs automatically).
 
 ## Usage
 
@@ -243,8 +245,8 @@ Pushing a `vX.Y.Z` tag that matches `package.json.version` runs tests, builds th
 
 Artifacts are written to `release/`:
 
-- `dsh-ssh-ops-0.4.8.tgz`: installable directly by DSH.
-- `dsh-ssh-ops-0.4.8.zip`: full offline source archive.
+- `dsh-ssh-ops-0.4.9.tgz`: installable directly by DSH.
+- `dsh-ssh-ops-0.4.9.zip`: full offline source archive.
 
 ## License
 

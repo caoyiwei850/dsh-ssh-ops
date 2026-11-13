@@ -376,6 +376,102 @@ function Check({ label, checked, onChange }) {
   return <label style={styles.check}><input type="checkbox" checked={checked} onChange={onChange} />{label}</label>;
 }
 
+function ImportSourceDialog({ onSelect, onClose }) {
+  return <div style={styles.backdrop}><div className="dsh-ssh-ops-resource-modal" style={styles.dialog} role="dialog" aria-modal="true" aria-label={t("导入服务器")}>
+    <div style={styles.dialogTitle}>{t("导入服务器")}</div>
+    <div style={styles.actions}>
+      <button type="button" onClick={onClose} style={styles.secondary}>{t("取消")}</button>
+      <button type="button" onClick={() => onSelect("import")} style={styles.secondary}>{t("加密备份文件")}</button>
+      <button type="button" onClick={() => onSelect("ssh-config")} style={styles.primary}>{t("从 SSH 配置导入")}</button>
+    </div>
+  </div></div>;
+}
+
+function OpenSshImportDialog({ api, groups, profiles, onClose, onImported }) {
+  const [preview, setPreview] = useState(null);
+  const [selected, setSelected] = useState(new Set());
+  const [group, setGroup] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let active = true;
+    api.openSshImport().then(({ preview: value }) => {
+      if (!active) return;
+      setPreview(value);
+      setSelected(new Set(value.entries.filter((entry) => !entry.existing && !entry.unsupported).map((entry) => entry.name)));
+    }).catch((cause) => { if (active) setError(cause.message); });
+    return () => { active = false; };
+  }, [api]);
+
+  const submit = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const { imported } = await api.openSshImport({ fingerprint: preview.fingerprint, names: [...selected], groupId: group || null });
+      setResult(imported);
+      await onImported();
+    } catch (cause) {
+      setError(cause.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const aliases = new Map((preview?.entries ?? []).map((entry) => [entry.name.toLowerCase(), entry]));
+  const savedByName = new Map(profiles.map((profile) => [profile.name.toLowerCase(), profile]));
+  const missingHops = (entry) => entry.hops.filter((hop) => {
+    const alias = hop.toLowerCase();
+    const target = aliases.get(alias);
+    if (!target || target.unsupported || alias === entry.name.toLowerCase()) return true;
+    if (!target.existing) return !selected.has(target.name);
+    const saved = savedByName.get(alias);
+    return saved?.host !== target.host || saved?.port !== target.port || saved?.username !== target.username;
+  });
+  return <div style={styles.backdrop}><div className="dsh-ssh-ops-resource-modal" style={styles.dialog} role="dialog" aria-modal="true" aria-label={t("从 SSH 配置导入")}>
+    <div style={styles.dialogTitle}>{t("从 SSH 配置导入")}</div>
+    <p style={styles.hint}>{t("读取 DSH 宿主的 ~/.ssh/config。导入后请在服务器设置中补填密码或私钥。")}</p>
+    {!preview && !error && <div role="status">{t("处理中…")}</div>}
+    {preview?.entries.length === 0 && <p>{t("没有找到可列出的 SSH 主机。")}</p>}
+    {preview?.entries.length > 0 && !result && <>
+      <Field label={t("分组")}><select value={group} onChange={(event) => setGroup(event.target.value)} disabled={busy} style={styles.input}>
+        <option value="">{t("未分组")}</option>
+        {groups.map((item) => <option key={item.groupId} value={item.groupId}>{item.name}</option>)}
+      </select></Field>
+      <div style={{ maxHeight: 280, overflow: "auto" }}>
+        {preview.entries.map((entry) => <label key={entry.name} style={{ display: "block", padding: "4px 0" }}>
+          <input type="checkbox" checked={selected.has(entry.name)} disabled={busy || entry.existing || entry.unsupported} onChange={(event) => {
+            const checked = event.target.checked;
+            setSelected((previous) => {
+              const next = new Set(previous);
+              if (checked) next.add(entry.name);
+              else next.delete(entry.name);
+              return next;
+            });
+          }} />
+          {entry.name} · {entry.username}@{entry.host}:{entry.port}
+          {entry.hops.length > 0 && <> · {entry.hops.join(" → ")}</>}
+          {entry.existing && <> · {t("已存在")}</>}
+          {entry.unsupported && <> · {t("配置暂不支持")} · {entry.issues.join(", ")}</>}
+          {!entry.existing && !entry.unsupported && <> · {entry.authKind === "key" ? t("需补填私钥") : t("需补填密码")}</>}
+          {!entry.existing && missingHops(entry).length > 0 && <> · {t("缺少可用跳板：")} {missingHops(entry).join(", ")}</>}
+        </label>)}
+      </div>
+    </>}
+    {error && <div style={styles.error} role="alert">{error}</div>}
+    {result && <div role="status">
+      {t(`已导入 ${result.created} 台服务器。`)}
+      {result.skipped.length > 0 && <p>{t("已存在")} · {result.skipped.join(", ")}</p>}
+      {result.details.length > 0 && <ul style={{ maxHeight: 180, overflow: "auto" }}>{result.details.map(({ name, reason, items }) => <li key={name}>
+        {name} · {{ unsupported: t("配置暂不支持"), cycle: t("跳板链存在循环"), repeated: t("跳板链包含重复服务器"), missing: t("缺少可用跳板："), save: t("保存服务器失败") }[reason]} {items.join(", ")}
+      </li>)}</ul>}
+    </div>}
+    <div style={styles.actions}>
+      <button type="button" onClick={onClose} disabled={busy} style={styles.secondary}>{t("关闭")}</button>
+      {!result && <button type="button" onClick={submit} disabled={busy || selected.size === 0} style={styles.primary}>{busy ? t("处理中…") : t("导入")}</button>}
+    </div>
+  </div></div>;
+}
+
 function ResourceBackupDialog({ mode, api, onClose, onImported }) {
   const [password, setPassword] = useState("");
   const [confirmation, setConfirmation] = useState("");
@@ -383,6 +479,9 @@ function ResourceBackupDialog({ mode, api, onClose, onImported }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const [importResult, setImportResult] = useState(null);
+  const [skipDuplicates, setSkipDuplicates] = useState(true);
+  const [preview, setPreview] = useState(null);
   const submit = async () => {
     if (password.length < 12) return setError(t("备份口令至少需要 12 个字符。"));
     if (mode === "export" && password !== confirmation) return setError(t("两次输入的备份口令不一致。"));
@@ -397,7 +496,13 @@ function ResourceBackupDialog({ mode, api, onClose, onImported }) {
         document.body.appendChild(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
         setSuccess(t("加密备份已生成，请妥善保存文件和口令。"));
       } else {
-        const result = await api.resourceBackupImport(password, await file.text());
+        if (!preview) {
+          const archive = await file.text();
+          setPreview({ ...await api.resourceBackupPreview(password, archive), archive });
+          return;
+        }
+        const result = await api.resourceBackupImport(password, preview.archive, skipDuplicates);
+        setImportResult(result);
         await onImported();
         setSuccess(t(`已导入 ${result.profiles} 台服务器、${result.groups} 个分组和 ${result.credentials} 个共享凭据。`));
       }
@@ -407,13 +512,20 @@ function ResourceBackupDialog({ mode, api, onClose, onImported }) {
   };
   return <div style={styles.backdrop}><div className="dsh-ssh-ops-resource-modal" style={styles.dialog} role="dialog" aria-modal="true" aria-label={mode === "export" ? t("导出服务器") : t("导入服务器")}>
     <div style={styles.dialogTitle}>{mode === "export" ? t("导出服务器") : t("导入服务器")}</div>
-    <p style={styles.hint}>{mode === "export" ? t("备份包含服务器配置、分组、共享凭据、密码、私钥和已信任的主机指纹。文件使用口令加密；忘记口令将无法恢复。") : t("导入会新增服务器和凭据，相同名称的分组会复用，不会覆盖现有服务器。重复导入会产生重复服务器；主机指纹冲突时会拒绝导入。")}</p>
+    <p style={styles.hint}>{mode === "export" ? t("备份包含服务器配置、分组、共享凭据、密码、私钥和已信任的主机指纹。文件使用口令加密；忘记口令将无法恢复。") : t("导入会新增服务器和凭据，相同名称的分组会复用，不会覆盖现有服务器。可选择跳过重复服务器；主机指纹冲突时会拒绝导入。")}</p>
     <p style={styles.hint}>{t("备份不包含数据库连接、全局 AI 策略或本机工作区绑定。")}</p>
-    {mode === "import" && <Field label={t("加密备份文件")}><input type="file" accept=".json,application/json" onChange={(event) => setFile(event.target.files?.[0] ?? null)} /></Field>}
-    <Field label={t("备份口令")}><input type="password" autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} style={styles.input} /></Field>
+    {mode === "import" && <Field label={t("加密备份文件")}><input type="file" accept=".json,application/json" disabled={busy || Boolean(success)} onChange={(event) => { setFile(event.target.files?.[0] ?? null); setPreview(null); }} /></Field>}
+    <Field label={t("备份口令")}><input type="password" autoComplete="new-password" value={password} disabled={busy || Boolean(success)} onChange={(event) => { setPassword(event.target.value); setPreview(null); }} style={styles.input} /></Field>
     {mode === "export" && <Field label={t("再次输入口令")}><input type="password" autoComplete="new-password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} style={styles.input} /></Field>}
+    {preview && !success && <div role="status">
+      {t(`备份包含 ${preview.profiles} 台服务器、${preview.groups} 个分组和 ${preview.credentials} 个共享凭据。`)}
+      {preview.duplicates.length > 0 && <p style={{ maxHeight: 120, overflow: "auto" }}>{t("以下服务器可能重复：")} {preview.duplicates.join(", ")}</p>}
+      <label><input type="checkbox" checked={skipDuplicates} disabled={busy} onChange={(event) => setSkipDuplicates(event.target.checked)} /> {t("跳过重复服务器")}</label>
+    </div>}
+    {importResult?.skipped > 0 && <p>{t(`已跳过 ${importResult.skipped} 台重复服务器。`)}</p>}
+    {importResult?.retained?.length > 0 && <p>{t("以下跳板无法确认与现有记录等同，已保留备份中的版本：")} {importResult.retained.join(", ")}</p>}
     {error && <div role="alert" style={styles.error}>{error}</div>}{success && <div role="status">{success}</div>}
-    <div style={styles.actions}><button type="button" onClick={onClose} disabled={busy} style={styles.secondary}>{t("关闭")}</button><button type="button" onClick={submit} disabled={busy || Boolean(success)} style={styles.primary}>{busy ? t("处理中…") : mode === "export" ? t("导出") : t("导入")}</button></div>
+    <div style={styles.actions}><button type="button" onClick={onClose} disabled={busy} style={styles.secondary}>{t("关闭")}</button><button type="button" onClick={submit} disabled={busy || Boolean(success)} style={styles.primary}>{busy ? t("处理中…") : mode === "export" ? t("导出") : preview ? t("确认导入") : t("预览备份")}</button></div>
   </div></div>;
 }
 
@@ -485,6 +597,8 @@ export function SshResources({ api, credentials, pluginManager, openPluginManage
   const [editor, setEditor] = useState(null);
   const [connecting, setConnecting] = useState(null);
   const [newGroupName, setNewGroupName] = useState("");
+  const [resourceQuery, setResourceQuery] = useState("");
+  const [connectedProfiles, setConnectedProfiles] = useState(null);
   const [creatingGroup, setCreatingGroup] = useState(false);
   // Which setup panel the segmented switcher shows: "groups" | "credentials".
   const [setupTab, setSetupTab] = useState("groups");
@@ -499,6 +613,8 @@ export function SshResources({ api, credentials, pluginManager, openPluginManage
   // and checklist stay disabled until the host answers.
   const [execPolicy, setExecPolicy] = useState(null);
   const [execPolicyAllow, setExecPolicyAllow] = useState([]);
+  const [exactRules, setExactRules] = useState([]);
+  const [ruleDraft, setRuleDraft] = useState("");
   const [policyCategories, setPolicyCategories] = useState([]);
   const [policySaving, setPolicySaving] = useState(false);
   // Username the new-server form prefills: auto-remembered host-side from the
@@ -554,6 +670,8 @@ export function SshResources({ api, credentials, pluginManager, openPluginManage
           setAgentAutoConnect(settings.agentAutoConnect === true);
           setExecPolicy(settings.execPolicy ?? "standard");
           setExecPolicyAllow(settings.execPolicyAllow ?? []);
+          setExactRules(settings.execPolicyExact ?? []);
+          setRuleDraft((settings.execPolicyExact ?? []).join("\n"));
           setPolicyCategories(settings.categories ?? []);
           setDefaultUsername(settings.defaultUsername ?? null);
         }
@@ -568,7 +686,18 @@ export function SshResources({ api, credentials, pluginManager, openPluginManage
     // The connected badge reflects live server-side connections, which also
     // change from outside this page (SSH panel ×, agent, disconnects). Poll
     // so the badge and its 断开 control never go stale.
-    const timer = setInterval(() => { if (alive) refresh({ showLoading: false }); }, 5000);
+    let checking = false;
+    const refreshStatus = async () => {
+      if (checking || document.hidden) return;
+      checking = true;
+      try {
+        const { profileIds } = await api.profileConnectionStatus();
+        if (alive) setConnectedProfiles(new Set(profileIds));
+      } catch { /* Keep the last known connection status. */ }
+      finally { checking = false; }
+    };
+    void refreshStatus();
+    const timer = setInterval(refreshStatus, 5000);
     return () => { alive = false; clearInterval(timer); };
   }, [api]);
 
@@ -594,12 +723,14 @@ export function SshResources({ api, credentials, pluginManager, openPluginManage
    * categories. Saves carry the auto-connect switch too, since the settings
    * row is one record — the current state travels with the policy.
    */
-  const saveExecPolicy = async (policy, allow) => {
+  const saveExecPolicy = async (policy, allow, exact) => {
     setPolicySaving(true);
     try {
-      const saved = await api.agentSettingsSave(agentAutoConnect === true, policy, allow);
+      const saved = await api.agentSettingsSave(agentAutoConnect === true, policy, allow, undefined, exact);
       setExecPolicy(saved.execPolicy ?? "standard");
       setExecPolicyAllow(saved.execPolicyAllow ?? []);
+      setExactRules(saved.execPolicyExact ?? []);
+      if (exact !== undefined) setRuleDraft((saved.execPolicyExact ?? []).join("\n"));
       setError(null);
     } catch (cause) {
       setError(cause?.message ?? String(cause));
@@ -621,12 +752,17 @@ export function SshResources({ api, credentials, pluginManager, openPluginManage
     void saveExecPolicy(policy, execPolicyAllow);
   };
 
+  const saveExactRules = () => {
+    const rules = [...new Set(ruleDraft.split(/\r?\n/).map((line) => line.trim()).filter(Boolean))];
+    if (rules.some((rule) => !exactRules.includes(rule)) && !window.confirm(t("保存后，AI 可在使用自定义放行策略的连接上直接执行新增的精确命令。继续吗？"))) return;
+    void saveExecPolicy("custom", execPolicyAllow, rules);
+  };
+
   const togglePolicyCategory = (key) => {
     if (policySaving) return;
     const next = execPolicyAllow.includes(key)
       ? execPolicyAllow.filter((item) => item !== key)
       : [...execPolicyAllow, key];
-    setExecPolicyAllow(next);
     void saveExecPolicy("custom", next);
   };
 
@@ -745,7 +881,12 @@ export function SshResources({ api, credentials, pluginManager, openPluginManage
 
   const groupedProfiles = new Map(groups.map((group) => [group.groupId, []]));
   const ungrouped = [];
-  for (const profile of profiles) {
+  const query = resourceQuery.trim().toLowerCase();
+  let visibleProfiles = 0;
+  for (const saved of profiles) {
+    if (query && ![saved.name, saved.host, `${saved.host}:${saved.port}`, saved.username, saved.groupName].some((value) => value?.toLowerCase().includes(query))) continue;
+    visibleProfiles += 1;
+    const profile = connectedProfiles ? { ...saved, connected: connectedProfiles.has(saved.profileId) } : saved;
     const bucket = profile.groupId === null ? undefined : groupedProfiles.get(profile.groupId);
     if (bucket === undefined) ungrouped.push(profile);
     else bucket.push(profile);
@@ -820,7 +961,7 @@ export function SshResources({ api, credentials, pluginManager, openPluginManage
         <button type="button" role="tab" aria-selected={setupTab === "policy"} onClick={() => setSetupTab("policy")} className="dsh-ssh-ops-segment" style={setupTab === "policy" ? styles.segmentActive : styles.segment}>{t("AI 命令执行策略")}</button>
       </div>
       {setupTab === "groups" && <section style={styles.groupPanel}>
-        <div style={styles.groupCreate}><input value={newGroupName} onChange={(event) => setNewGroupName(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") createGroup(); }} placeholder={t("例如：生产环境")} style={{ ...styles.input, flex: 1, minWidth: 0, maxWidth: 340 }} /><button type="button" disabled={creatingGroup || !newGroupName.trim()} onClick={createGroup} style={styles.secondary}>{creatingGroup ? t("创建中…") : t("创建")}</button><button type="button" onClick={() => setBackupMode("export")} style={styles.secondary}>{t("导出")}</button><button type="button" onClick={() => setBackupMode("import")} style={styles.secondary}>{t("导入")}</button></div>
+        <div style={styles.groupCreate}><input value={newGroupName} onChange={(event) => setNewGroupName(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") createGroup(); }} placeholder={t("例如：生产环境")} style={{ ...styles.input, flex: 1, minWidth: 0, maxWidth: 340 }} /><button type="button" disabled={creatingGroup || !newGroupName.trim()} onClick={createGroup} style={styles.secondary}>{creatingGroup ? t("创建中…") : t("创建")}</button><button type="button" onClick={() => setBackupMode("export")} style={styles.secondary}>{t("导出")}</button><button type="button" onClick={() => setBackupMode("choose")} style={styles.secondary}>{t("导入")}</button></div>
         {groups.length > 0 && <div style={styles.groupChips}>{groups.map((group) => <span key={group.groupId} style={styles.groupChip}>{t(`${group.name}（${group.profileCount}）`)}<button type="button" onClick={() => deleteGroup(group)} title={t(`删除分组 ${group.name}`)} style={styles.chipDelete}>×</button></span>)}</div>}
       </section>}
       {setupTab === "credentials" && <section style={styles.groupPanel}><button type="button" onClick={() => setCredentialEditor({})} style={styles.secondary}>{t("新增共享凭据")}</button>{sharedCredentials.length > 0 && <div style={styles.credentialList}>{sharedCredentials.map((item) => <div key={item.credentialId} style={styles.credentialRow}><span title={item.name} style={styles.credentialLabel}>{item.name} · {item.authKind === "key" ? t("私钥") : t("密码")}{item.secondaryConfigured ? " + " + (item.authKind === "key" ? t("密码") : t("私钥")) : ""} · {item.credentialConfigured ? t("已保存") : t("未配置")}</span><span style={styles.credentialActions}><button type="button" onClick={() => setCredentialEditor(item)} title={t(`编辑共享凭据 ${item.name}`)} aria-label={t(`编辑共享凭据 ${item.name}`)} style={styles.iconButton}>✎</button><button type="button" onClick={async () => { if (!window.confirm(t(`删除共享凭据“${item.name}”？仍被服务器或跳板机引用时不会删除。`))) return; try { await api.credentialDelete(item.credentialId); await refresh({ showLoading: false }); } catch (cause) { setError(cause?.message ?? String(cause)); } }} title={t(`删除共享凭据 ${item.name}`)} aria-label={t(`删除共享凭据 ${item.name}`)} style={{ ...styles.iconButton, color: "#f07171" }}>×</button></span></div>)}</div>}</section>}
@@ -845,7 +986,7 @@ export function SshResources({ api, credentials, pluginManager, openPluginManage
                 }}
                 title={
                   tier === "standard" ? t("破坏性命令一律拦截，由操作者在会话内审批后才执行")
-                  : tier === "custom" ? t("仅放行勾选的类别，其余照常拦截")
+                  : tier === "custom" ? t("放行勾选的类别及精确匹配的命令")
                   : t("AI 可直接执行任何命令，含不可逆删除（不进回收站）")
                 }
               >
@@ -867,9 +1008,10 @@ export function SshResources({ api, credentials, pluginManager, openPluginManage
                   <span>{t(category.label)}</span>
                 </label>
               ))}
-              {execPolicyAllow.length === 0 && (
-                <div style={styles.policyHint}>{t("尚未勾选任何类别：行为与「标准」相同。")}</div>
-              )}
+              <Field label={t("精确放行命令")} hint={t("每行一条完整命令，最多 32 条。命令和参数须完全匹配。规则作用于所有采用「自定义放行」的连接。")}>
+                <textarea value={ruleDraft} rows={4} spellCheck={false} disabled={policySaving} onChange={(event) => setRuleDraft(event.target.value)} style={{ ...styles.input, fontFamily: "monospace" }} />
+                <button type="button" disabled={policySaving || ruleDraft === exactRules.join("\n")} onClick={saveExactRules} style={styles.secondary}>{t("保存精确规则")}</button>
+              </Field>
             </div>
           )}
           {execPolicy === "allowAll" && (
@@ -879,10 +1021,14 @@ export function SshResources({ api, credentials, pluginManager, openPluginManage
           )}
       </section>}
       {error && <div style={styles.error} role="alert">{error}</div>}
+      {profiles.length > 0 && <input type="search" value={resourceQuery} onChange={(event) => setResourceQuery(event.target.value)}
+        aria-label={t("搜索服务器")} placeholder={t("按名称、地址或分组搜索服务器")} style={{ ...styles.input, width: "100%", marginBottom: 12 }} />}
+      {!loading && query && visibleProfiles === 0 && <div style={styles.empty}>{t("没有匹配的服务器。")}</div>}
       {loading ? <div style={styles.empty}>{t("加载 SSH 资源中…")}</div> : profiles.length === 0 ? <div style={styles.empty}>{t("还没有保存的服务器。新增后可一键连接并打开右侧终端。")}</div> : <div style={styles.groupedList}>{groups.map((group) => {
         const key = `group:${group.groupId}`;
-        const collapsed = !expandedGroups.has(key);
+        const collapsed = !query && !expandedGroups.has(key);
         const items = groupedProfiles.get(group.groupId) ?? [];
+        if (query && !items.length) return null;
         return <section key={group.groupId}>
           <button type="button" onClick={() => toggleGroup(key)} aria-expanded={!collapsed} style={styles.groupHeadingButton}>
             <span style={styles.groupHeading}>{collapsed ? "▸" : "▾"} {group.name} <span style={styles.groupCount}>{t(`（${items.length}）`)}</span></span>
@@ -891,7 +1037,7 @@ export function SshResources({ api, credentials, pluginManager, openPluginManage
         </section>;
       })}{ungrouped.length > 0 && (() => {
         const key = "ungrouped";
-        const collapsed = !expandedGroups.has(key);
+        const collapsed = !query && !expandedGroups.has(key);
         return <section>
           <button type="button" onClick={() => toggleGroup(key)} aria-expanded={!collapsed} style={styles.groupHeadingButton}>
             <span style={styles.groupHeading}>{t(`${collapsed ? "▸" : "▾"} 未分组`)}<span style={styles.groupCount}>{t(`（${ungrouped.length}）`)}</span></span>
@@ -929,7 +1075,9 @@ export function SshResources({ api, credentials, pluginManager, openPluginManage
       )}
       {editor && <ResourceEditor initial={editor.profile} groups={groups} profiles={profiles} sharedCredentials={sharedCredentials} api={api} credentials={credentials} defaultUsername={defaultUsername} onClose={() => setEditor(null)} onSaved={(saved) => { if (saved?.username) setDefaultUsername(saved.username); return refresh(); }} />}
       {credentialEditor && <SharedCredentialEditor initial={credentialEditor.credentialId ? credentialEditor : null} credentials={credentials} api={api} onClose={() => setCredentialEditor(null)} onSaved={refresh} />}
-      {backupMode && <ResourceBackupDialog mode={backupMode} api={api} onClose={() => setBackupMode(null)} onImported={() => refresh({ showLoading: false })} />}
+      {backupMode === "choose" && <ImportSourceDialog onSelect={setBackupMode} onClose={() => setBackupMode(null)} />}
+      {backupMode === "ssh-config" && <OpenSshImportDialog api={api} groups={groups} profiles={profiles} onClose={() => setBackupMode(null)} onImported={() => refresh({ showLoading: false })} />}
+      {(backupMode === "import" || backupMode === "export") && <ResourceBackupDialog mode={backupMode} api={api} onClose={() => setBackupMode(null)} onImported={() => refresh({ showLoading: false })} />}
     </div>
   );
 }

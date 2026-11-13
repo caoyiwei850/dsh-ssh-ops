@@ -327,7 +327,14 @@ function XtermView({ api, sessionId, connectionId }) {
 
     const controller = new AbortController();
     const NO_SESSION_NOTICE = t(`\r\n\x1b[31m[终端会话已失效：DSH 服务已重启或该连接已关闭。请到 设置 → SSH 资源 重新连接]\x1b[0m\r\n`);
-    const EXIT_NOTICE = `\r\n\x1b[90m[session exited]\x1b[0m\r\n`;
+    const exitNotice = (exit) => {
+      const message = exit.reason === "transport-lost" ? t("SSH 连接中断，原终端已结束。请打开新终端。")
+        : exit.reason === "channel-closed" || exit.reason === "channel-error" ? t("终端通道关闭，远端未返回退出状态。")
+        : exit.reason === "operator-close" ? t("终端已关闭。")
+        : exit.reason === "remote-signal" ? t("远端终端被信号终止。")
+        : t(`远端终端已退出（退出码 ${exit.code}）。`);
+      return `\r\n\x1b[90m[${message}]\x1b[0m\r\n`;
+    };
     const markClosed = () => {
       // The closed flag belongs to the session, not this mount: a remount
       // (tab switch back, sidebar reopen) must not reset it.
@@ -339,7 +346,7 @@ function XtermView({ api, sessionId, connectionId }) {
       if (fresh) term.write(fresh);
       if (exit !== null) {
         markClosed();
-        term.write(EXIT_NOTICE);
+        term.write(exitNotice(exit));
         return true;
       }
       return false;
@@ -1554,7 +1561,7 @@ function ExecPolicyPill({ api, connectionId }) {
               <div style={{ ...panelStyles.policyMenuItemTitle, ...(candidate === "allowAll" ? panelStyles.policyMenuItemAllowAll : {}) }}>{execPolicyLabel(candidate)}{candidate === tier ? t("（当前）") : ""}</div>
               <div style={panelStyles.policyMenuItemDesc}>
                 {candidate === "standard" && t("破坏性命令一律拦截，由操作者在会话内审批后才执行")}
-                {candidate === "custom" && t("仅放行勾选的类别，其余照常拦截")}
+                {candidate === "custom" && t("放行勾选的类别及精确匹配的命令")}
                 {candidate === "allowAll" && t("AI 可直接执行任何命令，含不可逆删除（不进回收站）")}
               </div>
             </button>

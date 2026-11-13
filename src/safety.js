@@ -107,6 +107,12 @@ export function normalizeAllowList(list) {
   return [...new Set(list.filter((key) => ALL_CATEGORY_KEYS.includes(key)))];
 }
 
+// Only literal single commands are eligible for a per-command exception.
+export function normalizeExactRules(rules) {
+  if (!Array.isArray(rules)) return [];
+  return [...new Set(rules.filter((rule) => typeof rule === "string" && rule.length <= 512 && /^[a-zA-Z0-9_./:-]+(?: +[a-zA-Z0-9_./:=,@%+-]+)*$/.test(rule.trim())).map((rule) => rule.trim()))].slice(0, 32);
+}
+
 export function normalizePolicy(policy) {
   if (typeof policy === "string") {
     return EXEC_POLICY_MODES.includes(policy) ? { mode: policy, allow: [] } : { mode: "standard", allow: [] };
@@ -148,6 +154,7 @@ export function assessShellCommand(command, policy = STANDARD_POLICY) {
   if (tier.mode === "allowAll") return { ok: true };
 
   const released = tier.mode === "custom" ? new Set(tier.allow) : null;
+  if (released && normalizeExactRules(policy.exact).includes(value)) return { ok: true };
   for (const [pattern, categoryKey, category] of IRREVERSIBLE_BLOCK_LIST) {
     if (!pattern.test(value)) continue;
     if (released !== null && released.has(categoryKey)) continue;

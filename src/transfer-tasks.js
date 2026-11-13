@@ -114,7 +114,7 @@ export class TransferTasks {
 }
 
 /** Hash a local or SFTP stream with cancellation and an idle deadline. */
-export async function hashTransferStream(stream, signal, idleMs = 30000) {
+export async function hashTransferStream(stream, signal, idleMs = 30000, onProgress) {
   const hash = createHash("sha256");
   let timer;
   const abort = () => stream.destroy(signal?.reason instanceof Error ? signal.reason : new Error("Upload cancelled"));
@@ -127,7 +127,13 @@ export async function hashTransferStream(stream, signal, idleMs = 30000) {
   if (signal?.aborted) abort();
   tick();
   try {
-    for await (const chunk of stream) { hash.update(chunk); tick(); }
+    let bytes = 0;
+    for await (const chunk of stream) {
+      hash.update(chunk);
+      tick();
+      bytes += chunk.length;
+      onProgress?.(bytes);
+    }
     return hash.digest("hex");
   } finally {
     clearTimeout(timer);

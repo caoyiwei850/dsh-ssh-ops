@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { credentialRef } from "@deepseek-ai/dsh-credentials";
@@ -88,21 +89,85 @@ function validateBackup(data) {
   return data;
 }
 
-/** Validate the entire archive before writing; remap IDs and roll back new records on failure. */
-export async function restoreResourceBackup(service, input) {
-  const data = validateBackup(savedSchema.parse(input));
-  const groups = service.requireGroupTable(), credentials = service.requireCredentialTable(), profiles = service.requireProfileTable(), knownHosts = service.requireKnownHostTable();
+function assertCompatibleFingerprints(data, knownHosts) {
   for (const host of data.knownHosts) {
     const key = knownHostKey(host.host, host.port), existing = knownHosts.get(key);
     if (existing && (existing.fingerprint !== host.fingerprint || existing.algorithm !== host.algorithm)) throw new Error("Backup host fingerprint conflicts with an existing trusted host");
   }
+}
+
+const identity = (profile) => JSON.stringify([profile.name.trim().toLowerCase(), profile.host.trim().toLowerCase(), profile.port ?? 22, profile.username]);
+
+export function previewResourceBackup(service, input) {
+  const data = validateBackup(savedSchema.parse(input));
+  assertCompatibleFingerprints(data, service.requireKnownHostTable());
+  const existing = new Set([...service.requireProfileTable().entries()].map(([, record]) => identity(record)));
+  return {
+    profiles: data.profiles.length,
+    groups: data.groups.length,
+    credentials: data.credentials.length,
+    duplicates: data.profiles.filter(({ record }) => existing.has(identity(record))).map(({ record }) => record.name)
+  };
+}
+
+async function equivalentJump(service, credentials, archivedCredentials, match, item) {
+  const current = match.record;
+  const incoming = item.record;
+  if (current.authKind !== incoming.authKind || (current.hostKeyMode ?? "accept-new") !== incoming.hostKeyMode) return false;
+  if ((current.proxyJump?.length ?? 0) || (incoming.proxyJump?.length ?? 0)) return false;
+  if (Boolean(current.credentialId) !== Boolean(incoming.credentialId)) return false;
+  const archived = incoming.credentialId ? archivedCredentials.find(({ id }) => id === incoming.credentialId) : null;
+  if (current.credentialId && (!archived || credentials.get(current.credentialId)?.authKind !== archived.authKind)) return false;
+  const currentRefs = current.credentialId ? refs(current.credentialId, true) : refs(match.id);
+  const saved = await readSecrets(service.ctx.credentials, currentRefs);
+  return isDeepStrictEqual(saved, archived?.secrets ?? item.secrets);
+}
+
+/** Validate the entire archive before writing; remap IDs and roll back new records on failure. */
+export async function restoreResourceBackup(service, input, { skipDuplicates = false } = {}) {
+  const data = validateBackup(savedSchema.parse(input));
+  const groups = service.requireGroupTable(), credentials = service.requireCredentialTable(), profiles = service.requireProfileTable(), knownHosts = service.requireKnownHostTable();
+  assertCompatibleFingerprints(data, knownHosts);
   const maps = { groups: new Map(), credentials: new Map(), profiles: new Map() };
   for (const item of data.groups) {
     const same = [...groups.entries()].find(([, record]) => record.name.localeCompare(item.name, "zh-Hans-CN", { sensitivity: "accent" }) === 0);
     maps.groups.set(item.id, same?.[0] ?? randomUUID());
   }
   for (const item of data.credentials) maps.credentials.set(item.id, randomUUID());
-  for (const item of data.profiles) maps.profiles.set(item.id, randomUUID());
+  const skipped = new Set();
+  const retained = [];
+  const jumpIds = new Set(data.profiles.flatMap(({ record }) => (record.proxyJump ?? []).map((hop) => hop.profileId).filter(Boolean)));
+  const existing = new Map();
+  if (skipDuplicates) {
+    for (const [id, record] of profiles.entries()) {
+      const key = identity(record);
+      const matches = existing.get(key) ?? [];
+      matches.push({ id, record });
+      existing.set(key, matches);
+    }
+  }
+  for (const item of data.profiles) {
+    const matches = existing.get(identity(item.record));
+    if (matches?.length) {
+      if (!jumpIds.has(item.id)) {
+        skipped.add(item.id);
+        continue;
+      }
+      const match = matches.length === 1 ? matches[0] : null;
+      if (match && await equivalentJump(service, credentials, data.credentials, match, item)) {
+        maps.profiles.set(item.id, match.id);
+        skipped.add(item.id);
+        continue;
+      }
+      retained.push(item.record.name);
+    }
+    maps.profiles.set(item.id, randomUUID());
+  }
+  const imported = data.profiles.filter((item) => !skipped.has(item.id));
+  const usedCredentials = (items) => new Set(items.flatMap(({ record }) => [record.credentialId, ...(record.proxyJump ?? []).map((hop) => hop.credentialId)].filter(Boolean)));
+  const originallyUsed = usedCredentials(data.profiles);
+  const stillUsed = usedCredentials(imported);
+  const importedCredentials = data.credentials.filter(({ id }) => !originallyUsed.has(id) || stillUsed.has(id));
   const created = [], writtenRefs = [];
   const now = new Date().toISOString();
   const saveSecrets = async (names, values) => {
@@ -124,12 +189,12 @@ export async function restoreResourceBackup(service, input) {
       if (groups.get(id) !== undefined) continue;
       created.push([groups, id]); await groups.put(id, { name: item.name, createdAt: now, updatedAt: now });
     }
-    for (const item of data.credentials) {
+    for (const item of importedCredentials) {
       const id = maps.credentials.get(item.id);
       created.push([credentials, id]); await credentials.put(id, { name: item.name, authKind: item.authKind, createdAt: now, updatedAt: now });
       await saveSecrets(refs(id, true), item.secrets);
     }
-    for (const item of data.profiles) {
+    for (const item of imported) {
       const id = maps.profiles.get(item.id), record = item.record;
       const proxyJump = (record.proxyJump ?? []).map((hop) => hop.profileId
         ? { profileId: maps.profiles.get(hop.profileId) }
@@ -139,7 +204,7 @@ export async function restoreResourceBackup(service, input) {
       await saveSecrets(refs(id), item.secrets);
       for (let index = 0; index < item.jumps.length; index++) await saveSecrets(refs(id, false, index), item.jumps[index]);
     }
-    return { profiles: data.profiles.length, groups: data.groups.length, credentials: data.credentials.length };
+    return { profiles: imported.length, groups: data.groups.length, credentials: importedCredentials.length, ...(skipDuplicates ? { skipped: skipped.size, retained } : {}) };
   } catch {
     const failures = [];
     for (const ref of writtenRefs.reverse()) { try { const result = await service.ctx.credentials.unset(ref); if (result?.ok === false) failures.push("credential"); } catch { failures.push("credential"); } }

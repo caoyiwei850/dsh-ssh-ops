@@ -161,6 +161,7 @@ export const agentSettingsResultSchema = resultSchema(z.object({
   agentAutoConnect: z.boolean(),
   execPolicy: execPolicyModeSchema.optional(),
   execPolicyAllow: execPolicyAllowSchema.optional(),
+  execPolicyExact: z.array(z.string().min(1).max(512)).max(32).optional(),
   // Username the panel prefills into its new-server form; null = "root".
   defaultUsername: z.string().max(128).nullable().optional(),
   // The custom tier's checklist as served by the host (single source of truth).
@@ -170,6 +171,7 @@ export const agentSettingsSaveRequestSchema = z.object({
   agentAutoConnect: z.boolean(),
   execPolicy: execPolicyModeSchema.optional(),
   execPolicyAllow: execPolicyAllowSchema.optional(),
+  execPolicyExact: z.array(z.string().min(1).max(512)).max(32).optional(),
   // Optional: absent keeps the stored value, null clears it back to "root".
   defaultUsername: z.string().max(128).nullable().optional()
 });
@@ -212,8 +214,24 @@ const groupIdSchema = z.string().uuid();
 const credentialIdSchema = z.string().uuid();
 export const resourceBackupExportRequestSchema = z.object({ password: z.string().min(12).max(1024) });
 export const resourceBackupExportResultSchema = resultSchema(z.object({ archive: z.string() }));
-export const resourceBackupImportRequestSchema = z.object({ password: z.string().min(12).max(1024), archive: z.string().max(64 * 1024 * 1024) });
-export const resourceBackupImportResultSchema = resultSchema(z.object({ profiles: z.number().int(), groups: z.number().int(), credentials: z.number().int() }));
+export const resourceBackupImportRequestSchema = z.object({ password: z.string().min(12).max(1024), archive: z.string().max(64 * 1024 * 1024), skipDuplicates: z.boolean().optional() });
+export const profileConnectionStatusResultSchema = resultSchema(z.object({ profileIds: z.array(z.string().uuid()) }));
+const openSshPreviewEntrySchema = z.object({
+  name: z.string(), host: z.string(), username: z.string(), port: z.number().int(),
+  hops: z.array(z.string()), issues: z.array(z.string()), unsupported: z.boolean(), existing: z.boolean(), authKind: z.enum(["key", "password"])
+});
+export const openSshImportRequestSchema = z.object({
+  selection: z.object({
+    fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+    names: z.array(z.string().min(1).max(120)).min(1).max(500),
+    groupId: z.string().uuid().nullable()
+  }).optional()
+});
+export const openSshImportResultSchema = resultSchema(z.union([
+  z.object({ preview: z.object({ fingerprint: z.string(), entries: z.array(openSshPreviewEntrySchema).max(500) }) }),
+  z.object({ imported: z.object({ created: z.number().int(), skipped: z.array(z.string()), failed: z.array(z.string()), details: z.array(z.object({ name: z.string(), reason: z.enum(["unsupported", "cycle", "repeated", "missing", "save"]), items: z.array(z.string()) })) }) })
+]));
+export const resourceBackupImportResultSchema = resultSchema(z.object({ profiles: z.number().int(), groups: z.number().int(), credentials: z.number().int(), duplicates: z.array(z.string()).max(5000).optional(), skipped: z.number().int().optional(), retained: z.array(z.string()).max(5000).optional() }));
 export const profileAuthKindSchema = z.enum(["password", "key"]);
 // A saved project directory is deliberately an absolute POSIX path.  It is
 // passed to SFTP and to the guarded `changeDirectory` RPC, so accepting shell
@@ -434,7 +452,7 @@ export const shellIntegrationStateSchema = z.object({
 });
 
 export const terminalContextReadResultSchema = resultSchema(z.object({
-  sessionId: z.string(), data: z.string(), historyStart: z.number().int().nonnegative(), historyEnd: z.number().int().nonnegative(), offset: z.number().int().nonnegative(), nextOffset: z.number().int().nonnegative(), wasClamped: z.boolean(), hasMore: z.boolean(), alive: z.boolean(), exit: z.union([z.object({ code: z.number(), signal: z.number().optional() }), z.null()]), redacted: z.boolean(),
+  sessionId: z.string(), data: z.string(), historyStart: z.number().int().nonnegative(), historyEnd: z.number().int().nonnegative(), offset: z.number().int().nonnegative(), nextOffset: z.number().int().nonnegative(), wasClamped: z.boolean(), hasMore: z.boolean(), alive: z.boolean(), exit: z.union([z.object({ code: z.number(), signal: z.number().optional(), reason: z.enum(["remote-exit", "remote-signal", "channel-closed", "channel-error", "transport-lost", "operator-close"]).optional() }), z.null()]), redacted: z.boolean(),
   // OSC 133 state when the shell emits it (enableShellIntegration); null before that.
   shell: shellIntegrationStateSchema.nullable()
 }));
@@ -498,7 +516,7 @@ export const readResultSchema = resultSchema(
     data: z.string(),
     startOffset: z.number().int().nonnegative().optional(),
     offset: z.number().int().nonnegative().optional(),
-    exit: z.union([z.object({ code: z.number(), signal: z.number().optional() }), z.null()])
+    exit: z.union([z.object({ code: z.number(), signal: z.number().optional(), reason: z.enum(["remote-exit", "remote-signal", "channel-closed", "channel-error", "transport-lost", "operator-close"]).optional() }), z.null()])
   })
 );
 

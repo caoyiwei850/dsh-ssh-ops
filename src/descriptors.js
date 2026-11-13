@@ -46,7 +46,10 @@ export const DESCRIPTORS = [
   def("credentialDelete", S.credentialDeleteRequestSchema, "SshCredentialDeleteRequest", S.credentialDeleteResultSchema, "SshCredentialDeleteResult"),
   def("profileList", S.profileListRequestSchema, "SshProfileListRequest", S.profileListResultSchema, "SshProfileListResult"),
   def("resourceBackupExport", S.resourceBackupExportRequestSchema, "ResourceBackupExportRequest", S.resourceBackupExportResultSchema, "ResourceBackupExportResult"),
+  def("openSshImport", S.openSshImportRequestSchema, "OpenSshImportRequest", S.openSshImportResultSchema, "OpenSshImportResult"),
+  def("resourceBackupPreview", S.resourceBackupImportRequestSchema, "ResourceBackupImportRequest", S.resourceBackupImportResultSchema, "ResourceBackupImportResult"),
   def("resourceBackupImport", S.resourceBackupImportRequestSchema, "ResourceBackupImportRequest", S.resourceBackupImportResultSchema, "ResourceBackupImportResult"),
+  def("profileConnectionStatus", S.profileListRequestSchema, "SshProfileListRequest", S.profileConnectionStatusResultSchema, "ProfileConnectionStatusResult"),
   def("profileSave", S.profileSaveRequestSchema, "SshProfileSaveRequest", S.profileSaveResultSchema, "SshProfileSaveResult"),
   def("profileDelete", S.profileDeleteRequestSchema, "SshProfileDeleteRequest", S.profileDeleteResultSchema, "SshProfileDeleteResult"),
   // Remote workspaces (issue #38): panel-only RPCs. Binding never changes

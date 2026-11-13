@@ -94,7 +94,7 @@ export class SshApi {
     return this.call("agentSettingsGet", {});
   }
 
-  agentSettingsSave(agentAutoConnect, execPolicy, execPolicyAllow, defaultUsername) {
+  agentSettingsSave(agentAutoConnect, execPolicy, execPolicyAllow, defaultUsername, execPolicyExact) {
     const request = { agentAutoConnect };
     // Policy fields are optional so existing callers (tests, older panes)
     // keep saving just the auto-connect switch. defaultUsername: undefined
@@ -102,6 +102,7 @@ export class SshApi {
     if (execPolicy !== undefined) request.execPolicy = execPolicy;
     if (execPolicyAllow !== undefined) request.execPolicyAllow = execPolicyAllow;
     if (defaultUsername !== undefined) request.defaultUsername = defaultUsername;
+    if (execPolicyExact !== undefined) request.execPolicyExact = execPolicyExact;
     return this.call("agentSettingsSave", request);
   }
 
@@ -121,12 +122,16 @@ export class SshApi {
     return this.call("languageSave", { language });
   }
 
+  profileConnectionStatus() { return this.call("profileConnectionStatus", {}); }
+
   profileList() {
     return this.call("profileList", {});
   }
 
   resourceBackupExport(password) { return this.call("resourceBackupExport", { password }); }
-  resourceBackupImport(password, archive) { return this.call("resourceBackupImport", { password, archive }); }
+  openSshImport(selection) { return this.call("openSshImport", selection ? { selection } : {}); }
+  resourceBackupPreview(password, archive) { return this.call("resourceBackupPreview", { password, archive }); }
+  resourceBackupImport(password, archive, skipDuplicates) { return this.call("resourceBackupImport", { password, archive, ...(skipDuplicates === undefined ? {} : { skipDuplicates }) }); }
 
   profileSave(input) {
     return this.call("profileSave", input);

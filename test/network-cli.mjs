@@ -209,9 +209,9 @@ const VRP_TAIL = "Info: The max number of VTY users is 10.\r\n<S12712>";
   // channel opened without ever answering.
   conn.loginShell = null;
   const fellThrough = await service.execOnConnection("c1", "display clock");
-  assert.equal(fellThrough.value.stdout, "via cli", "a first-contact stall falls through to the terminal path in the same call");
-  assert.equal(conn.execStalled, true, "the stall is remembered for later calls");
-  assert.equal(cliCalled, 1);
+  assert.equal(fellThrough.value.timedOut, true);
+  assert.equal(conn.execStalled, false);
+  assert.equal(cliCalled, 0, "a dispatched command is never replayed in the terminal");
 
   // The SAME silent timeout on a host whose login shell answered is not a
   // device: it is a slow, quiet command (`sleep 45`, a build that prints

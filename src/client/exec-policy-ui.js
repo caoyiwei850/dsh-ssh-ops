@@ -24,5 +24,5 @@ export function execPolicyLooseningDetail(tier, allowCount) {
   if (tier === "allowAll") {
     return t("将允许 AI 直接执行任何命令——包括不可逆删除、格式化磁盘、重启关机；删除不再进回收站。仅建议用于测试或可丢弃的环境。");
   }
-  return t(`将允许 AI 直接执行自定义放行清单中的 ${allowCount} 类命令（可在设置中调整清单），其余类别照常拦截。`);
+  return t(`将允许 AI 直接执行自定义放行清单中的 ${allowCount} 类命令，以及设置中精确匹配的命令。`);
 }

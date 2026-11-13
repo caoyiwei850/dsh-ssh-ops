@@ -6,7 +6,7 @@
  */
 import { createTerminalOutput } from "./terminal-output.js";
 import { extractCliPrompt, promptReturned, cliPageRequested, stripCliOutput, sanitizeCliCommand } from "./network-cli.js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { findReusableProfileConnection } from "./profile-connection.js";
 import { resolveProfileRef, noConnectionGuidance, AUTO_CONNECT_DISABLED_MESSAGE } from "./agent-connect.js";
 import net from "node:net";
@@ -16,7 +16,7 @@ import { credentialRef } from "@deepseek-ai/dsh-credentials";
 import { defineDomain, domainTable } from "@deepseek-ai/dsh-storage-domain";
 import { TypertRemoteService } from "@deepseek-ai/dsh-typert-protocol";
 import { z } from "zod";
-import { assessShellCommand, normalizeAllowList, normalizePolicy, shellQuote, CATEGORY_DELETE_FILES, ALL_CATEGORY_KEYS, CATEGORY_LABELS } from "./safety.js";
+import { assessShellCommand, normalizeAllowList, normalizeExactRules, normalizePolicy, shellQuote, CATEGORY_DELETE_FILES, ALL_CATEGORY_KEYS, CATEGORY_LABELS } from "./safety.js";
 import { EXEC_CWD_ERROR_PREFIX, buildCwdAwareCommand, execEchoWarning, extractExecCwd, posixLoginShell } from "./exec-cwd.js";
 import { buildTrashCommand, parseSimpleDeleteCommand, parseTrashOutput } from "./trash.js";
 import { scpCommand, scpDownload, scpUpload } from "./scp.js";
@@ -42,7 +42,8 @@ import { runTransferTasks, joinRemotePath, splitRemotePath } from "./sftp-dir.js
 import { uploadPipeline } from "./sftp-pipeline.js";
 import { saveEditorFile } from "./sftp-editor-save.js";
 import { encryptResourceBackup, decryptResourceBackup } from "./resource-backup-crypto.js";
-import { collectResourceBackup, restoreResourceBackup } from "./resource-backup-store.js";
+import { scanOpenSshConfig } from "./openssh-import.js";
+import { collectResourceBackup, previewResourceBackup, restoreResourceBackup } from "./resource-backup-store.js";
 import { TransferTasks, hashTransferStream, transferConnectionIdentity } from "./transfer-tasks.js";
 import {
   KnownHosts,
@@ -291,6 +292,7 @@ const settingsRecordSchema = z.object({
   // standard tier at read time, never widen it.
   execPolicy: z.string().optional(),
   execPolicyAllow: z.array(z.string()).optional(),
+  execPolicyExact: z.array(z.string()).optional(),
   // Username the panel prefills into its new-server form; auto-remembered
   // from the last profileSave (issue #36). Empty/absent falls back to "root".
   defaultUsername: z.string().max(128).optional(),
@@ -335,6 +337,7 @@ export function loadSettingsRecord(record = {}) {
     // never empties the checklist.
     execPolicy: normalizePolicy({ mode: record.execPolicy }).mode,
     execPolicyAllow: normalizeAllowList(record.execPolicyAllow),
+    execPolicyExact: normalizeExactRules(record.execPolicyExact),
     defaultUsername: normalizeDefaultUsername(record.defaultUsername)
   };
 }
@@ -481,6 +484,7 @@ export default class SshOpsService extends TypertRemoteService {
    */
   execPolicy = "standard";
   execPolicyAllow = [];
+  execPolicyExact = [];
   /**
    * Last username the operator saved a server with; the panel prefills its
    * new-server form with it (issue #36 feedback — no manual knob). Persisted
@@ -599,6 +603,7 @@ export default class SshOpsService extends TypertRemoteService {
       this.agentAutoConnect = loaded.agentAutoConnect;
       this.execPolicy = loaded.execPolicy;
       this.execPolicyAllow = loaded.execPolicyAllow;
+      this.execPolicyExact = loaded.execPolicyExact;
       this.defaultUsername = loaded.defaultUsername;
       // An explicit choice drives the host half from the first message it
       // builds. With no choice stored, the host keeps its default (zh) and
@@ -1678,9 +1683,12 @@ export default class SshOpsService extends TypertRemoteService {
     try { this.dbOps?.closeForSshConnection?.(conn.id); } catch {}
   }
 
-  handleTransportLoss(record, client, _error) {
+  handleTransportLoss(record, client, error) {
     if (record.closing || record.client !== client || record.dead) return;
     record.dead = true;
+    const transportCode = typeof error?.code === "string" && /^[A-Z0-9_]{1,40}$/.test(error.code) ? error.code
+      : error?.level === "client-timeout" ? "timeout" : error ? "error" : "close";
+    this.log(`SSH transport lost: connection=${record.id}, reason=${transportCode}, sessions=${record.sessions.size}`);
     // A session-scoped tier switch is memory-only by design and must not
     // outlive the transport it was made on. The self-healing reconnect below
     // reuses this very record, so clearing it here is what makes the panel's
@@ -1691,7 +1699,7 @@ export default class SshOpsService extends TypertRemoteService {
     for (const sessionId of [...record.sessions]) {
       const session = this.sessions.get(sessionId);
       if (session) {
-        session.exited = session.exited ?? { code: 1 };
+        this.recordExit(session, { code: 1, reason: "transport-lost" });
         session.stream = null;
         this.rememberExit(sessionId, session.exited);
       }
@@ -1728,6 +1736,7 @@ export default class SshOpsService extends TypertRemoteService {
           return;
         }
         this.attachTransportHandlers(record);
+        this.log(`SSH transport restored: connection=${record.id}`);
         for (const tunnel of record.tunnels.values()) {
           if (tunnel.kind === "remote" && tunnel.bridgeInfo?.bridge) {
             record.client.prependListener("tcp connection", tunnel.bridgeInfo.bridge);
@@ -1877,6 +1886,14 @@ export default class SshOpsService extends TypertRemoteService {
     };
   }
 
+  async profileConnectionStatus() {
+    const ids = new Set();
+    for (const connection of this.connections.values()) {
+      if (connection.profileId && !connection.dead) ids.add(connection.profileId);
+    }
+    return { ok: true, value: { profileIds: [...ids] } };
+  }
+
   async profileList() {
     try {
       const profiles = await Promise.all(
@@ -1896,10 +1913,103 @@ export default class SshOpsService extends TypertRemoteService {
     } catch { return { ok: false, error: fail("backup-export-failed", t("导出失败，请检查服务器资源和凭据库。")) }; }
   }
 
+  async openSshImport(request) {
+    const importing = request.selection !== undefined;
+    if (importing && this.openSshImportBusy) {
+      return { ok: false, error: fail("ssh-config-busy", t("SSH 配置正在导入。")) };
+    }
+    if (importing) this.openSshImportBusy = true;
+    try {
+      const entries = await scanOpenSshConfig();
+      const fingerprint = createHash("sha256").update(JSON.stringify(entries)).digest("hex");
+      const key = (name) => name.toLowerCase();
+      const existing = new Map([...this.requireProfileTable().entries()].map(([profileId, profile]) => [key(profile.name), { ...profile, profileId }]));
+      if (!importing) {
+        return { ok: true, value: { preview: {
+          fingerprint, entries: entries.map((entry) => ({ ...entry, existing: existing.has(key(entry.name)) }))
+        } } };
+      }
+      if (request.selection.fingerprint !== fingerprint) {
+        return { ok: false, error: fail("ssh-config-changed", t("SSH 配置已变化，请重新打开导入预览。")) };
+      }
+
+      const byName = new Map(entries.map((entry) => [key(entry.name), entry]));
+      const available = new Map();
+      for (const [name, profile] of existing) {
+        const entry = byName.get(name);
+        if (entry && !entry.unsupported && profile.host === entry.host && profile.port === entry.port && profile.username === entry.username) {
+          available.set(name, profile.profileId);
+        }
+      }
+      const selected = new Set(request.selection.names.map(key));
+      const pending = entries.filter((entry) => selected.has(key(entry.name)) && !existing.has(key(entry.name)));
+      const skipped = entries.filter((entry) => selected.has(key(entry.name)) && existing.has(key(entry.name))).map((entry) => entry.name);
+      const failed = [];
+      const details = [];
+      let created = 0;
+      // Save dependencies first so a missing or failed jump is never imported
+      // as an accidental direct connection. Store every hop in configured order.
+      while (pending.length) {
+        const index = pending.findIndex((entry) => !entry.unsupported
+          && new Set(entry.hops.map(key)).size === entry.hops.length
+          && entry.hops.every((hop) => key(hop) !== key(entry.name) && available.has(key(hop))));
+        if (index < 0) {
+          const remaining = new Map(pending.map((entry) => [key(entry.name), entry]));
+          for (const entry of pending) {
+            const visited = new Set();
+            const visiting = new Set();
+            const hasCycle = (alias) => {
+              if (visiting.has(alias)) return true;
+              if (visited.has(alias) || !remaining.has(alias)) return false;
+              visiting.add(alias);
+              const cycle = remaining.get(alias).hops.some((hop) => hasCycle(key(hop)));
+              visiting.delete(alias);
+              visited.add(alias);
+              return cycle;
+            };
+            const missing = entry.hops.filter((hop) => !available.has(key(hop)));
+            const repeated = new Set(entry.hops.map(key)).size !== entry.hops.length;
+            const reason = entry.unsupported ? "unsupported" : repeated ? "repeated" : hasCycle(key(entry.name)) ? "cycle" : "missing";
+            details.push({ name: entry.name, reason, items: entry.unsupported ? entry.issues : missing });
+            failed.push(entry.name);
+          }
+          break;
+        }
+        const [entry] = pending.splice(index, 1);
+        const result = await this.profileSave({
+          name: entry.name, host: entry.host, port: entry.port, username: entry.username, authKind: entry.authKind,
+          groupId: request.selection.groupId,
+          proxyJump: entry.hops.map((hop) => ({ profileId: available.get(key(hop)) }))
+        });
+        if (result.ok) {
+          available.set(key(entry.name), result.value.profile.profileId);
+          created += 1;
+        } else {
+          failed.push(entry.name);
+          details.push({ name: entry.name, reason: "save", items: [result.error.message.slice(0, 500)] });
+        }
+      }
+      return { ok: true, value: { imported: { created, skipped, failed, details } } };
+    } catch {
+      return { ok: false, error: fail("ssh-config-import", t("无法读取或导入 SSH 配置。请检查文件权限、大小以及是否包含暂不支持的 Match 或 Include 规则。")) };
+    } finally {
+      if (importing) this.openSshImportBusy = false;
+    }
+  }
+
+  async resourceBackupPreview(request) {
+    try {
+      const data = await decryptResourceBackup(request.archive, request.password);
+      return { ok: true, value: previewResourceBackup(this, data) };
+    } catch {
+      return { ok: false, error: fail("backup-preview-failed", t("无法预览备份，请检查文件、口令和主机指纹。")) };
+    }
+  }
+
   async resourceBackupImport(request) {
     try {
       const data = await decryptResourceBackup(request.archive, request.password);
-      return { ok: true, value: await restoreResourceBackup(this, data) };
+      return { ok: true, value: await restoreResourceBackup(this, data, { skipDuplicates: request.skipDuplicates }) };
     } catch (error) {
       const message = error?.message === "Import failed and rollback was incomplete; inspect SSH resources and credentials"
         ? t("导入失败且未能完全回滚，请检查服务器资源和凭据。")
@@ -2136,6 +2246,7 @@ export default class SshOpsService extends TypertRemoteService {
         // its checkboxes from here, and a tier of standard/allowAll must not
         // hand it an empty list that it would then save back over.
         execPolicyAllow: normalizeAllowList(this.execPolicyAllow),
+        execPolicyExact: normalizeExactRules(this.execPolicyExact),
         // Username the panel prefills into its new-server form (null = "root").
         defaultUsername: this.defaultUsername ?? null,
         // The category checklist the custom tier releases from, with its
@@ -2157,6 +2268,10 @@ export default class SshOpsService extends TypertRemoteService {
     // overwriting the stored list with an empty one.
     const mode = normalizePolicy({ mode: request.execPolicy ?? this.execPolicy }).mode;
     const allow = normalizeAllowList(request.execPolicyAllow ?? this.execPolicyAllow);
+    const exact = normalizeExactRules(request.execPolicyExact ?? this.execPolicyExact);
+    if (request.execPolicyExact?.some((rule) => !exact.includes(rule.trim()))) {
+      return { ok: false, error: fail("invalid-exact-rule", t("精确放行规则只接受单条字面命令，不能包含引号、管道、重定向或变量。")) };
+    }
     // Optional like the policy fields: absent keeps whatever is stored. The
     // panel normally never sends this — profileSave is what moves it — but the
     // explicit path stays honest (null clears back to the root fallback).
@@ -2170,6 +2285,7 @@ export default class SshOpsService extends TypertRemoteService {
         agentAutoConnect,
         execPolicy: mode,
         execPolicyAllow: allow,
+        execPolicyExact: exact,
         defaultUsername: defaultUsername ?? undefined,
         updatedAt: new Date().toISOString()
       });
@@ -2179,6 +2295,7 @@ export default class SshOpsService extends TypertRemoteService {
     this.agentAutoConnect = agentAutoConnect;
     this.execPolicy = mode;
     this.execPolicyAllow = allow;
+    this.execPolicyExact = exact;
     this.defaultUsername = defaultUsername;
     return {
       ok: true,
@@ -2186,6 +2303,7 @@ export default class SshOpsService extends TypertRemoteService {
         agentAutoConnect: this.agentAutoConnect,
         execPolicy: mode,
         execPolicyAllow: allow,
+        execPolicyExact: exact,
         defaultUsername: this.defaultUsername ?? null,
         categories: ALL_CATEGORY_KEYS.map((key) => ({ key, label: CATEGORY_LABELS[key] }))
       }
@@ -2225,9 +2343,11 @@ export default class SshOpsService extends TypertRemoteService {
    */
   resolveExecPolicy(connectionId) {
     const global = this.globalExecPolicy();
+    const exact = normalizeExactRules(this.execPolicyExact);
+    const rules = exact.length ? { exact } : {};
     const conn = this.connections.get(connectionId);
     if (conn !== void 0 && conn.execPolicyOverride !== undefined) {
-      return { mode: conn.execPolicyOverride, source: "session", allow: global.allow };
+      return { mode: conn.execPolicyOverride, source: "session", allow: global.allow, ...rules };
     }
     let profileOverride;
     if (conn !== void 0 && conn.profileId && this.profileTable) {
@@ -2236,12 +2356,12 @@ export default class SshOpsService extends TypertRemoteService {
         if (record && record.execPolicy !== null && record.execPolicy !== undefined) profileOverride = record.execPolicy;
       } catch {}
     }
-    if (profileOverride !== undefined) return { mode: profileOverride, source: "profile", allow: global.allow };
-    if (global.mode !== "standard") return { mode: global.mode, source: "global", allow: global.allow };
+    if (profileOverride !== undefined) return { mode: profileOverride, source: "profile", allow: global.allow, ...rules };
+    if (global.mode !== "standard") return { mode: global.mode, source: "global", allow: global.allow, ...rules };
     return {
       mode: "standard",
       source: this.profileTable === null && conn === void 0 ? "default" : "global",
-      allow: global.allow
+      allow: global.allow, ...rules
     };
   }
 
@@ -2562,11 +2682,16 @@ export default class SshOpsService extends TypertRemoteService {
       stream.on("data", (chunk) => {
         this.appendSessionOutput(session, chunk.toString("utf8"));
       });
+      let remoteExit;
+      stream.on("exit", (code, signal) => {
+        if (Number.isInteger(code)) remoteExit = { code, reason: "remote-exit" };
+        else if (signal) remoteExit = { code: 1, reason: "remote-signal" };
+      });
       stream.on("close", () => {
-        this.recordExit(session, { code: 0 });
+        this.recordExit(session, remoteExit ?? { code: 1, reason: "channel-closed" });
       });
       stream.on("error", () => {
-        this.recordExit(session, { code: 1 });
+        this.recordExit(session, { code: 1, reason: "channel-error" });
       });
       // The panel opens this session immediately after a successful manual
       // connection. Remember it so agent tools can act on the same server
@@ -2799,7 +2924,8 @@ export default class SshOpsService extends TypertRemoteService {
   async *terminalStream(request, signal) {
     const session = this.sessions.get(request.sessionId);
     if (session === void 0) {
-      yield { ok: false, error: fail("no-session", `session "${request.sessionId}" does not exist`) };
+      const exit = this.exitedSessions?.get(request.sessionId);
+      yield exit ? { ok: true, value: { data: "", exit } } : { ok: false, error: fail("no-session", `session "${request.sessionId}" does not exist`) };
       return;
     }
     const journal = this.terminalOutput(session);
@@ -2959,15 +3085,14 @@ export default class SshOpsService extends TypertRemoteService {
   }
 
   async closeSession(request) {
-    try { void this.sessionLogStore()?.end(request.sessionId, { exitCode: null }); } catch { /* best-effort */ }
     const session = this.sessions.get(request.sessionId);
     if (session === void 0) return { ok: false, error: fail("no-session", `session "${request.sessionId}" does not exist`) };
     this.sessions.delete(request.sessionId);
     const conn = this.connections.get(session.connectionId);
     if (conn) conn.sessions.delete(request.sessionId);
     if (session.exited === null && session.stream !== null) {
+      this.recordExit(session, { code: 0, reason: "operator-close" });
       try { session.stream.end(); } catch {}
-      session.exited = { code: 0 };
     }
     this.rememberExit(request.sessionId, session.exited ?? { code: 0 });
     return { ok: true, value: { closed: true } };
@@ -2987,8 +3112,8 @@ export default class SshOpsService extends TypertRemoteService {
       if (session) {
         this.sessions.delete(sessionId);
         if (session.exited === null && session.stream !== null) {
+          this.recordExit(session, { code: 0, reason: "operator-close" });
           try { session.stream.end(); } catch {}
-          session.exited = { code: 0 };
         }
         this.rememberExit(sessionId, session.exited ?? { code: 0 });
       }
@@ -3262,7 +3387,7 @@ export default class SshOpsService extends TypertRemoteService {
           state.exitCode = typeof code === "number" ? code : null;
           settle();
         });
-        stream.on("error", () => settle());
+        stream.on("error", () => { state.streamError = true; settle(); });
       });
     } finally {
       clearTimeout(timer);
@@ -3310,13 +3435,9 @@ export default class SshOpsService extends TypertRemoteService {
     return conn.loginShellProbe.then(() => conn.loginShell);
   }
 
-  async execOnConnection(connectionId, command, timeoutMs = 30000, retried = false, approvalToken) {
+  async execOnConnection(connectionId, command, timeoutMs = 30000, _retried = false, approvalToken) {
     const policy = this.resolveExecPolicy(connectionId);
     const decision = assessShellCommand(command, policy);
-    // Dangerous commands are never replayed after an ambiguous transport loss:
-    // the first dispatch may already have taken effect. Apply this to released
-    // destructive categories too, not only to ask-approved calls.
-    const retryOnTransportLoss = decision.ok && assessShellCommand(command).ok;
     let trashScript = null;
     if (!decision.ok) {
       // A simple, fully-literal rm/unlink/rmdir is executed as the reversible
@@ -3339,7 +3460,7 @@ export default class SshOpsService extends TypertRemoteService {
       if (trashScript) {
         // Approved simple delete: the reversible trash move is what actually
         // runs on the exec channel; the agent sees its output like any exec.
-        return await this.runPreparedExec(connectionId, trashScript, command, true, timeoutMs, retried, false);
+        return await this.runPreparedExec(connectionId, trashScript, command, true, timeoutMs);
       }
       // Approved non-trash command: fall through and run it as written.
     }
@@ -3348,42 +3469,15 @@ export default class SshOpsService extends TypertRemoteService {
     // Type the command into the already-open interactive terminal and
     // complete on prompt return instead of hanging on exec.
     const conn = this.connections.get(connectionId);
+    if (conn && !conn.dead && conn.loginShell === undefined) await this.resolveLoginShell(conn);
     // The flag is only trusted while the login shell is NOT known to be
     // POSIX: a host that answered `echo $SHELL` provably has a working exec
     // channel, so a stale flag must never divert it to the terminal.
     if (conn !== void 0 && conn.execStalled && !posixLoginShell(conn.loginShell)) {
       return this.cliExecOnConnection(conn, command, timeoutMs);
     }
-    const result = await this.runPreparedExec(connectionId, command, command, false, timeoutMs, retried, retryOnTransportLoss);
-    if (result.ok && !result.value.timedOut) {
-      // An exec that settled on its own proves the channel works, so a stall
-      // remembered from an earlier slow/silent timeout is cleared here — the
-      // flag is set and cleared in one place, and no reconnect is needed to
-      // heal a connection that was misread once.
-      const settled = this.connections.get(connectionId);
-      if (settled !== void 0) settled.execStalled = false;
-    }
-    if (result.ok && result.value.timedOut && (result.value.stdout ?? "") === "" && (result.value.stderr ?? "") === "") {
-      // A silent timeout is only the network-device signature when the login
-      // shell probe ALSO came back empty (`loginShell === null`). When a POSIX
-      // shell answered, this was just a slow, quiet command — `sleep 45`, a
-      // build that prints nothing, output redirected to a file — and the
-      // caller must get its honest timeout result. Acting on the timeout alone
-      // downgraded healthy connections permanently: every later ssh_exec took
-      // the terminal path and failed with "network CLI prompt unrecognised"
-      // instead of running.
-      const stalled = this.connections.get(connectionId);
-      if (stalled !== void 0 && stalled.loginShell === null) {
-        // First contact with an exec-stalled device: mark it and fall through
-        // to the terminal path within the same call, so the first invocation
-        // already works instead of failing once.
-        stalled.execStalled = true;
-        // No terminal to type into (or the prompt could not be recognised):
-        // this returns the plain-language error rather than a silent empty
-        // timeout (#33 P1).
-        return this.cliExecOnConnection(stalled, command, timeoutMs);
-      }
-    }
+    const result = await this.runPreparedExec(connectionId, command, command, false, timeoutMs);
+    if (conn && result.ok && !result.value.timedOut) conn.execStalled = false;
     return result;
   }
 
@@ -3510,7 +3604,7 @@ export default class SshOpsService extends TypertRemoteService {
     }
   }
 
-  async runPreparedExec(connectionId, prepared, displayCommand, trashRun, timeoutMs = 30000, retried = false, retryOnTransportLoss = true) {
+  async runPreparedExec(connectionId, prepared, displayCommand, trashRun, timeoutMs = 30000) {
     const conn = this.connections.get(connectionId);
     if (conn === void 0) return { ok: false, error: fail("no-connection", `connection "${connectionId}" does not exist`) };
     if (!(await this.ensureAlive(conn))) {
@@ -3520,25 +3614,26 @@ export default class SshOpsService extends TypertRemoteService {
     // interactive shell may be somewhere else entirely. When the login shell
     // is POSIX-family, prepend the interactive-cwd prologue (see exec-cwd.js)
     // so the command runs where the operator's terminal is, and the resolved
-    // directory comes back on a stripped marker line. Trash moves and other
-    // destructive commands opt out of the transparent transport-loss retry so
-    // one operator grant can never dispatch the same dangerous action twice.
+    // directory comes back on a stripped marker line. Reconnect before
+    // dispatch when possible. After dispatch the remote may already have run it.
     const shell = await this.resolveLoginShell(conn);
     const sent = posixLoginShell(shell) ? buildCwdAwareCommand(prepared) : prepared;
     const commandId = randomUUID();
     const startedAt = new Date().toISOString();
     const startedAtMs = Date.now();
+    const client = conn.client;
     let state;
     try {
-      state = await this.collectExecOutput(conn.client, sent, timeoutMs);
+      state = await this.collectExecOutput(client, sent, timeoutMs);
     } catch (error) {
       // The transport may have died between the liveness check and the exec.
-      // Safe/idempotent calls may retry; destructive calls must report an
-      // unknown outcome because the first dispatch may already have run.
-      if (retryOnTransportLoss && !retried && conn.dead && (await this.ensureAlive(conn))) {
-        return this.runPreparedExec(connectionId, prepared, displayCommand, trashRun, timeoutMs, true, retryOnTransportLoss);
+      if (conn.dead || conn.client !== client) {
+        return { ok: false, error: fail("exec-outcome-unknown", t("SSH 在收到命令结果前断开。执行结果未知，请检查远端状态后再决定是否重试。")) };
       }
       return { ok: false, error: fail("exec-failed", error.message) };
+    }
+    if (!state.timedOut && state.exitCode === null && (conn.dead || conn.client !== client || state.streamError)) {
+      return { ok: false, error: fail("exec-outcome-unknown", t("SSH 在收到命令结果前断开。执行结果未知，请检查远端状态后再决定是否重试。")) };
     }
     const { cwd, stdout: execStdout } = extractExecCwd(state.stdout);
     let stdout = execStdout;
@@ -3953,6 +4048,15 @@ export default class SshOpsService extends TypertRemoteService {
     if (url.pathname === `${STREAM_ROUTE_PREFIX}/file`) {
       if (req.method === "GET") return this.streamGuard(res, this.streamDownloadFile(req, res, url, connectionId));
       if (req.method === "PUT") return this.streamGuard(res, this.streamUploadFile(req, res, url, connectionId));
+    } else if (url.pathname === `${STREAM_ROUTE_PREFIX}/verification` && req.method === "GET") {
+      const progress = this.downloadVerifications?.get(url.searchParams.get("id"));
+      if (!progress || progress.connectionId !== connectionId) {
+        this.streamJson(res, 404, "verification-unavailable", "Download verification is not active");
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+      res.end(JSON.stringify({ bytes: progress.bytes, total: progress.total }));
+      return;
     } else if (url.pathname === `${STREAM_ROUTE_PREFIX}/archive` && req.method === "GET") {
       // SFTP and SSH exec can resolve the same absolute spelling in different
       // filesystem namespaces (for example, a chrooted SFTP account). Until
@@ -4090,14 +4194,22 @@ export default class SshOpsService extends TypertRemoteService {
     let digest;
     if (url.searchParams.get("verify") === "sha256") {
       const controller = new AbortController();
+      const verificationId = url.searchParams.get("verificationId") ?? "";
+      const verifications = this.downloadVerifications ??= new Map();
+      const tracked = /^[a-f0-9-]{36}$/.test(verificationId) && verifications.size < 128 && !verifications.has(verificationId);
+      const progress = { connectionId, bytes: 0, total: attrs.size };
+      if (tracked) verifications.set(verificationId, progress);
       const onClose = () => controller.abort(new Error("Download cancelled"));
       res.once("close", onClose);
       try {
-        digest = await hashTransferStream(prepared.sftp.createReadStream(remotePath, { highWaterMark: STREAM_HIGH_WATER_MARK }), controller.signal);
+        digest = await hashTransferStream(prepared.sftp.createReadStream(remotePath, { highWaterMark: STREAM_HIGH_WATER_MARK }), controller.signal, undefined, (bytes) => { progress.bytes = bytes; });
       } catch (error) {
         if (!res.destroyed) this.streamJson(res, 502, "sftp-hash-failed", error.message);
         return;
-      } finally { res.removeListener("close", onClose); }
+      } finally {
+        res.removeListener("close", onClose);
+        if (tracked) verifications.delete(verificationId);
+      }
       if (res.destroyed) return;
       const expected = url.searchParams.get("expectedSha256");
       if (offset > 0 && (!expected || expected !== digest)) {
@@ -5522,7 +5634,8 @@ export default class SshOpsService extends TypertRemoteService {
   recordExit(session, exit) {
     if (session.exited !== null) return;
     session.exited = exit;
-    try { void this.sessionLogStore()?.end(session.id, { exitCode: exit?.code ?? null }); } catch { /* best-effort */ }
+    if (exit?.reason) this.log(`SSH terminal ended: connection=${session.connectionId}, session=${session.id}, reason=${exit.reason}, code=${exit.code}`);
+    try { void this.sessionLogStore()?.end(session.id, { exitCode: exit?.code ?? null, reason: exit?.reason }).catch(() => {}); } catch { /* best-effort */ }
     // A naturally-exited shell must no longer count as an open terminal:
     // drop it from the connection's live-session set so list() reports only
     // live PTYs and the panel can offer to open a fresh one on that tab.

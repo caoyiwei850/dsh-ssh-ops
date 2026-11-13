@@ -6,7 +6,7 @@
 
 > Drive your servers from the DSH main conversation while keeping a real interactive terminal on the right — plus file management, port forwarding, database access, and multi-server batch execution, all in one plugin.
 
-**Version 0.4.8** · MIT License · [GitHub repository](https://github.com/caoyiwei850/dsh-ssh-ops) · [Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases)
+**Version 0.4.9** · MIT License · [GitHub repository](https://github.com/caoyiwei850/dsh-ssh-ops) · [Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases)
 
 ---
 
@@ -69,7 +69,7 @@ The AI in the main conversation gains **40 tools** in total (see the appendix fo
 **GitHub channel (recommended)**:
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.8
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.9
 ```
 
 This installs source and builds automatically during install. Note that pnpm ≥ 10 blocks build scripts of dependencies by default — if the SSH tab does not appear after a restart, go into `node_modules/dsh-ssh-ops/`, run `npm install && npm run build`, and restart (see [INSTALL.md](../INSTALL.md) for details).
@@ -92,7 +92,7 @@ The **Settings → SSH Resources** page shows the version and update guidance. U
 
 In **Settings → SSH Resources → Server groups**, choose **Export** and set a passphrase of at least 12 characters. Keep both the encrypted backup and passphrase safe: the backup cannot be restored without the passphrase. Install the plugin on the new computer and use **Import** in the same location.
 
-The backup contains server configuration, groups, shared credentials, passwords, private keys, jump-host relationships, and trusted host fingerprints. Import adds servers and credentials and reuses groups with the same name; importing twice creates duplicates. Conflicting existing host fingerprints prevent import. On failure, newly created records are rolled back where possible, and incomplete rollback is reported. Database connections, global AI policy, and machine-local workspace bindings are not included.
+The backup contains server configuration, groups, shared credentials, passwords, private keys, jump-host relationships, and trusted host fingerprints. Import adds servers and credentials and reuses groups with the same name. It skips duplicate servers by default. If an existing jump host cannot be confirmed as equivalent, import keeps the backup version and reports it. Conflicting existing host fingerprints prevent import. On failure, newly created records are rolled back where possible, and incomplete rollback is reported. Database connections, global AI policy, and machine-local workspace bindings are not included.
 
 ### Step 1: Add your first server
 
@@ -162,7 +162,7 @@ You can also let the AI do it: `db_query` is a lexically enforced read-only gate
 
 - **Everything is a resource**: server details (name/host/port/username/auth/group) are saved in DSH local storage with no limit on count; passwords, PEM keys, and key passphrases go only into DSH's official local credential store `~/.dsh/.credentials.yaml` (owner-only permissions) — browser storage, AI context, tool results, and the resource list never read or display secret contents. The new-server form prefills the username you used on your **last save** (`root` when there is no history yet) — no configuration needed; the default simply follows whatever you save.
 - **Shared credentials**: save one password/key as a shared credential referenced by multiple servers and jump hosts — the whole team can share one ops key, and changing it once updates everywhere. Deletion is refused while anything still references it.
-- **Connection stability**: keepalive (20 s × 3) defeats silent NAT drops; unexpected transport loss reconnects with exponential backoff (capped at 30 s) and commands caught mid-flight transparently retry once; non-conforming SSH banners (e.g. `SSH-2.0- OpenSSH` with an extra space) are normalized and retried once.
+- **Connection stability**: keepalive (20 s × 3) defeats silent NAT drops; unexpected transport loss reconnects with exponential backoff (capped at 30 s) and commands interrupted after dispatch report an unknown outcome; non-conforming SSH banners (e.g. `SSH-2.0- OpenSSH` with an extra space) are normalized and retried once.
 - **Network devices**: on Huawei VRP / H3C Comware / Cisco network-CLI devices, `ssh_exec` recognizes prompts, advances paging (`---- More ----`), and treats prompt-return as completion — no more 15-second timeouts returning empty output.
 - **Per-pane channels**: with the host's split view, each pane keeps its own servers and connections; the same server opened in two panes builds two independent connections (or check "reuse the open connection" in the connect dialog to share one).
 - **Terminal ergonomics**: `Ctrl + wheel` (trackpad pinch works too) zooms every terminal's font size (8–28, remembered across reloads); **copy on select** — text you drag-select in the terminal lands on the clipboard about 0.2 s after you stop; the **Logs** tab tints **warning lines amber and error lines red** while you read a recording (search hits are tinted the same way).
@@ -284,4 +284,4 @@ Omitting `connection_id` / `db_connection_id` targets the currently active conne
 
 ---
 
-*This document matches v0.4.8; for the fine detail consult the [README](../README.en.md) and the [CHANGELOG](../CHANGELOG.md).*
+*This document matches v0.4.9; for the fine detail consult the [README](../README.en.md) and the [CHANGELOG](../CHANGELOG.md).*

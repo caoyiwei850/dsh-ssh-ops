@@ -53,3 +53,21 @@ test("SSH client is read from the CommonJS default export", () => {
   assert.match(source, /import ssh2 from ["']ssh2["']/);
   assert.doesNotMatch(source, /import\s*\{\s*Client\s*\}\s*from\s*["']ssh2["']/);
 });
+
+test("transport loss finalizes the terminal log and delivers the reason to reattached streams", async () => {
+  const { service, conn } = fixture(async () => ({ ok: true }));
+  conn.id = "c1";
+  conn.dead = false;
+  conn.sessions = new Set(["s1"]);
+  service.sessions = new Map([["s1", { id: "s1", connectionId: "c1", exited: null, waiters: [], streamListeners: new Set() }]]);
+  service.connections = new Map([["c1", conn]]);
+  service.exitedSessions = new Map();
+  service.scheduleReconnect = () => {};
+  service.log = () => {};
+  let logEnd;
+  service.sessionLogStore = () => ({ async end(id, details) { logEnd = { id, ...details }; } });
+  service.handleTransportLoss(conn, conn.client, Object.assign(new Error("socket lost"), { code: "ECONNRESET" }));
+  assert.deepEqual(logEnd, { id: "s1", exitCode: 1, reason: "transport-lost" });
+  const item = await service.terminalStream({ sessionId: "s1" }).next();
+  assert.deepEqual(item.value.value.exit, { code: 1, reason: "transport-lost" });
+});

@@ -85,6 +85,33 @@ export function SshFiles({ api, connectionId, onCd, initialPath = "/" }) {
   };
   useEffect(() => { setCheckpoints([]); void refreshCheckpoints(favoritesStorageKey); }, [favoritesStorageKey]);
 
+  const fetchVerifiedDownload = async (query, task, signal) => {
+    const id = globalThis.crypto?.randomUUID?.();
+    if (!id) return fetch(`/ssh-ops/stream/file?${query}`, { signal });
+    query.set("verificationId", id);
+    const status = new URLSearchParams({ connectionId: query.get("connectionId"), id });
+    const pollController = new AbortController();
+    let pending = false;
+    updateTask(task, { verification: null });
+    const timer = setInterval(async () => {
+      if (pending) return;
+      pending = true;
+      try {
+        const response = await fetch(`/ssh-ops/stream/verification?${status}`, { signal: pollController.signal });
+        if (!response.ok) return;
+        const verification = await response.json();
+        if (!pollController.signal.aborted) updateTask(task, { verification });
+      } catch { /* The progress endpoint is optional for the download. */ }
+      finally { pending = false; }
+    }, 400);
+    try {
+      return await fetch(`/ssh-ops/stream/file?${query}`, { signal });
+    } finally {
+      clearInterval(timer);
+      pollController.abort();
+    }
+  };
+
   const resumeCheckpoint = async (checkpoint) => {
     if (typeof globalThis.showSaveFilePicker !== "function") return;
     let destination;
@@ -96,9 +123,12 @@ export function SshFiles({ api, connectionId, onCd, initialPath = "/" }) {
     try {
       await withDownloadLock(checkpoint.id, async () => {
         const prefix = await checkpointFile(checkpoint.id);
-        const makeRequest = (offset, expectedSha256) => {
+        const makeRequest = async (offset, expectedSha256) => {
+          updateTask(task, { resuming: true, speed: 0 });
           const query = new URLSearchParams({ connectionId, path: checkpoint.path, verify: "sha256", offset: String(offset), expectedSha256 });
-          return fetch(`/ssh-ops/stream/file?${query}`, { signal: controller.signal });
+          const response = await fetchVerifiedDownload(query, task, controller.signal);
+          updateTask(task, { resuming: false });
+          return response;
         };
         const response = await makeRequest(prefix.size, checkpoint.digest);
         if (!response.ok || response.headers.get("x-content-sha256") !== checkpoint.digest) {
@@ -217,7 +247,7 @@ export function SshFiles({ api, connectionId, onCd, initialPath = "/" }) {
       setError(null);
       try {
         const query = new URLSearchParams({ connectionId, path: joinPath(cwd, target.name), verify: "sha256" });
-        const response = await fetch(`/ssh-ops/stream/file?${query}`, { signal: controller.signal });
+        const response = await fetchVerifiedDownload(query, task, controller.signal);
         const startedAt = Date.now();
         updateTask(task, { verifying: false });
         let destination = handle;
@@ -239,7 +269,7 @@ export function SshFiles({ api, connectionId, onCd, initialPath = "/" }) {
         }, async (offset, expectedSha256) => {
           updateTask(task, { verifying: true, resuming: true });
           const next = new URLSearchParams({ connectionId, path: joinPath(cwd, target.name), verify: "sha256", offset: String(offset), expectedSha256 });
-          const response = await fetch(`/ssh-ops/stream/file?${next}`, { signal: controller.signal });
+          const response = await fetchVerifiedDownload(next, task, controller.signal);
           updateTask(task, { verifying: false, resuming: false });
           return response;
         });
@@ -669,8 +699,11 @@ export function SshFiles({ api, connectionId, onCd, initialPath = "/" }) {
         <div style={filesStyles.inlineForm}><strong>{t("传输任务")}</strong><button style={filesStyles.btnTiny} onClick={() => setTasks((items) => items.filter((item) => item.status === "running"))}>{t("清除已结束")}</button></div>
         {tasks.map((task) => <div key={task.id} style={filesStyles.uploadProgress} role="status">
           <span>{task.kind === "upload" ? t("上传") : t("下载")} · {task.name} · {task.status === "running" ? (task.resuming ? t("正在验证并续传…") : task.verifying ? t("正在计算远端校验值…") : task.writing ? t("远端写入中") : t("进行中")) : task.status === "done" ? t("已完成") : task.status === "cancelled" ? t("已取消") : t("失败")} {task.error || ""}</span>
-          {task.status === "running" && task.kind === "download" && task.speed > 0 && <span>{formatSize(task.sent)}{task.total != null ? ` / ${formatSize(task.total)}` : ""} · {formatSize(task.speed)}/s{task.total != null && task.sent < task.total ? ` · ${t("剩余约")} ${Math.ceil((task.total - task.sent) / task.speed)}s` : ""}</span>}
-          {task.status === "running" && task.total != null && <progress value={task.sent} max={Math.max(task.total, 1)} />}
+          {task.status === "running" && !task.verifying && !task.resuming && task.kind === "download" && task.speed > 0 && <span>{formatSize(task.sent)}{task.total != null ? ` / ${formatSize(task.total)}` : ""} · {formatSize(task.speed)}/s{task.total != null && task.sent < task.total ? ` · ${t("剩余约")} ${Math.ceil((task.total - task.sent) / task.speed)}s` : ""}</span>}
+          {task.status === "running" && (task.verifying || task.resuming
+            ? <><progress aria-label={t("正在计算远端校验值…")} value={task.verification?.total > 0 ? Math.min(task.verification.bytes, task.verification.total) : undefined} max={task.verification?.total || 1} />
+              {task.verification && <span>{formatSize(task.verification.bytes)} / {formatSize(task.verification.total)}</span>}</>
+            : task.total != null && <progress value={task.sent} max={Math.max(task.total, 1)} />)}
           {task.status === "running" && task.cancellable && <button style={filesStyles.btnTiny} onClick={() => controllers.current.get(task.id)?.abort()}>{t("取消")}</button>}
         </div>)}
       </div>}

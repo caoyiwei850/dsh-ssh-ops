@@ -124,7 +124,7 @@ export class SessionLogStore {
   }
 
   /** Close one session's log and persist its final metadata. */
-  async end(sessionId, { exitCode = null } = {}) {
+  async end(sessionId, { exitCode = null, reason } = {}) {
     const entry = this.entries.get(sessionId);
     const stream = this.streams.get(sessionId);
     this.streams.delete(sessionId);
@@ -135,6 +135,7 @@ export class SessionLogStore {
     if (entry === undefined) return null;
     entry.endedAt = new Date().toISOString();
     entry.exitCode = exitCode;
+    if (reason) entry.exitReason = reason;
     this.entries.delete(sessionId);
     await this.writeMeta(entry).catch(() => {});
     return entry;
@@ -155,8 +156,10 @@ export class SessionLogStore {
       try {
         const meta = JSON.parse(await readFile(join(this.dir, name), "utf8"));
         if (meta?.sessionId === undefined) continue;
+        const { exitReason, ...exposed } = meta;
+        void exitReason;
         byId.set(meta.sessionId, {
-          ...meta,
+          ...exposed,
           startedAt: meta.startedAt ?? null,
           endedAt: meta.endedAt ?? null,
           bytes: Number(meta.bytes ?? 0),
