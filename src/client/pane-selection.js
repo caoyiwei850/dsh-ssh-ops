@@ -25,6 +25,11 @@ export function resolvePaneActiveConnection(connections, preferredConnectionId) 
   return connections[0]?.connectionId ?? null;
 }
 
+/** Hide unavailable transports while retaining their pane membership for recovery. */
+export function visiblePaneConnections(connections, connectionIds) {
+  return connections.filter((connection) => connection.connected !== false && connectionIds.includes(connection.connectionId));
+}
+
 /**
  * A view with no recorded state yet: a freshly split pane shows nothing. The
  * frozen sentinel is returned unchanged for every unknown view so a pane can

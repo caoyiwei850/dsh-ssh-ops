@@ -13,6 +13,27 @@ function fixture(connectClient) {
   return { service, conn };
 }
 
+test("connection list distinguishes a lost transport from a live one", async () => {
+  const { service, conn } = fixture(async () => ({ ok: true }));
+  Object.assign(conn, { host: "example", port: 22, username: "user", sessions: new Set() });
+  service.connections = new Map([["c1", conn]]);
+  service.activeConnectionId = null;
+  service.agentAutoConnect = false;
+  assert.equal((await service.list()).value.connections[0].connected, false);
+  conn.dead = false;
+  assert.equal((await service.list()).value.connections[0].connected, true);
+});
+
+test("an unexpected initial connection failure leaves no phantom connection", async () => {
+  const service = Object.create(SshOpsService.prototype);
+  service.connections = new Map();
+  service.connectClient = async () => { throw new TypeError("Client is not a constructor"); };
+  const result = await service.connectInternal({ host: "example", port: 22, username: "user", auth: { password: "test" }, retries: 0 });
+  assert.equal(result.ok, false);
+  assert.match(result.error.message, /Client is not a constructor/);
+  assert.equal(service.connections.size, 0);
+});
+
 test("unexpected reconnect rejection is contained, stops retrying and wakes waiters", async () => {
   let calls = 0;
   let ended = 0;

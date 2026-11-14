@@ -45,6 +45,7 @@ import {
   resolvePaneActiveConnection,
   selectInView,
   subscribePaneSessions,
+  visiblePaneConnections,
   viewSession
 } from "./pane-selection.js";
 import { t } from "../i18n/core.js";
@@ -572,6 +573,7 @@ function ConnectDialog({ api, credentials, onClose, onConnected }) {
   const [profiles, setProfiles] = useState([]);
   const [sharedCredentials, setSharedCredentials] = useState([]);
   const [selectedProfileId, setSelectedProfileId] = useState("");
+  const profilePickerRef = useRef(null);
   // Off by default: joining a live connection makes this pane share that
   // connection's single shell, so both panes would mirror each other and the
   // operator could not work in them independently. Opting in is for deliberately
@@ -590,6 +592,14 @@ function ConnectDialog({ api, credentials, onClose, onConnected }) {
     }).catch(() => {});
     return () => { alive = false; };
   }, [api]);
+
+  useEffect(() => {
+    const dismiss = (event) => {
+      if (profilePickerRef.current && !profilePickerRef.current.contains(event.target)) profilePickerRef.current.open = false;
+    };
+    document.addEventListener("pointerdown", dismiss);
+    return () => document.removeEventListener("pointerdown", dismiss);
+  }, []);
 
   const set = (key) => (event) => setForm((f) => ({ ...f, [key]: event.target.value }));
 
@@ -756,11 +766,19 @@ function ConnectDialog({ api, credentials, onClose, onConnected }) {
     }
   };
 
-  const selectProfile = (event) => {
-    const id = event.target.value;
+  const selectProfile = (id) => {
     setSelectedProfileId(id);
     setError(null);
+    if (profilePickerRef.current) profilePickerRef.current.open = false;
   };
+
+  const profileGroups = new Map();
+  for (const profile of profiles) {
+    const key = profile.groupId ?? "";
+    if (!profileGroups.has(key)) profileGroups.set(key, { name: profile.groupName || t("未分组"), profiles: [] });
+    profileGroups.get(key).profiles.push(profile);
+  }
+  const selectedProfile = profiles.find((profile) => profile.profileId === selectedProfileId);
 
   return (
     <div style={panelStyles.dialogBackdrop} onClick={busy ? undefined : onClose}>
@@ -768,17 +786,29 @@ function ConnectDialog({ api, credentials, onClose, onConnected }) {
         <div style={panelStyles.dialogTitle}>{t("连接服务器")}</div>
         {profiles.length > 0 && (
           <div style={panelStyles.savedProfileRow}>
-            <label style={{ ...panelStyles.field, flex: 1 }}>
+            <div style={{ ...panelStyles.field, flex: 1, minWidth: 0 }}>
               <span>{t("已保存的服务器（单选连接）")}</span>
-              <select value={selectedProfileId} onChange={selectProfile} style={panelStyles.input}>
-                <option value="">{t("选择一台服务器…")}</option>
-                {profiles.map((profile) => (
-                  <option key={profile.profileId} value={profile.profileId}>
-                    {profile.name || profile.host} — {profile.username}@{profile.host}:{profile.port}
-                  </option>
-                ))}
-              </select>
-            </label>
+              <details ref={profilePickerRef} style={panelStyles.profilePickerWrap} onKeyDown={(event) => {
+                if (event.key === "Escape") { event.stopPropagation(); profilePickerRef.current.open = false; profilePickerRef.current.querySelector("summary")?.focus(); }
+              }}>
+                <summary style={panelStyles.profilePickerTrigger}>
+                  {selectedProfile ? `${selectedProfile.name || selectedProfile.host} — ${selectedProfile.username}@${selectedProfile.host}:${selectedProfile.port}` : t("选择一台服务器…")}
+                </summary>
+                <div style={panelStyles.profilePicker}>
+                  <button type="button" onClick={() => selectProfile("")} aria-pressed={!selectedProfileId} style={panelStyles.profileChoice}>{t("临时连接")}</button>
+                  {[...profileGroups.entries()].map(([key, group]) => (
+                    <details key={key}>
+                      <summary style={panelStyles.profileGroup}>{group.name} ({group.profiles.length})</summary>
+                      {group.profiles.map((profile) => (
+                        <button type="button" key={profile.profileId} onClick={() => selectProfile(profile.profileId)} aria-pressed={selectedProfileId === profile.profileId} style={panelStyles.profileChoice}>
+                          {selectedProfileId === profile.profileId ? "✓ " : ""}{profile.name || profile.host} — {profile.username}@{profile.host}:{profile.port}
+                        </button>
+                      ))}
+                    </details>
+                  ))}
+                </div>
+              </details>
+            </div>
             {selectedProfileId && (
               <label style={panelStyles.reuseToggle} title={t("默认各自一条独立通道；勾选后本栏将加入已打开的那条连接，与另一栏共用同一个终端")}>
                 <input type="checkbox" checked={reuseExisting} onChange={(event) => setReuseExisting(event.target.checked)} />
@@ -1080,7 +1110,7 @@ export function SshPanel({ api, credentials, viewId = DEFAULT_VIEW_ID, viewSigna
   // this pane shows therefore lives in the shared pane store, keyed by the
   // host's tab id, so a split carries the pane's servers across the remount.
   const view = useSyncExternalStore(subscribePaneSessions, () => viewSession(viewId));
-  const paneConnections = ui.connections.filter((connection) => view.connectionIds.includes(connection.connectionId));
+  const paneConnections = visiblePaneConnections(ui.connections, view.connectionIds);
   const resolvedActiveConnectionId = resolvePaneActiveConnection(paneConnections, view.activeConnectionId);
   const active = paneConnections.find((c) => c.connectionId === resolvedActiveConnectionId);
 
@@ -1134,6 +1164,7 @@ export function SshPanel({ api, credentials, viewId = DEFAULT_VIEW_ID, viewSigna
    */
   const bindAgent = (connectionId) => {
     if (connectionId === null || connectionId === ui.activeConnectionId) return;
+    if (ui.connections.find((connection) => connection.connectionId === connectionId)?.connected === false) return;
     api.selectConnection(connectionId)
       .then(() => refreshConnections(api))
       .catch((error) => {
@@ -1820,6 +1851,11 @@ const panelStyles = {
   field: { display: "flex", flexDirection: "column", gap: 4, fontSize: 12, color: "var(--dsh-ssh-ops-muted, #9aa3af)", minWidth: 0 },
   formRow: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 },
   savedProfileRow: { display: "flex", alignItems: "flex-end", flexWrap: "wrap", gap: 8 },
+  profilePickerWrap: { position: "relative" },
+  profilePickerTrigger: { padding: "8px 10px", background: "var(--dsh-ssh-ops-input, #101418)", border: "1px solid var(--dsh-ssh-ops-border, #3a4352)", borderRadius: 6, cursor: "pointer", overflowWrap: "anywhere" },
+  profilePicker: { position: "absolute", zIndex: 2, top: "calc(100% + 4px)", left: 0, right: 0, maxHeight: "min(300px, 45vh)", overflowY: "auto", background: "var(--dsh-ssh-ops-surface, #181c22)", border: "1px solid var(--dsh-ssh-ops-border, #3a4352)", borderRadius: 6, boxShadow: "0 8px 24px rgba(0,0,0,.4)" },
+  profileGroup: { cursor: "pointer", padding: "7px 10px", fontWeight: 600 },
+  profileChoice: { display: "block", width: "100%", padding: "7px 10px", border: 0, background: "transparent", color: "inherit", textAlign: "left", cursor: "pointer", overflowWrap: "anywhere" },
   reuseToggle: {
     display: "flex",
     alignItems: "center",

@@ -1016,7 +1016,7 @@ export default class SshOpsService extends TypertRemoteService {
         host: c.host,
         port: c.port,
         username: c.username,
-        connected: true,
+        connected: !c.dead && !c.closing,
         sessions: [...c.sessions]
       };
       // Strict Typert results must be JSON-safe: optional fields must be
@@ -1228,8 +1228,17 @@ export default class SshOpsService extends TypertRemoteService {
       reconnectWaiters: []
     };
     this.connections.set(id, record);
-    const connected = await this.connectClient(record, request.retries ?? CONNECT_RETRIES);
-    record.connecting = false;
+    let connected;
+    try {
+      connected = await this.connectClient(record, request.retries ?? CONNECT_RETRIES);
+    } catch (error) {
+      try { record.client?.end(); } catch {}
+      for (const hop of record.hops) { try { hop.end(); } catch {} }
+      this.connections.delete(id);
+      return { ok: false, error: fail("connect-failed", error?.message ?? String(error)) };
+    } finally {
+      record.connecting = false;
+    }
     if (!connected.ok) {
       this.connections.delete(id);
       return connected;

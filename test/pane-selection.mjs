@@ -18,10 +18,17 @@ import {
   resolvePaneActiveConnection,
   selectInView,
   subscribePaneSessions,
+  visiblePaneConnections,
   viewSession
 } from "../src/client/pane-selection.js";
 
 const connections = [{ connectionId: "a" }, { connectionId: "b" }];
+
+// An unavailable transport is hidden, but reappears if it reconnects.
+const transportStates = [{ connectionId: "a", connected: true }, { connectionId: "b", connected: false }];
+assert.deepEqual(visiblePaneConnections(transportStates, ["a", "b"]).map((item) => item.connectionId), ["a"]);
+transportStates[1].connected = true;
+assert.deepEqual(visiblePaneConnections(transportStates, ["a", "b"]).map((item) => item.connectionId), ["a", "b"]);
 
 // ── selection helpers ──
 assert.equal(resolvePaneActiveConnection(connections, "a"), "a");
