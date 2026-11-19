@@ -2,7 +2,13 @@
 // BOM handling), the favorites store, the listing filter — plus a source-level
 // contract for the JSX wiring (no DOM in this suite, matching the repo style).
 import assert from "node:assert/strict";
+import { createRequire } from "node:module";
+import { mkdtempSync, rmSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { build } from "esbuild";
+import { JSDOM } from "jsdom";
+import React, { act } from "react";
 import {
   BINARY_PROBE_BYTES,
   MAX_EDITABLE_BYTES,
@@ -131,3 +137,57 @@ assert.equal(MAX_EDITABLE_BYTES, 10 * 1024 * 1024);
 }
 
 console.log("sftp files ui: editor policy, favorites store, filter and JSX wiring all passed");
+
+// Exercise the real file input and conflict buttons with a saved remote folder.
+{
+  const temp = mkdtempSync(join(process.cwd(), "node_modules", ".sftp-upload-test-"));
+  const dom = new JSDOM('<div id="root"></div>', { url: "http://localhost/" });
+  const previousNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  Object.defineProperty(globalThis, "navigator", { value: dom.window.navigator, configurable: true });
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  let root;
+  try {
+    const bundle = join(temp, "files.cjs");
+    await build({ entryPoints: ["src/client/SshFiles.jsx"], outfile: bundle, bundle: true, platform: "node", format: "cjs", external: ["react"], logLevel: "silent" });
+    const { SshFiles } = createRequire(import.meta.url)(bundle);
+    const { createRoot } = await import("react-dom/client");
+    const uploaded = [];
+    const existingNames = ["a.txt", "b.txt", "existing-only.txt"];
+    const api = {
+      list: async () => ({ connections: [] }),
+      sftpList: async (_id, path) => ({
+        path,
+        entries: path === "/"
+          ? [{ name: "docs", isDirectory: true, mode: 0o040755 }]
+          : existingNames.map((name) => ({ name, mode: 0o100644, size: 1, mtime: 0 }))
+      }),
+      sftpUploadFile: async (_id, path, _file, _progress, _signal, options) => { uploaded.push([path, options.overwrite]); }
+    };
+    await act(async () => {
+      root = createRoot(document.getElementById("root"));
+      root.render(React.createElement(SshFiles, { api, connectionId: "test" }));
+    });
+    const input = document.querySelector("input[webkitdirectory]");
+    Object.defineProperty(input, "files", { value: ["a.txt", "b.txt", "new.txt"].map((name) => ({
+      name, size: 1, webkitRelativePath: `docs/${name}`
+    })) });
+    await act(async () => input.dispatchEvent(new window.Event("change", { bubbles: true })));
+    assert.deepEqual(uploaded, []);
+    assert.match(document.querySelector('[role="dialog"]').textContent, /\/docs\/a\.txt/);
+    await act(async () => document.querySelector('[role="dialog"] input').click());
+    await act(async () => [...document.querySelectorAll('[role="dialog"] button')].find((button) => button.textContent === "保留两份").click());
+    assert.deepEqual(uploaded, [["/docs/a (1).txt", false], ["/docs/b (1).txt", false], ["/docs/new.txt", false]]);
+    assert.equal(document.querySelector('[role="dialog"]'), null);
+  } finally {
+    if (root) await act(async () => root.unmount());
+    dom.window.close();
+    rmSync(temp, { recursive: true, force: true });
+    delete globalThis.window;
+    delete globalThis.document;
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+    if (previousNavigator) Object.defineProperty(globalThis, "navigator", previousNavigator);
+    else delete globalThis.navigator;
+  }
+}

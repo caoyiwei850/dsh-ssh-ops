@@ -1,7 +1,40 @@
 
-import { t } from "../i18n/core.js";// Operator-owned command snippets. Never place passwords, tokens, or other
+import { t } from "../i18n/core.js";
+import { shellQuote } from "../safety.js";
+
+// Operator-owned command snippets. Never place passwords, tokens, or other
 // secrets here: this is ordinary browser local storage, not the credential vault.
 const KEY = "dsh-ssh-ops.command-snippets.v1";
+const PARAMETER = /\{\{([\p{L}_][\p{L}\p{N}_-]*)\}\}/gu;
+const TERMINAL_CONTROL = /[\x00-\x1f\x7f-\x9f\u2028\u2029]/u;
+
+export function snippetParameters(command) {
+  return [...new Set(Array.from(command.matchAll(PARAMETER), (match) => match[1]))];
+}
+
+/** Substitute POSIX arguments in unquoted template positions only. */
+export function expandSnippet(command, values) {
+  if (TERMINAL_CONTROL.test(command)) return null;
+  const matches = [...command.matchAll(PARAMETER)];
+  let cursor = 0;
+  let quote = null;
+  let escaped = false;
+  let output = "";
+  for (const match of matches) {
+    const prefix = command.slice(cursor, match.index);
+    for (const char of prefix) {
+      if (escaped) { escaped = false; continue; }
+      if (char === "\\" && quote !== "'") { escaped = true; continue; }
+      if (char === quote) quote = null;
+      else if (quote === null && (char === "'" || char === '"' || char === "`")) quote = char;
+    }
+    const value = values[match[1]];
+    if (quote !== null || escaped || typeof value !== "string" || !value.trim() || TERMINAL_CONTROL.test(value)) return null;
+    output += prefix + shellQuote(value);
+    cursor = match.index + match[0].length;
+  }
+  return output + command.slice(cursor);
+}
 
 function starterCommandSnippets() {
   return [
@@ -16,15 +49,15 @@ function starterCommandSnippets() {
   [t("RHEL：安装 Nginx（会变更）"), "sudo dnf install -y nginx"],
   [t("旧版 CentOS：更新软件（会变更）"), "sudo yum update"],
   [t("旧版 CentOS：安装 Nginx（会变更）"), "sudo yum install -y nginx"],
-  [t("服务：查看状态"), t("systemctl status <服务> --no-pager")],
-  [t("服务：查看最近日志"), t("journalctl -u <服务> -n 100 --no-pager")],
-  [t("服务：重启（会变更）"), t("sudo systemctl restart <服务>")],
+  [t("服务：查看状态"), "systemctl status --no-pager -- {{service}}"],
+  [t("服务：查看最近日志"), "journalctl -u {{service}} -n 100 --no-pager"],
+  [t("服务：重启（会变更）"), "sudo systemctl restart -- {{service}}"],
   [t("Docker：查看全部容器"), "docker ps -a"],
   [t("Docker Compose：服务状态"), "docker compose ps"],
   [t("Docker Compose：最近日志"), t("docker compose logs --tail=100 <服务>")],
   [t("Docker：清理未使用镜像（会变更）"), "docker image prune"],
-  [t("日志：查看末尾 100 行"), t("tail -n 100 <日志路径>")],
-  [t("日志：持续跟踪"), t("tail -f <日志路径>")],
+  [t("日志：查看末尾 100 行"), "tail -n 100 -- {{path}}"],
+  [t("日志：持续跟踪"), "tail -f -- {{path}}"],
   [t("日志：筛选错误"), t("grep -n 'error' <日志路径> | tail -n 50")],
   [t("进程：内存占用前列"), "ps aux --sort=-%mem | head"],
   [t("网络：健康检查"), t("curl -fsS http://127.0.0.1:<端口>/health")],

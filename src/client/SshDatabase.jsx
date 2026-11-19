@@ -61,6 +61,7 @@ export function SshDatabase({ api }) {
   const [sshProfiles, setSshProfiles] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [showForm, setShowForm] = useState(false);
+  const [editingProfile, setEditingProfile] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [sidebarWidth, setSidebarWidth] = useState(180);
@@ -182,6 +183,7 @@ export function SshDatabase({ api }) {
         // Save as durable profile with credential, then connect via profile.
         const isFile = form.type === "sqlite";
         const saved = await api.dbProfileSave({
+          ...(editingProfile ? { dbProfileId: editingProfile.dbProfileId } : {}),
           name: form.name?.trim() || (isFile ? `sqlite:${form.database.trim()}` : `${form.type}:${form.host.trim()}`),
           type: form.type,
           host: isFile ? undefined : form.host.trim(),
@@ -194,6 +196,11 @@ export function SshDatabase({ api }) {
           queryTimeoutMs: queryTimeoutMs ?? null
         });
         setShowForm(false);
+        if (editingProfile) {
+          setEditingProfile(null);
+          await refresh();
+          return;
+        }
         await handleProfileConnect(saved.profile.dbProfileId);
         return;
       }
@@ -257,29 +264,6 @@ export function SshDatabase({ api }) {
     }
   };
 
-  const handleProfileRename = async (profile) => {
-    const name = window.prompt(t("重命名数据库资源"), profile.name);
-    if (name === null || name.trim() === "" || name.trim() === profile.name) return;
-    setError(null);
-    try {
-      const isFile = profile.type === "sqlite";
-      await api.dbProfileSave({
-        dbProfileId: profile.dbProfileId,
-        name: name.trim(),
-        type: profile.type,
-        host: isFile ? undefined : profile.host,
-        port: isFile ? undefined : (profile.port || undefined),
-        database: profile.database ?? undefined,
-        username: profile.username ?? undefined,
-        ssl: profile.ssl,
-        sshProfileId: profile.sshProfileId
-      });
-      await refresh();
-    } catch (err) {
-      setError(err?.message ?? String(err));
-    }
-  };
-
   const [savedCollapsed, setSavedCollapsed] = useState(false);
 
   return (
@@ -288,7 +272,7 @@ export function SshDatabase({ api }) {
       <div style={{ ...dbStyles.sidebar, width: sidebarWidth }}>
         <div style={dbStyles.sidebarHeader}>
           <span style={dbStyles.sidebarTitle}>{t("数据库连接")}</span>
-          <button onClick={() => setShowForm(true)} style={dbStyles.iconBtn} title={t("新建连接")}>{t("＋")}</button>
+          <button onClick={() => { setEditingProfile(null); setShowForm(true); }} style={dbStyles.iconBtn} title={t("新建连接")}>{t("＋")}</button>
           <button onClick={refresh} disabled={loading} style={dbStyles.iconBtn} title={t("刷新")}>↻</button>
         </div>
         <div style={dbStyles.connList}>
@@ -311,7 +295,7 @@ export function SshDatabase({ api }) {
                     ? <span style={dbStyles.badgeConnected}>{t("已连接")}</span>
                     : <button onClick={(e) => { e.stopPropagation(); handleProfileConnect(p.dbProfileId); }} style={dbStyles.connAction} title={t("连接")}>↵</button>
                   }
-                  <button onClick={(e) => { e.stopPropagation(); handleProfileRename(p); }} style={dbStyles.connAction} title={t("重命名")}>✎</button>
+                  <button onClick={(e) => { e.stopPropagation(); setError(null); setEditingProfile(p); setShowForm(true); }} style={dbStyles.connAction} title={t("编辑连接")} aria-label={t(`编辑连接 ${p.name}`)}>✎</button>
                   <button onClick={(e) => { e.stopPropagation(); handleProfileDelete(p); }} style={dbStyles.connClose} title={t("删除")}>×</button>
                 </div>
               ))}
@@ -383,7 +367,7 @@ export function SshDatabase({ api }) {
             </>
           )}
           {profiles.length === 0 && connections.length === 0 && (
-            <div style={dbStyles.sidebarEmpty}>{t("没有连接")}<button onClick={() => setShowForm(true)} style={dbStyles.emptyLink}>{t("新建连接")}</button>
+            <div style={dbStyles.sidebarEmpty}>{t("没有连接")}<button onClick={() => { setEditingProfile(null); setShowForm(true); }} style={dbStyles.emptyLink}>{t("新建连接")}</button>
             </div>
           )}
         </div>
@@ -397,9 +381,11 @@ export function SshDatabase({ api }) {
         {error && <div style={dbStyles.errorBar}>{error}</div>}
         {showForm ? (
           <ConnectForm
+            key={editingProfile?.dbProfileId ?? "new"}
+            initialProfile={editingProfile}
             sshProfiles={sshProfiles}
             onSubmit={handleConnect}
-            onCancel={() => { setShowForm(false); setError(null); }}
+            onCancel={() => { setShowForm(false); setEditingProfile(null); setError(null); }}
           />
         ) : selected ? (
           <QueryPane
@@ -420,17 +406,17 @@ export function SshDatabase({ api }) {
 
 // ── Connect form ─────────────────────────────────────────────────────────────
 
-function ConnectForm({ sshProfiles, onSubmit, onCancel }) {
-  const [type, setType] = useState("mysql");
-  const [host, setHost] = useState("");
-  const [port, setPort] = useState("3306");
-  const [database, setDatabase] = useState("");
-  const [username, setUsername] = useState("");
+function ConnectForm({ initialProfile, sshProfiles, onSubmit, onCancel }) {
+  const [type, setType] = useState(initialProfile?.type ?? "mysql");
+  const [host, setHost] = useState(initialProfile?.host ?? "");
+  const [port, setPort] = useState(String(initialProfile?.port ?? 3306));
+  const [database, setDatabase] = useState(initialProfile?.database ?? "");
+  const [username, setUsername] = useState(initialProfile?.username ?? "");
   const [password, setPassword] = useState("");
-  const [ssl, setSsl] = useState("disabled");
-  const [sshProfileId, setSshProfileId] = useState("");
-  const [name, setName] = useState("");
-  const [queryTimeout, setQueryTimeout] = useState("");
+  const [ssl, setSsl] = useState(initialProfile?.ssl ?? "disabled");
+  const [sshProfileId, setSshProfileId] = useState(initialProfile?.sshProfileId ?? "");
+  const [name, setName] = useState(initialProfile?.name ?? "");
+  const [queryTimeout, setQueryTimeout] = useState(initialProfile?.queryTimeoutMs == null ? "" : String(initialProfile.queryTimeoutMs / 1000));
   const [saveProfile, setSaveProfile] = useState(true);
   const [busy, setBusy] = useState(false);
   const formRef = useRef(null);
@@ -474,7 +460,8 @@ function ConnectForm({ sshProfiles, onSubmit, onCancel }) {
 
   return (
     <form ref={formRef} onSubmit={submit} style={dbStyles.form}>
-      <div style={dbStyles.formTitle}>{t("新建数据库连接")}</div>
+      <div style={dbStyles.formTitle}>{initialProfile ? t("编辑数据库连接") : t("新建数据库连接")}</div>
+      {initialProfile && <div>{t("保存后对下次连接生效，当前连接不受影响。")}</div>}
 
       <div style={dbStyles.formRow}>
         <label style={dbStyles.formLabel}>{t("类型")}</label>
@@ -520,7 +507,7 @@ function ConnectForm({ sshProfiles, onSubmit, onCancel }) {
         </label>
         <label style={dbStyles.formLabel2w}>
           {type === "redis" ? t("密码") : t("密码")}
-          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder={t("可选")} style={inputStyle} />
+          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder={initialProfile ? t("留空保留原密码") : t("可选")} style={inputStyle} />
         </label>
       </div>
 
@@ -540,12 +527,13 @@ function ConnectForm({ sshProfiles, onSubmit, onCancel }) {
         </label>
       </div>
 
-      <label style={dbStyles.checkRow}>
+      {!initialProfile && <label style={dbStyles.checkRow}>
         <input type="checkbox" checked={saveProfile} onChange={(e) => setSaveProfile(e.target.checked)} />{t("保存为数据库资源（下次一键连接）")}</label>
+      }
 
       <div style={dbStyles.formActions}>
         <button type="button" onClick={onCancel} style={dbStyles.btnSecondary}>{t("取消 (Esc)")}</button>
-        <button type="submit" disabled={busy || !canSubmit} style={dbStyles.btnPrimary}>{busy ? t("连接中…") : t("连接")}</button>
+        <button type="submit" disabled={busy || !canSubmit} style={dbStyles.btnPrimary}>{busy ? (initialProfile ? t("保存中…") : t("连接中…")) : (initialProfile ? t("保存") : t("连接"))}</button>
       </div>
     </form>
   );

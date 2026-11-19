@@ -99,8 +99,8 @@ console.log("stream routes: archive namespace guard passed");
 
 // A browser upload must never truncate or delete an existing destination when
 // the request is cancelled. Only a completed temporary file may replace it.
-async function uploadFixture(cancel) {
-  const files = new Map([["/data/config", Buffer.from("original")]]);
+async function uploadFixture(cancel, concurrentTarget = false) {
+  const files = concurrentTarget ? new Map() : new Map([["/data/config", Buffer.from("original")]]);
   const sftp = {
     createWriteStream(path) {
       const stream = new Writable({
@@ -113,8 +113,19 @@ async function uploadFixture(cancel) {
       return stream;
     },
     stat(path, callback) { callback(files.has(path) ? null : new Error("missing"), files.has(path) ? { size: files.get(path).length } : undefined); },
+    lstat(path, callback) {
+      if (files.has(path)) callback(null, { size: files.get(path).length });
+      else callback(Object.assign(new Error("missing"), { code: 2 }));
+    },
     unlink(path, callback) { files.delete(path); callback(null); },
+    rename(_from, to, callback) {
+      assert.equal(concurrentTarget, true);
+      // A different client creates the target after our final existence check.
+      files.set(to, Buffer.from("other client"));
+      callback(new Error("already exists"));
+    },
     ext_openssh_rename(from, to, callback) {
+      assert.equal(concurrentTarget, false, "no-overwrite transfers must not use the replacing rename extension");
       if (!files.has(from)) return callback(new Error("temporary file missing"));
       files.set(to, files.get(from));
       files.delete(from);
@@ -133,16 +144,20 @@ async function uploadFixture(cancel) {
     const end = res.end.bind(res);
     res.end = (body) => { end(body); resolve(); };
   });
-  await service.streamUploadFile(req, res, new URL("http://localhost/ssh-ops/stream/file?path=%2Fdata%2Fconfig"), "c1");
+  const url = new URL("http://localhost/ssh-ops/stream/file?path=%2Fdata%2Fconfig");
+  if (concurrentTarget) url.searchParams.set("overwrite", "false");
+  await service.streamUploadFile(req, res, url, "c1");
   req.emit("data", Buffer.from("replacement"));
   if (cancel) req.emit("aborted");
   else req.emit("end");
   await finished;
-  assert.equal(files.get("/data/config").toString(), cancel ? "original" : "replacement");
+  assert.equal(files.get("/data/config").toString(), cancel ? "original" : concurrentTarget ? "other client" : "replacement");
   assert.equal([...files.keys()].some((path) => path.includes(".dsh-upload-")), false);
-  assert.equal(res.status, cancel ? 502 : 200);
+  assert.equal(res.status, cancel ? 502 : concurrentTarget ? 409 : 200);
+  if (concurrentTarget) assert.equal(JSON.parse(res.body).error.code, "target-exists");
 }
 
 await uploadFixture(true);
 await uploadFixture(false);
+await uploadFixture(false, true);
 console.log("stream routes: cancelled upload preserves target; completed upload replaces it");

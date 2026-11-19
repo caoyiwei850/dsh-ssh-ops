@@ -28,7 +28,7 @@ import { SshTunnels } from "./SshTunnels.jsx";
 import { SshDatabase } from "./SshDatabase.jsx";
 import { SshLogs } from "./SshLogs.jsx";
 import { privateKeyProblem } from "./pemkey.js";
-import { availableCommandSnippets, loadCommandSnippets, matchingCommandSnippets, saveCommandSnippets, searchCommandSnippets } from "./command-snippets.js";
+import { availableCommandSnippets, expandSnippet, loadCommandSnippets, matchingCommandSnippets, saveCommandSnippets, searchCommandSnippets, snippetParameters } from "./command-snippets.js";
 import { createTerminalPool } from "./terminal-pool.js";
 import { createTerminalThemeWatcher } from "./terminal-theme.js";
 import { clampFontSize, createWheelZoom, loadTerminalFontSize, saveTerminalFontSize } from "./terminal-zoom.js";
@@ -1044,6 +1044,7 @@ export function SshPanel({ api, credentials, viewId = DEFAULT_VIEW_ID, viewSigna
   const [profiles, setProfiles] = useState([]);
   const [groups, setGroups] = useState([]);
   const [snippetQuery, setSnippetQuery] = useState("");
+  const [snippetDraft, setSnippetDraft] = useState(null);
   const [snippetEditorOpen, setSnippetEditorOpen] = useState(false);
   const [snippetForm, setSnippetForm] = useState({ name: "", command: "", scope: "global", scopeId: "" });
   /** Whether this mount already offered to adopt the live host connections. */
@@ -1202,17 +1203,34 @@ export function SshPanel({ api, credentials, viewId = DEFAULT_VIEW_ID, viewSigna
     }
   };
 
-  const fillSnippet = async (command) => {
+  const fillSnippet = async (command, expectedSessionId) => {
     const sessionId = active?.sessions?.[0];
     if (!command || !sessionId) return sshUiSetError(t("请先打开当前服务器的终端，再填入快捷命令"));
+    if (expectedSessionId !== undefined && sessionId !== expectedSessionId) return;
     try {
       await api.write(sessionId, command);
+      setSnippetDraft(null);
       setSnippetQuery("");
       setTab("terminal");
     } catch (error) {
       sshUiSetError(t(`填入快捷命令失败：${error?.message ?? String(error)}`));
     }
   };
+
+  const chooseSnippet = (item) => {
+    const sessionId = active?.sessions?.[0];
+    if (!sessionId) return sshUiSetError(t("请先打开当前服务器的终端，再填入快捷命令"));
+    const parameters = snippetParameters(item.command);
+    if (parameters.length > 0) {
+      setSnippetDraft({ item, parameters, sessionId });
+    } else {
+      void fillSnippet(item.command);
+    }
+  };
+
+  useEffect(() => {
+    if (tab !== "snippets" || snippetDraft?.sessionId !== active?.sessions?.[0]) setSnippetDraft(null);
+  }, [tab, active?.sessions?.[0], snippetDraft?.sessionId]);
 
   // The host verifies a single idle POSIX shell and an empty input line.
   // Never append a command to an operator draft or a foreground program.
@@ -1451,7 +1469,7 @@ export function SshPanel({ api, credentials, viewId = DEFAULT_VIEW_ID, viewSigna
               </div>
               {snippetEditorOpen && <div style={panelStyles.snippetEditor}>
                 <input value={snippetForm.name} onChange={(event) => setSnippetForm({ ...snippetForm, name: event.target.value })} placeholder={t("名称")} style={panelStyles.snippetEditorName} />
-                <input value={snippetForm.command} onChange={(event) => setSnippetForm({ ...snippetForm, command: event.target.value })} placeholder={t("命令，例如：systemctl status nginx")} style={panelStyles.snippetEditorCommand} />
+                <input value={snippetForm.command} onChange={(event) => setSnippetForm({ ...snippetForm, command: event.target.value })} placeholder={t("命令，例如：systemctl status {{service}}")} style={panelStyles.snippetEditorCommand} />
                 <select value={snippetForm.scope} onChange={(event) => setSnippetForm({ ...snippetForm, scope: event.target.value, scopeId: "" })} style={panelStyles.snippetEditorScope}>
                   <option value="global">{t("所有服务器")}</option><option value="group">{t("指定分组")}</option><option value="profile">{t("指定服务器")}</option>
                 </select>
@@ -1468,9 +1486,15 @@ export function SshPanel({ api, credentials, viewId = DEFAULT_VIEW_ID, viewSigna
               />
               {!active && <div style={panelStyles.snippetEmpty}>{t("请先连接服务器；你仍可浏览和搜索内置命令。")}</div>}
               <div style={panelStyles.snippetList}>
+                {snippetDraft && <SnippetParameterForm
+                  key={snippetDraft.item.id}
+                  draft={snippetDraft}
+                  onCancel={() => setSnippetDraft(null)}
+                  onFill={(command) => fillSnippet(command, snippetDraft.sessionId)}
+                />}
                 {visibleCommandSnippets.map((item) => (
                   <div key={item.id} style={panelStyles.snippetCard}>
-                    <button type="button" onClick={() => fillSnippet(item.command)} disabled={!active} style={panelStyles.snippetCardMain}>
+                    <button type="button" onClick={() => chooseSnippet(item)} disabled={!active} style={panelStyles.snippetCardMain}>
                       <strong>{item.name}{!item.builtIn && <small style={panelStyles.snippetCustomBadge}>{t("自定义")}</small>}</strong><code>{item.command}</code>
                     </button>
                     {!item.builtIn && <button type="button" onClick={() => removeSnippet(item)} title={t(`删除 ${item.name}`)} aria-label={t(`删除 ${item.name}`)} style={panelStyles.snippetDelete}>×</button>}
@@ -1490,6 +1514,37 @@ export function SshPanel({ api, credentials, viewId = DEFAULT_VIEW_ID, viewSigna
       {batchTask && <BatchDialog api={api} task={batchTask} onDone={() => setBatchTask(null)} />}
     </div>
   );
+}
+
+function SnippetParameterForm({ draft, onCancel, onFill }) {
+  const [values, setValues] = useState({});
+  const [busy, setBusy] = useState(false);
+  const preview = expandSnippet(draft.item.command, values);
+  const complete = draft.parameters.every((name) => Object.hasOwn(values, name) && values[name].trim());
+  const submit = async (event) => {
+    event.preventDefault();
+    if (preview === null || busy) return;
+    setBusy(true);
+    try { await onFill(preview); } finally { setBusy(false); }
+  };
+  return <form onSubmit={submit} style={panelStyles.snippetParameters} onKeyDown={(event) => {
+    if (event.key === "Escape") { event.stopPropagation(); onCancel(); }
+  }}>
+    <strong>{draft.item.name}</strong>
+    {draft.parameters.map((name, index) => <label key={name} style={panelStyles.field}>
+      <span>{name}</span>
+      <input value={Object.hasOwn(values, name) ? values[name] : ""} onChange={(event) => setValues({ ...values, [name]: event.target.value })} style={panelStyles.input} autoFocus={index === 0} required />
+    </label>)}
+    {preview === null && complete && <span role="alert">{t("参数占位符必须放在引号外，命令和参数不能包含控制字符。")}</span>}
+    {preview !== null && <label style={panelStyles.field}>
+      <span>{t("命令预览")}</span>
+      <output style={{ ...panelStyles.input, fontFamily: "monospace", overflowWrap: "anywhere", whiteSpace: "pre-wrap" }}>{preview}</output>
+    </label>}
+    <div style={{ display: "flex", gap: 6 }}>
+      <button type="submit" disabled={preview === null || busy} style={panelStyles.snippetSave}>{t("填入终端")}</button>
+      <button type="button" onClick={onCancel} style={panelStyles.snippetAdd}>{t("取消")}</button>
+    </div>
+  </form>;
 }
 
 /**
@@ -1769,6 +1824,7 @@ const panelStyles = {
   snippetSave: { padding: "6px 8px", background: "#2d6cdf", color: "#fff", border: 0, borderRadius: 5, fontSize: 12, cursor: "pointer" },
   snippetSearch: { width: "100%", boxSizing: "border-box", padding: "8px 9px", background: "#101418", color: "#d7dbe2", border: "1px solid #3a414b", borderRadius: 6, fontSize: 13 },
   snippetList: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 8, overflowY: "auto", paddingRight: 2 },
+  snippetParameters: { display: "grid", gridColumn: "1 / -1", gap: 8, padding: 10, border: "1px solid var(--dsh-ssh-ops-border, #2d3540)", borderRadius: 7, minWidth: 0 },
   snippetCard: { display: "flex", minWidth: 0, background: "#161b21", color: "#d7dbe2", border: "1px solid #2d3540", borderRadius: 7, fontSize: 12 },
   snippetCardMain: { display: "flex", flex: 1, minWidth: 0, flexDirection: "column", gap: 5, padding: "9px 10px", background: "transparent", color: "#d7dbe2", border: 0, textAlign: "left", cursor: "pointer", fontSize: 12 },
   snippetCustomBadge: { marginLeft: 6, color: "#8b93a1", fontWeight: 400 },

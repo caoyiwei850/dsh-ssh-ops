@@ -67,7 +67,7 @@ try {
   await call(sftp, "unlink", "/pipeline-upload.bin");
   const service = Object.create(SshOpsService.prototype);
   service.transferTasks = new TransferTasks();
-  const connection = { id: "local-ssh", dead: false };
+  const connection = { id: "local-ssh", dead: false, client, sessions: new Set(["terminal"]) };
   service.resolveConnection = () => ({ ok: true, connection });
   service.requireSftp = async () => ({ ok: true, sftp });
   service.ctx = { logger: { warn() {} } };
@@ -94,6 +94,15 @@ try {
     const finished = await fetch(`${endpoint}&offset=${payload.length}&expectedSha256=${digest(payload)}`, { headers: { "x-test-auth": "yes" } });
     assert.equal(finished.status, 200);
     assert.equal((await finished.arrayBuffer()).byteLength, 0);
+    const uploadUrl = `http://127.0.0.1:${web.address().port}/ssh-ops/stream/file?connectionId=local-ssh&path=%2Fbrowser-upload.bin&overwrite=false`;
+    const put = (body) => fetch(uploadUrl, { method: "PUT", headers: { "x-test-auth": "yes" }, body });
+    const firstUpload = await put(payload);
+    assert.equal(firstUpload.status, 200, JSON.stringify(await firstUpload.json()));
+    const conflictingUpload = await put("replacement");
+    assert.equal(conflictingUpload.status, 409);
+    assert.equal((await conflictingUpload.json()).error.code, "target-exists");
+    assert.deepEqual(await call(sftp, "readFile", "/browser-upload.bin"), payload);
+    await call(sftp, "unlink", "/browser-upload.bin");
   } finally { await new Promise((resolve) => web.close(resolve)); }
   const uploaded = await service.sftpUploadLocalFile({ localPath: input, remotePath: "/agent-upload.bin" });
   assert.equal(uploaded.ok, true, uploaded.error?.message);

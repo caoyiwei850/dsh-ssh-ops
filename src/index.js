@@ -40,6 +40,7 @@ import { createReadStream, createWriteStream } from "node:fs";
 import { pipeline as streamPipeline } from "node:stream/promises";
 import { runTransferTasks, joinRemotePath, splitRemotePath } from "./sftp-dir.js";
 import { uploadPipeline } from "./sftp-pipeline.js";
+import { hasInteractiveTerminal, INTERACTIVE_UPLOAD_CHUNK_BYTES, noteTerminalInput, scheduleUploadWrite } from "./ssh-upload-scheduling.js";
 import { saveEditorFile } from "./sftp-editor-save.js";
 import { encryptResourceBackup, decryptResourceBackup } from "./resource-backup-crypto.js";
 import { scanOpenSshConfig } from "./openssh-import.js";
@@ -2750,6 +2751,7 @@ export default class SshOpsService extends TypertRemoteService {
         // This path is interactive operator input and stays unguarded. The
         // standing boundary is that a human's own keystrokes are never
         // policed; agent calls use writeToConnection()/execOnConnection().
+        noteTerminalInput(this.connections?.get(session.connectionId));
         session.stream.write(text);
         this.updateInputMirror(session, text);
       }
@@ -4277,16 +4279,25 @@ export default class SshOpsService extends TypertRemoteService {
     const partialPath = `${remotePath}.dsh-upload-${randomUUID()}.tmp`;
     const prepared = await this.streamPrepareSftp(res, connectionId);
     if (prepared === null) return;
+    const targetExists = async () => {
+      try {
+        await this.sftpDeadline(this.sftpCall(prepared, (cb) => prepared.sftp.lstat(remotePath, cb)));
+        return true;
+      } catch (error) {
+        if (error.code === 2 || error.code === "ENOENT") return false;
+        throw error;
+      }
+    };
     if (!overwrite) {
-      const existing = await new Promise((resolve) => {
-        prepared.sftp.stat(remotePath, (error, attrs) => resolve(error ? null : attrs));
-      });
-      if (existing !== null) {
+      if (await targetExists()) {
         this.streamJson(res, 409, "target-exists", `${remotePath}: already exists (overwrite=false)`);
         return;
       }
     }
-    const out = prepared.sftp.createWriteStream(partialPath, { highWaterMark: STREAM_HIGH_WATER_MARK });
+    // ssh2's automatic close is started in _final, before Writable marks
+    // the stream finished. Close explicitly after finish so a fast SFTP
+    // server cannot acknowledge close before all stream state is settled.
+    const out = prepared.sftp.createWriteStream(partialPath, { highWaterMark: STREAM_HIGH_WATER_MARK, autoClose: false });
     const openError = await this.streamAwaitOpen(out);
     if (openError !== null) {
       out.destroy();
@@ -4301,6 +4312,8 @@ export default class SshOpsService extends TypertRemoteService {
     let ended = false; // request body fully received
     let settled = false; // success reply sent
     let discarded = false; // cancel path taken
+    let pendingWrite = false;
+    const uploadAbort = new AbortController();
     // Zombie-upload backstop 1: idle socket. While the request is paused the
     // server cannot see the client's FIN (unread body bytes precede it), so
     // socket inactivity — not request events — bounds a cancelled upload.
@@ -4322,6 +4335,7 @@ export default class SshOpsService extends TypertRemoteService {
     const discard = async (reason) => {
       if (settled || discarded) return;
       discarded = true;
+      uploadAbort.abort();
       finalizeIo();
       try { req.pause(); } catch {}
       out.destroy();
@@ -4365,17 +4379,22 @@ export default class SshOpsService extends TypertRemoteService {
       }
       this.streamJson(res, 502, "sftp-write-failed", `${remotePath}: ${error.message}`);
     });
+    out.on("finish", () => out.destroy());
     out.on("close", async () => {
       if (settled || discarded) return;
       try {
         if (!ended || !out.writableFinished) throw new Error("SFTP write stream closed before upload completed");
         if (!overwrite) {
-          const existing = await new Promise((resolve) => {
-            prepared.sftp.stat(remotePath, (error, attrs) => resolve(error ? null : attrs));
-          });
-          if (existing !== null) throw new Error("target appeared during upload (overwrite=false)");
-        }
-        if (typeof prepared.sftp.ext_openssh_rename === "function") {
+          // SFTP v3 RENAME refuses an existing target. The OpenSSH POSIX
+          // extension replaces it, so reserve that extension for explicit overwrite.
+          try {
+            if (await targetExists()) throw Object.assign(new Error("Upload target already exists"), { code: "target-exists" });
+            await this.sftpDeadline(this.sftpCall(prepared, (cb) => prepared.sftp.rename(partialPath, remotePath, cb)));
+          } catch (error) {
+            if (error.code === "target-exists" || !await targetExists()) throw error;
+            throw Object.assign(new Error("Upload target already exists"), { code: "target-exists" });
+          }
+        } else if (typeof prepared.sftp.ext_openssh_rename === "function") {
           try {
             await this.sftpCall(prepared, (cb) => prepared.sftp.ext_openssh_rename(partialPath, remotePath, cb));
           } catch (error) {
@@ -4392,7 +4411,8 @@ export default class SshOpsService extends TypertRemoteService {
           this.streamJson(res, 502, "sftp-cleanup-failed", `${partialPath}: ${cleanupError.message}`);
           return;
         }
-        this.streamJson(res, 502, "sftp-rename-failed", `${remotePath}: ${error.message}`);
+        const conflict = error.code === "target-exists";
+        this.streamJson(res, conflict ? 409 : 502, conflict ? "target-exists" : "sftp-rename-failed", `${remotePath}: ${error.message}`);
         return;
       }
       settled = true;
@@ -4408,14 +4428,34 @@ export default class SshOpsService extends TypertRemoteService {
     // pause the request while the SFTP window is full, resume on drain.
     req.on("data", (chunk) => {
       bytes += chunk.length;
-      if (!out.write(chunk)) req.pause();
+      if (!hasInteractiveTerminal(prepared.connection)) {
+        if (!out.write(chunk)) req.pause();
+        return;
+      }
+      req.pause();
+      pendingWrite = true;
+      void (async () => {
+        for (let offset = 0; offset < chunk.length; offset += INTERACTIVE_UPLOAD_CHUNK_BYTES) {
+          const part = chunk.subarray(offset, offset + INTERACTIVE_UPLOAD_CHUNK_BYTES);
+          await scheduleUploadWrite(prepared.connection, uploadAbort.signal, () => new Promise((resolve, reject) => {
+            out.write(part, (error) => error ? reject(error) : resolve());
+          }));
+        }
+      })().then(() => {
+        pendingWrite = false;
+        if (discarded || settled) return;
+        if (ended) out.end();
+        else req.resume();
+      }).catch((error) => {
+        if (!discarded && !settled) out.destroy(error);
+      });
     });
     out.on("drain", () => {
-      if (!discarded && !ended) req.resume();
+      if (!discarded && !ended && !pendingWrite) req.resume();
     });
     req.on("end", () => {
       ended = true;
-      if (!discarded && !settled) out.end();
+      if (!discarded && !settled && !pendingWrite) out.end();
     });
   }
 
@@ -4829,12 +4869,16 @@ export default class SshOpsService extends TypertRemoteService {
   }
 
   /** Upload through a unique sibling file, then commit only a completed transfer. */
-  async sftpUploadFile(sftp, localFile, remoteFile, signal) {
+  async sftpUploadFile(sftp, localFile, remoteFile, signal, connection) {
     const partial = `${remoteFile}.dsh-upload-${randomUUID()}.tmp`;
     try {
       const { size } = await fsStat(localFile);
-      if (size >= 256 * 1024 && ["open", "write", "close"].every((method) => typeof sftp.sftp[method] === "function")) {
-        await uploadPipeline(sftp.sftp, localFile, partial, { signal });
+      if ((size >= 256 * 1024 || hasInteractiveTerminal(connection)) && ["open", "write", "close"].every((method) => typeof sftp.sftp[method] === "function")) {
+        await uploadPipeline(sftp.sftp, localFile, partial, {
+          signal,
+          ...(hasInteractiveTerminal(connection) ? { window: 4 } : {}),
+          scheduleWrite: (write) => scheduleUploadWrite(connection, signal, () => this.sftpDeadline(write()))
+        });
       } else {
         const source = createReadStream(localFile);
         const target = sftp.sftp.createWriteStream(partial);
@@ -4923,7 +4967,13 @@ export default class SshOpsService extends TypertRemoteService {
           if (localPrefix !== remotePrefix) throw new Error("Remote partial does not match the source; resume refused");
         }
         try {
-          await uploadPipeline(sftp, task.source, task.partial, { signal, start: task.checkpoint, onProgress: (sent) => { task.checkpoint = sent; task.sent = sent; } });
+          await uploadPipeline(sftp, task.source, task.partial, {
+            signal,
+            start: task.checkpoint,
+            ...(hasInteractiveTerminal(conn) ? { window: 4 } : {}),
+            onProgress: (sent) => { task.checkpoint = sent; task.sent = sent; },
+            scheduleWrite: (write) => scheduleUploadWrite(conn, signal, () => this.sftpDeadline(write()))
+          });
           if (await hashTransferStream(createReadStream(task.source), signal) !== task.digest) throw new Error("Source file changed during upload; commit refused");
           if (await hashTransferStream(sftp.createReadStream(task.partial), signal) !== task.digest) throw new Error("Remote file verification failed; commit refused");
           if (signal.aborted) throw signal.reason ?? new Error("Upload cancelled");
@@ -5069,7 +5119,7 @@ export default class SshOpsService extends TypertRemoteService {
         return {
           path: rel,
           size,
-          run: (signal) => this.sftpUploadFile(sftp, full, destination, signal)
+          run: (signal) => this.sftpUploadFile(sftp, full, destination, signal, selected.connection)
         };
       });
       // Every ancestor directory of every file, deduplicated, created shallow

@@ -23,6 +23,15 @@ function dirnameOf(path) {
   return path.slice(0, idx);
 }
 
+function nextUploadName(name, entries) {
+  const dot = name.lastIndexOf(".");
+  const stem = dot > 0 ? name.slice(0, dot) : name;
+  const extension = dot > 0 ? name.slice(dot) : "";
+  let index = 1;
+  while (entries.has(`${stem} (${index})${extension}`)) index++;
+  return `${stem} (${index})${extension}`;
+}
+
 export function SshFiles({ api, connectionId, onCd, initialPath = "/" }) {
   const [cwd, setCwd] = useState("/");
   const [entries, setEntries] = useState(null);
@@ -56,6 +65,9 @@ export function SshFiles({ api, connectionId, onCd, initialPath = "/" }) {
   const [checkpoints, setCheckpoints] = useState([]);
   const taskId = React.useRef(0);
   const controllers = React.useRef(new Map());
+  const uploadController = React.useRef(null);
+  const [uploadConflict, setUploadConflict] = useState(null);
+  const [conflictApplyAll, setConflictApplyAll] = useState(false);
   const searchController = React.useRef(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -63,6 +75,7 @@ export function SshFiles({ api, connectionId, onCd, initialPath = "/" }) {
   const updateTask = (id, patch) => setTasks((items) => items.map((item) => item.id === id ? { ...item, ...patch } : item));
   const addTask = (task) => { const id = ++taskId.current; setTasks((items) => [{ ...task, id }, ...items.filter((item, index) => item.status === "running" || index < 49)]); return id; };
   useEffect(() => () => { searchController.current?.abort(); for (const controller of controllers.current.values()) controller.abort(); }, []);
+  useEffect(() => () => uploadController.current?.abort(), [connectionId]);
   useEffect(() => { searchController.current?.abort(); searchController.current = null; setSearchState(null); }, [connectionId]);
   useEffect(() => {
     let active = true;
@@ -187,10 +200,10 @@ export function SshFiles({ api, connectionId, onCd, initialPath = "/" }) {
     return () => { cancelled = true; };
   }, [api, connectionId]);
 
-  const load = async (path) => {
+  const load = async (path, { preserveError = false } = {}) => {
     const seq = ++loadSeq.current;
     setBusy(true);
-    setError(null);
+    if (!preserveError) setError(null);
     setSelected(null);
     try {
       const value = await api.sftpList(connectionId, path);
@@ -308,60 +321,119 @@ export function SshFiles({ api, connectionId, onCd, initialPath = "/" }) {
     }
   };
 
-  const ensureRemoteDir = async (remotePath) => {
-    // Build the path one level at a time, ignoring "already exists" errors.
-    const parts = remotePath.split("/").filter(Boolean);
-    let current = "";
-    for (const part of parts) {
-      current = current === "" ? `/${part}` : `${current}/${part}`;
-      try { await api.sftpMkdir(connectionId, current); } catch {} // ignore if exists
-    }
-  };
-
   const upload = async (fileList) => {
     const files = Array.isArray(fileList) ? fileList : [fileList];
-    if (files.length === 0) return;
+    if (!connectionId || files.length === 0 || uploadController.current) return;
     setBusy(true);
     setError(null);
     const controller = new AbortController();
-    const task = addTask({ name: files.length === 1 ? files[0].name : t(`${files.length} 个文件`), kind: "upload", status: "running", sent: 0, total: files.reduce((sum, file) => sum + file.size, 0), cancellable: true });
+    uploadController.current = controller;
+    const { signal } = controller;
+    let total = files.reduce((sum, file) => sum + file.size, 0);
+    const task = addTask({ name: files.length === 1 ? files[0].name : t(`${files.length} 个文件`), kind: "upload", status: "running", sent: 0, total, cancellable: true });
     controllers.current.set(task, controller);
     let completedBytes = 0;
+    let skipped = 0;
+    let changed = false;
+    let batchChoice;
+    const directories = new Map();
+    const list = async (path, refresh = false) => {
+      signal.throwIfAborted();
+      if (refresh || !directories.has(path)) {
+        const { entries } = await api.sftpList(connectionId, path);
+        directories.set(path, new Map(entries.map((entry) => [entry.name, entry])));
+      }
+      signal.throwIfAborted();
+      return directories.get(path);
+    };
+    const choose = async (path, canOverwrite, moreFiles) => {
+      if (batchChoice && (batchChoice !== "overwrite" || canOverwrite)) return batchChoice;
+      signal.throwIfAborted();
+      return new Promise((resolve, reject) => {
+        const abort = () => reject(signal.reason);
+        signal.addEventListener("abort", abort, { once: true });
+        setConflictApplyAll(false);
+        setUploadConflict({
+          path, canOverwrite, moreFiles,
+          cancel: () => controller.abort(),
+          choose: (choice, applyAll) => {
+            signal.removeEventListener("abort", abort);
+            if (applyAll) batchChoice = choice;
+            setUploadConflict(null);
+            resolve(choice);
+          }
+        });
+      });
+    };
     try {
-      for (const file of files) {
-        if (controller.signal.aborted) throw new Error("cancelled");
-        // Preserve relative path for directory uploads (webkitRelativePath).
-        const relPath = file.webkitRelativePath || file.name;
-        const remotePath = joinPath(cwd, relPath);
-        // Ensure the remote directory exists.
-        const dirPart = dirnameOf(remotePath);
-        if (dirPart !== "/" && dirPart !== cwd) {
-          await ensureRemoteDir(dirPart);
+      for (const [index, file] of files.entries()) {
+        const parts = (file.webkitRelativePath || file.name).split("/");
+        if (parts.some((part) => !part || part === "." || part === ".." || /[\\\x00]/.test(part))) {
+          throw new Error(t("上传文件路径无效"));
         }
-        updateTask(task, { current: file.name, sent: completedBytes, writing: false });
-        try {
-          await api.sftpUploadFile(connectionId, remotePath, file, (sent) => {
-            updateTask(task, { current: file.name, sent: completedBytes + sent, writing: sent >= file.size });
-          }, controller.signal);
-        } catch (error) {
-          if (error?.code !== "stream-unavailable") throw error;
-          const bytes = new Uint8Array(await file.arrayBuffer());
-          if (controller.signal.aborted) throw new Error("cancelled");
-          updateTask(task, { current: file.name, sent: completedBytes, writing: true, cancellable: false });
-          await api.sftpWriteFile(connectionId, remotePath, bytes);
+        const originalName = parts.pop();
+        let dir = cwd;
+        for (const part of parts) {
+          const items = await list(dir);
+          const next = joinPath(dir, part);
+          const existing = items.get(part);
+          if (existing && (!existing.isDirectory || (existing.mode & 0o170000) === 0o120000)) {
+            throw new Error(t(`无法合并目录：${next} 已存在且不是普通目录`));
+          }
+          if (!existing) {
+            await api.sftpMkdir(connectionId, next);
+            changed = true;
+            items.set(part, { isDirectory: true });
+          }
+          dir = next;
         }
-        completedBytes += file.size;
-        updateTask(task, { sent: completedBytes, cancellable: true });
+        let items = await list(dir);
+        let name = originalName;
+        for (;;) {
+          signal.throwIfAborted();
+          let overwrite = false;
+          const existing = items.get(name);
+          if (existing) {
+            const canOverwrite = !existing.isDirectory && (existing.mode & 0o170000) !== 0o120000;
+            const action = await choose(joinPath(dir, name), canOverwrite, index < files.length - 1);
+            if (action === "skip") {
+              skipped++;
+              total -= file.size;
+              updateTask(task, { skipped, total, sent: completedBytes, writing: false });
+              break;
+            }
+            overwrite = action === "overwrite";
+            if (!overwrite) name = nextUploadName(originalName, items);
+          }
+          const remotePath = joinPath(dir, name);
+          updateTask(task, { current: name, sent: completedBytes, writing: false });
+          try {
+            await api.sftpUploadFile(connectionId, remotePath, file, (sent) => {
+              updateTask(task, { current: name, sent: completedBytes + sent, writing: sent >= file.size });
+            }, signal, { overwrite });
+          } catch (error) {
+            if (error?.code !== "target-exists") throw error;
+            items = await list(dir, true);
+            continue;
+          }
+          items.set(name, { isDirectory: false });
+          changed = true;
+          completedBytes += file.size;
+          updateTask(task, { sent: completedBytes, writing: false });
+          break;
+        }
       }
       updateTask(task, { status: "done", cancellable: false });
-      load(cwdRef.current);
     } catch (err) {
-      const cancelled = controller.signal.aborted;
+      const cancelled = signal.aborted;
       updateTask(task, { status: cancelled ? "cancelled" : "failed", error: cancelled ? null : (err?.message ?? String(err)), cancellable: false });
-      if (!cancelled) setError(t(`上传失败：${err?.message ?? String(err)}`));
+      if (!cancelled && connectionRef.current === connectionId) setError(t(`上传失败：${err?.message ?? String(err)}`));
     } finally {
       controllers.current.delete(task);
+      uploadController.current = null;
+      setUploadConflict(null);
       setBusy(false);
+      if (connectionRef.current === connectionId && changed) void load(cwdRef.current, { preserveError: true });
     }
   };
 
@@ -630,9 +702,30 @@ export function SshFiles({ api, connectionId, onCd, initialPath = "/" }) {
             }}
           />
         </label>
+        <label style={filesStyles.btn} title={t("上传目录并合并已有目录")}>{t("上传目录")}<input
+          type="file"
+          webkitdirectory=""
+          style={{ display: "none" }}
+          onChange={(event) => {
+            const files = [...event.target.files];
+            event.target.value = "";
+            void upload(files);
+          }}
+        /></label>
         <button onClick={() => setSearchOpen(!searchOpen)} style={filesStyles.btn} title={t("递归搜索文件名")}>{t("搜索")}</button>
         <button onClick={() => load(cwd)} disabled={busy} style={filesStyles.btn} title={t("刷新")}>↻</button>
       </div>
+
+      {uploadConflict && <div role="dialog" aria-label={t("上传遇到同名项")} style={{ ...filesStyles.inlineForm, flexDirection: "column", alignItems: "stretch" }}>
+        <div><strong>{t("上传遇到同名项")}</strong> <code style={{ overflowWrap: "anywhere" }}>{uploadConflict.path}</code></div>
+        {uploadConflict.moreFiles && <label><input type="checkbox" checked={conflictApplyAll} onChange={(event) => setConflictApplyAll(event.target.checked)} />{t("对剩余同名项应用此选择")}</label>}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          <button type="button" style={filesStyles.btn} onClick={() => uploadConflict.choose("skip", conflictApplyAll)}>{t("跳过")}</button>
+          <button type="button" style={filesStyles.btn} onClick={() => uploadConflict.choose("rename", conflictApplyAll)}>{t("保留两份")}</button>
+          {uploadConflict.canOverwrite && <button type="button" style={filesStyles.btn} onClick={() => uploadConflict.choose("overwrite", conflictApplyAll)}>{t("覆盖")}</button>}
+          <button type="button" style={filesStyles.btn} onClick={uploadConflict.cancel}>{t("取消上传")}</button>
+        </div>
+      </div>}
 
       {favorites.length > 0 && (
         <div style={filesStyles.favorites}>
@@ -698,7 +791,7 @@ export function SshFiles({ api, connectionId, onCd, initialPath = "/" }) {
       {tasks.length > 0 && <div style={{ ...filesStyles.scpCard, maxHeight: 180, overflowY: "auto" }}>
         <div style={filesStyles.inlineForm}><strong>{t("传输任务")}</strong><button style={filesStyles.btnTiny} onClick={() => setTasks((items) => items.filter((item) => item.status === "running"))}>{t("清除已结束")}</button></div>
         {tasks.map((task) => <div key={task.id} style={filesStyles.uploadProgress} role="status">
-          <span>{task.kind === "upload" ? t("上传") : t("下载")} · {task.name} · {task.status === "running" ? (task.resuming ? t("正在验证并续传…") : task.verifying ? t("正在计算远端校验值…") : task.writing ? t("远端写入中") : t("进行中")) : task.status === "done" ? t("已完成") : task.status === "cancelled" ? t("已取消") : t("失败")} {task.error || ""}</span>
+          <span>{task.kind === "upload" ? t("上传") : t("下载")} · {task.name} · {task.status === "running" ? (task.resuming ? t("正在验证并续传…") : task.verifying ? t("正在计算远端校验值…") : task.writing ? t("远端写入中") : t("进行中")) : task.status === "done" ? t("已完成") : task.status === "cancelled" ? t("已取消") : t("失败")} {task.skipped > 0 && t(`已跳过 ${task.skipped} 个文件`)} {task.error || ""}</span>
           {task.status === "running" && !task.verifying && !task.resuming && task.kind === "download" && task.speed > 0 && <span>{formatSize(task.sent)}{task.total != null ? ` / ${formatSize(task.total)}` : ""} · {formatSize(task.speed)}/s{task.total != null && task.sent < task.total ? ` · ${t("剩余约")} ${Math.ceil((task.total - task.sent) / task.speed)}s` : ""}</span>}
           {task.status === "running" && (task.verifying || task.resuming
             ? <><progress aria-label={t("正在计算远端校验值…")} value={task.verification?.total > 0 ? Math.min(task.verification.bytes, task.verification.total) : undefined} max={task.verification?.total || 1} />

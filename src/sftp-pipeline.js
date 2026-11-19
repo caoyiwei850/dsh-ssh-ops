@@ -5,7 +5,7 @@ const WINDOW = 64;
 const IDLE_MS = 30000;
 
 /** Write bounded, independent blocks. Report only a contiguous acknowledged prefix. */
-export async function uploadPipeline(sftp, localPath, remotePath, { signal, onProgress, start = 0, chunkBytes = CHUNK_BYTES, window = WINDOW, idleMs = IDLE_MS } = {}) {
+export async function uploadPipeline(sftp, localPath, remotePath, { signal, onProgress, start = 0, chunkBytes = CHUNK_BYTES, window = WINDOW, idleMs = IDLE_MS, scheduleWrite = (write) => write() } = {}) {
   const local = await open(localPath, "r");
   let remote;
   let timer;
@@ -56,7 +56,11 @@ export async function uploadPipeline(sftp, localPath, remotePath, { signal, onPr
           if (result.bytesRead !== length) throw new Error("Local file changed during upload");
           if (finished || stopped) return;
           if (signal?.aborted) throw signal.reason ?? new Error("SFTP upload cancelled");
-          await call("write", remote, buffer, 0, length, offset);
+          await scheduleWrite(() => {
+            if (finished || stopped) return;
+            signal?.throwIfAborted();
+            return call("write", remote, buffer, 0, length, offset);
+          });
           if (finished || stopped) return;
           completed.set(offset, length);
           while (completed.has(committed)) {

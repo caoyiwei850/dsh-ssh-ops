@@ -282,10 +282,11 @@ export class SshApi {
   }
 
   /** Stream a browser File and report bytes sent to the host. Resolves after SFTP closes. */
-  sftpUploadFile(connectionId, path, file, onProgress, signal) {
+  sftpUploadFile(connectionId, path, file, onProgress, signal, { overwrite = true } = {}) {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       const query = new URLSearchParams({ connectionId, path });
+      if (!overwrite) query.set("overwrite", "false");
       xhr.open("PUT", `/ssh-ops/stream/file?${query}`);
       xhr.upload.onprogress = (event) => onProgress?.(event.loaded, file.size);
       xhr.upload.onload = () => onProgress?.(file.size, file.size);

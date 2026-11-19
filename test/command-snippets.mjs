@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { availableCommandSnippets, defaultCommandSnippets, matchingCommandSnippets, searchCommandSnippets } from "../src/client/command-snippets.js";
+import { availableCommandSnippets, defaultCommandSnippets, expandSnippet, matchingCommandSnippets, searchCommandSnippets, snippetParameters } from "../src/client/command-snippets.js";
 
 const STARTER_COMMAND_SNIPPETS = defaultCommandSnippets().map((item) => [item.name, item.command]);
 
@@ -22,5 +22,11 @@ assert.ok(STARTER_COMMAND_SNIPPETS.some(([name, command]) => name.includes("Ubun
 assert.ok(STARTER_COMMAND_SNIPPETS.some(([name, command]) => name.includes("RHEL") && command === "sudo dnf upgrade"));
 assert.ok(STARTER_COMMAND_SNIPPETS.some(([name, command]) => name.includes("重启（会变更）") && command.includes("systemctl restart")));
 assert.ok(STARTER_COMMAND_SNIPPETS.some(([name, command]) => name.includes("健康检查") && command.includes("/health")));
+
+assert.deepEqual(snippetParameters("diff {{路径}} {{other}} {{路径}}"), ["路径", "other"]);
+assert.equal(expandSnippet("tail -- {{path}}", { path: "/srv/it's running.log" }), "tail -- '/srv/it'\\''s running.log'");
+assert.equal(expandSnippet("tail -- {{path}}", { path: "a\nb" }), null, "parameter input cannot submit another terminal line");
+assert.equal(expandSnippet('tail -- "{{path}}"', { path: "a b" }), null, "templates cannot wrap a placeholder in shell quotes");
+assert.equal(expandSnippet("tail -- {{path}}", {}), null);
 
 console.log("command snippets: scope filtering passed");
