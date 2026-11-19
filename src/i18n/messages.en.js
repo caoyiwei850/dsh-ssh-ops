@@ -9,6 +9,23 @@
  * `npm run i18n:extract` — it reports missing and orphaned entries.
  */
 export const en = {
+  "SSH 资源设置": "SSH resource settings",
+  "功能开关": "Features",
+  "对话中的 AI 工具": "AI tools in chat",
+  "数据库工具": "Database tools",
+  "端口转发工具": "Port forwarding tools",
+  "会话日志工具": "Session log tools",
+  "工具设置已保存，重启 DSH 后生效。": "Tool settings saved. Restart DSH to apply them.",
+  "修改 AI 工具开关后需重启 DSH。": "Changes to AI tool availability require a DSH restart.",
+  "数据库工具已由 DSH_SSH_OPS_REGISTER_DB_TOOLS 环境变量关闭。": "Database tools are disabled by the DSH_SSH_OPS_REGISTER_DB_TOOLS environment variable.",
+  "右侧 SSH 面板标签": "Right sidebar SSH tabs",
+  "暂时无法读取功能开关，请确认宿主插件已重新加载。": "Could not load feature settings. Check that DSH has reloaded the plugin.",
+  "勾选要显示的标签，保存后立即生效。": "Choose which tabs to show. Changes apply immediately.",
+  "还没有共享凭据。": "No shared credentials yet.",
+  "允许 AI 按名称连接已保存的服务器，并在右侧打开终端。": "Allow AI to connect to saved servers by name and open their terminals in the sidebar.",
+  "已保存的服务器": "Saved servers",
+  "管理分组": "Manage groups",
+  "分组名称": "Group name",
   "上传文件路径无效": "Invalid upload path",
   "无法合并目录：${next} 已存在且不是普通目录": "Cannot merge folder: ${next} exists and is not a regular directory",
   "上传目录并合并已有目录": "Upload a folder and merge matching directories",

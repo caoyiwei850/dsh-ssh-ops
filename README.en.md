@@ -6,10 +6,12 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.4.11-blue)
+![version](https://img.shields.io/badge/version-0.4.12-blue)
 [![dsh.so risk](https://www.dsh.so/badge/dsh-ssh-ops.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![dsh.so install · dsh 0.2.2-rc.1](https://cdn.dsh.so/badge/install/dsh-ssh-ops@0.2.2-rc.1.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/?ref=badge-install)
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/caoyiwei850/dsh-ssh-ops)
+
+> **v0.4.12** reorganizes SSH Resources and adds independent AI tool and sidebar tab switches. See the [release notes](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.4.12).
 
 > **v0.4.11** adds upload conflict handling, parameterized command snippets, and terminal input priority during uploads. It also restores editing for saved database connections. See the [release notes](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.4.11).
 
@@ -41,17 +43,25 @@
 
 ## Screenshots
 
-Drive the connected server from the main conversation while the interactive SSH terminal sits beside it as an official right-Sidebar tab:
+Select **Connect server** in the right SSH sidebar to open a remote terminal.
 
-![Main conversation with the SSH terminal in the official Sidebar](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/official-sidebar-terminal.png)
+![Connect server action in the right SSH sidebar](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/official-sidebar-connect.png)
 
-The Files tab provides SFTP management and can `cd` the interactive terminal into the selected remote directory:
+Ask about server status in the conversation and view the terminal output beside it.
 
-![SFTP file management and cd in the official Sidebar](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/official-sidebar-files-cd.png)
+![Server memory check in the conversation beside the SSH terminal output](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/official-sidebar-terminal.png)
 
-![Database management](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/db-panel.png)
+Search, add, import, or export servers under **Server groups**.
 
-![SSH resources](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/ssh-resources.png)
+![Server groups in SSH Resources](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/ssh-resources.png)
+
+Manage command approvals and AI auto-connect under **AI command execution policy**.
+
+![AI command execution policy and auto-connect](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/ssh-resources-ai-policy.png)
+
+Manage AI tools and sidebar tabs independently under **Features**.
+
+![Feature switches for AI tools and SSH sidebar tabs](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/ssh-resources-features.png)
 
 ## What it does
 
@@ -104,7 +114,7 @@ Local `link:`, Git, and archive installations do not display the host's registry
 ### From GitHub
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.11
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.12
 ```
 
 The git channel installs source; the `prepare` hook runs `npm run build` during install to produce the `lib/` entry files, so no manual build is needed. **Note: pnpm ≥ 10 blocks dependency build scripts by default** — if the SSH tab does not appear after restart, check `node_modules/dsh-ssh-ops/lib/` as described in [INSTALL.md](INSTALL.md) step 3: if it is missing, the build was blocked; run `npm install && npm run build` inside that package directory (or allowlist `dsh-ssh-ops` in the profile's pnpm `onlyBuiltDependencies`) and restart.
@@ -119,21 +129,21 @@ Open any session, click the top **SSH** tab, and use the right-side panel to con
 
 ### From a release archive
 
-Download `dsh-ssh-ops-0.4.11.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.4.11), then:
+Download `dsh-ssh-ops-0.4.12.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.4.12), then:
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.4.11.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.4.12.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.4.11.zip` is for offline review or further development; extract it and run `npm install` in the directory (the build runs automatically).
+`dsh-ssh-ops-0.4.12.zip` is for offline review or further development; extract it and run `npm install` in the directory (the build runs automatically).
 
 ## Usage
 
 1. Open **Settings → SSH Resources** and create a group or server resource; PEM / `.key` files can be imported directly.
 2. A saved resource can be "connect & open" to auto-create a right-side PTY terminal. When editing, leaving a secret field blank keeps the existing value; clearing credentials requires explicit confirmation.
 3. The top **SSH** only toggles the right-side terminal; the `+` in the top-right picks a saved resource or creates a non-persistent temporary connection.
-4. In the main conversation, just say "check server memory usage" or "configure the Nginx SSL certificate". The agent can only operate the active connection and cannot read credentials; by default it also cannot enumerate saved resources or auto-connect with saved credentials — after enabling the switch in **Settings → SSH resources → AI auto-connect**, the agent may connect saved servers by name and switch the active connection (every connect opens a terminal in the right-side panel, so the operator always sees which machine the agent is on).
+4. In the main conversation, just say "check server memory usage" or "configure the Nginx SSL certificate". The agent can only operate the active connection and cannot read credentials; by default it also cannot enumerate saved resources or auto-connect with saved credentials — after enabling the switch in **Settings → SSH Resources → AI command execution policy → AI auto-connect**, the agent may connect saved servers by name and switch the active connection (every connect opens a terminal in the right-side panel, so the operator always sees which machine the agent is on).
 5. For databases, have the agent call `db_connect` (or create a connection yourself in the Database tab), then query/execute from the conversation.
 6. The plugin UI language **automatically follows DSH's own language setting** (中文 / English): switching repaints the whole plugin UI immediately, agent-visible tool messages follow via write-back both live and after restart, and the settings-nav label and glyph for this plugin follow along.
 
@@ -159,7 +169,7 @@ dsh web
 - Edit the file while the harness is **stopped** (a running instance may rewrite it on load) and restart the harness afterwards to apply the change.
 ### Agent tools
 
-There are 41 agent tools (including 15 database tools, which can be disabled). Omitting `connection_id` / `db_connection_id` targets the active connection — **no need to call `ssh_list` / `db_list_connections` first**.
+The plugin registers 41 agent tools by default. You can disable the database, port forwarding, and session log tool groups separately under **Settings → SSH Resources → Features**. Restart DSH to apply changes. Omitting `connection_id` / `db_connection_id` targets the active connection. There is no need to call `ssh_list` / `db_list_connections` first.
 
 #### SSH (7)
 
@@ -249,8 +259,8 @@ Pushing a `vX.Y.Z` tag that matches `package.json.version` runs tests, builds th
 
 Artifacts are written to `release/`:
 
-- `dsh-ssh-ops-0.4.11.tgz`: installable directly by DSH.
-- `dsh-ssh-ops-0.4.11.zip`: full offline source archive.
+- `dsh-ssh-ops-0.4.12.tgz`: installable directly by DSH.
+- `dsh-ssh-ops-0.4.12.zip`: full offline source archive.
 
 ## License
 

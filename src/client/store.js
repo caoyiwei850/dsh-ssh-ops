@@ -10,6 +10,7 @@ import { requestPaneOpen } from "./pane-selection.js";
 let snapshot = {
   connections: [],
   activeConnectionId: null,
+  features: null,
   // A settings-page "进入项目" request gives the first mounted SSH pane a
   // starting SFTP directory matching the guarded terminal cd.
   projectTarget: null,
@@ -37,6 +38,10 @@ export function subscribeSshUi(listener) {
 
 export function useSshUi() {
   return useSyncExternalStore(subscribeSshUi, getSshUiSnapshot);
+}
+
+export function sshUiSetFeatures(features) {
+  set({ features });
 }
 
 /**

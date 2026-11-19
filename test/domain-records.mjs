@@ -9,6 +9,7 @@
 // partially-constructed service (same style as test/project-directory.mjs);
 // known hosts are driven through the real KnownHosts writer (src/hostkey.js).
 import assert from "node:assert/strict";
+import { Service } from "@deepseek-ai/cordis";
 import SshOpsService, {
   credentialDomainSpec,
   dbProfileDomainSpec,
@@ -208,4 +209,54 @@ function makeService({ credentials, dbProfiles }) {
   assert.equal(materialized.language, "zh", "the stored language is kept when materializing");
 }
 
-console.log("domain records: credential, DB-profile and known-host writes round-trip through their boot-time schemas; settings language pin round-trips and is reported");
+// Boot the real init hook against one durable settings table, then start a
+// second service with that same table to exercise tool registration at restart.
+{
+  const settings = fakeTable();
+  const start = async (registerDbAgentTools = true) => {
+    const names = [];
+    const service = Object.create(SshOpsService.prototype);
+    service.config = { registerDbAgentTools };
+    service.ctx = {
+      effect() {},
+      inject() {},
+      storageDomain: { async open(spec) {
+        return { close() {}, table: () => spec === settingsDomainSpec ? settings : fakeTable() };
+      } },
+      tools: { register(tool) { names.push(tool.name); } }
+    };
+    await service[Service.init]();
+    return { service, names };
+  };
+  const first = await start();
+  assert.equal(first.names.filter((name) => name.startsWith("db_")).length, 15);
+  assert.equal(first.names.filter((name) => name.startsWith("tunnel_")).length, 3);
+  assert.equal(first.names.filter((name) => name.startsWith("ssh_session_log_")).length, 3);
+  await first.service.agentSettingsSave({ agentAutoConnect: true });
+  const changed = await first.service.agentSettingsSave({ features: { dbTools: false, showSnippets: false } });
+  assert.equal(changed.value.agentAutoConnect, true);
+  assert.equal(changed.value.toolRestartRequired, true);
+  assert.equal(changed.value.features.showSnippets, false);
+  assert.equal(changed.value.features.showDatabase, true);
+  await first.service.agentSettingsSave({ features: { tunnelTools: false } });
+  settingsDomainSpec.tables.settings.valueSchema.parse(settings.get("main"));
+
+  const restarted = await start();
+  assert.equal(restarted.names.some((name) => /^(db_|tunnel_)/.test(name)), false);
+  assert.ok(restarted.names.includes("ssh_exec"));
+  assert.equal((await restarted.service.agentSettingsGet()).value.toolRestartRequired, false);
+  const hiddenLogs = await restarted.service.agentSettingsSave({ features: { showLogs: false } });
+  assert.equal(hiddenLogs.value.features.showLogs, false);
+  assert.equal(hiddenLogs.value.features.logTools, true);
+  assert.equal(hiddenLogs.value.toolRestartRequired, false);
+  const disabledLogs = await restarted.service.agentSettingsSave({ features: { logTools: false } });
+  assert.equal(disabledLogs.value.toolRestartRequired, true);
+  await restarted.service.agentSettingsSave({ features: { dbTools: true, showLogs: true } });
+  const locked = await start(false);
+  assert.equal(locked.names.some((name) => name.startsWith("db_")), false);
+  assert.equal(locked.names.some((name) => name.startsWith("ssh_session_log_")), false);
+  assert.ok(locked.names.includes("ssh_exec"));
+  assert.equal((await locked.service.agentSettingsGet()).value.dbToolsLocked, true);
+}
+
+console.log("domain records: credential, DB-profile, known-host and operator settings round-trip; feature settings control startup registrations");

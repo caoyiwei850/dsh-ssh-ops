@@ -94,6 +94,10 @@ export class SshApi {
     return this.call("agentSettingsGet", {});
   }
 
+  saveFeatureSettings(features) {
+    return this.call("agentSettingsSave", { features });
+  }
+
   agentSettingsSave(agentAutoConnect, execPolicy, execPolicyAllow, defaultUsername, execPolicyExact) {
     const request = { agentAutoConnect };
     // Policy fields are optional so existing callers (tests, older panes)

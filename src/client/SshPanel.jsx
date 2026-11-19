@@ -21,7 +21,7 @@ import { getDisplaySettings, subscribeDisplaySettings } from "./terminal-display
 import { terminalTheme, subscribeHostTheme, getHostTheme } from "./terminal-display/theme.js";
 import { isMacPlatform, runFind, searchResultLabel, searchShortcutLabel, searchShortcutMatches } from "./terminal-search.js";
 import { XTERM_CSS } from "./xterm-css.js";
-import { useSshUi, sshUiSetActiveConnection, sshUiSetBusy, sshUiSetConnections, sshUiSetError, sshUiAnnounceAgentConnections } from "./store.js";
+import { getSshUiSnapshot, useSshUi, sshUiSetActiveConnection, sshUiSetBusy, sshUiSetConnections, sshUiSetError, sshUiSetFeatures, sshUiAnnounceAgentConnections } from "./store.js";
 import { IconRobot16 } from "./IconRobot16.jsx";
 import { SshFiles } from "./SshFiles.jsx";
 import { SshTunnels } from "./SshTunnels.jsx";
@@ -1030,6 +1030,24 @@ export function SshPanel({ api, credentials, viewId = DEFAULT_VIEW_ID, viewSigna
   const ui = useSshUi();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [tab, setTab] = useState("terminal");
+  const showDatabase = ui.features?.showDatabase !== false;
+  const showTunnels = ui.features?.showTunnels !== false;
+  const showSnippets = ui.features?.showSnippets !== false;
+  const showLogs = ui.features?.showLogs !== false;
+  useEffect(() => {
+    let alive = true;
+    const before = getSshUiSnapshot().features;
+    api.agentSettingsGet().then(({ features }) => {
+      if (alive && features && getSshUiSnapshot().features === before) sshUiSetFeatures(features);
+    }).catch(() => {});
+    return () => { alive = false; };
+  }, [api]);
+  useEffect(() => {
+    const visibleTabs = { database: showDatabase, tunnels: showTunnels, snippets: showSnippets, logs: showLogs };
+    if (visibleTabs[tab] === false) {
+      setTab("terminal");
+    }
+  }, [tab, showDatabase, showTunnels, showSnippets, showLogs]);
   const terminalDisplay = useSyncExternalStore(subscribeDisplaySettings, getDisplaySettings);
   useSyncExternalStore(subscribeHostTheme, getHostTheme);
   const terminalColors = terminalTheme(terminalDisplay.theme, terminalDisplay.backgrounds);
@@ -1351,7 +1369,7 @@ export function SshPanel({ api, credentials, viewId = DEFAULT_VIEW_ID, viewSigna
           ["files", t("文件")],
           ["tunnels", t("转发")],
           ["snippets", t("快捷命令")]
-        ].map(([key, label]) => (
+        ].filter(([key]) => (key !== "tunnels" || showTunnels) && (key !== "snippets" || showSnippets)).map(([key, label]) => (
           <button
             key={key}
             onClick={() => {
@@ -1369,7 +1387,7 @@ export function SshPanel({ api, credentials, viewId = DEFAULT_VIEW_ID, viewSigna
             {label}
           </button>
         ))}
-        <button
+        {showDatabase && <button
           onClick={() => setTab("database")}
           style={{
             ...panelStyles.tab,
@@ -1378,15 +1396,15 @@ export function SshPanel({ api, credentials, viewId = DEFAULT_VIEW_ID, viewSigna
           title={t("数据库连接与查询")}
         >
           {t("数据库")}
-        </button>
-        <button
+        </button>}
+        {showLogs && <button
           onClick={() => setTab("logs")}
           style={{
             ...panelStyles.tab,
             ...(tab === "logs" ? panelStyles.tabActive : {})
           }}
           title={t("已录制的会话日志（可搜索、下载）")}
-        >{t("日志")}</button>
+        >{t("日志")}</button>}
       </div>
 
       {!batchTask && pendingBatchCount > 0 && (
@@ -1442,24 +1460,24 @@ export function SshPanel({ api, credentials, viewId = DEFAULT_VIEW_ID, viewSigna
                 />
               </div>
             </TabErrorBoundary>
-            <TabErrorBoundary key="tunnels">
+            {showTunnels && <TabErrorBoundary key="tunnels">
               <div style={{ ...panelStyles.tabPane, display: tab === "tunnels" ? "flex" : "none" }}>
                 <SshTunnels api={api} connectionId={active.connectionId} />
               </div>
-            </TabErrorBoundary>
+            </TabErrorBoundary>}
           </>
         )}
-        <TabErrorBoundary key="database">
+        {showDatabase && <TabErrorBoundary key="database">
           <div style={{ ...panelStyles.tabPane, display: tab === "database" ? "flex" : "none" }}>
             <SshDatabase api={api} />
           </div>
-        </TabErrorBoundary>
-        <TabErrorBoundary key="logs">
+        </TabErrorBoundary>}
+        {showLogs && <TabErrorBoundary key="logs">
           <div style={{ ...panelStyles.tabPane, display: tab === "logs" ? "flex" : "none" }}>
             <SshLogs api={api} />
           </div>
-        </TabErrorBoundary>
-        <TabErrorBoundary key="snippets">
+        </TabErrorBoundary>}
+        {showSnippets && <TabErrorBoundary key="snippets">
           <div style={{ ...panelStyles.tabPane, display: tab === "snippets" ? "flex" : "none" }}>
             <div style={panelStyles.snippetPage}>
               <div style={panelStyles.snippetPageHeading}>{t("快捷命令")}</div>
@@ -1506,7 +1524,7 @@ export function SshPanel({ api, credentials, viewId = DEFAULT_VIEW_ID, viewSigna
               </div>
             </div>
           </div>
-        </TabErrorBoundary>
+        </TabErrorBoundary>}
       </div>
 
       {dialogOpen && <ConnectDialog api={api} credentials={credentials} onConnected={openConnectionInPane} onClose={() => setDialogOpen(false)} />}

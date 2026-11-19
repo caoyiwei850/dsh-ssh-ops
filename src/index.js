@@ -72,6 +72,7 @@ import { registerBatchTools } from "./tools/batch.js";
 import { registerDbTools } from "./tools/db.js";
 import { registerSessionLogTools } from "./tools/session-log.js";
 import { t, setLanguage } from "./i18n/core.js";
+import { featureSettingsSchema } from "./schemas.js";
 
 const MAX_BUFFER_BYTES = 2 * 1024 * 1024;
 const MAX_COMMAND_OUTPUT_BYTES = 64 * 1024;
@@ -279,6 +280,7 @@ export const knownHostDomainSpec = defineDomain({
 // optional so records written by older builds keep loading.
 const settingsRecordSchema = z.object({
   agentAutoConnect: z.boolean().optional(),
+  features: featureSettingsSchema.optional(),
   // Interface language chosen by the operator ("zh" | "en"). Absent means
   // "never chosen explicitly", so the settings page adopts whatever DSH
   // Settings → Language is showing and writes that back.
@@ -560,7 +562,6 @@ export default class SshOpsService extends TypertRemoteService {
       try { this.dbOps?.closeAll().catch(() => {}); } catch {}
     }, "ssh-ops: cleanup");
     this.dbOps = new DbOpsManager(this, this.config.maxDbRows);
-    this.registerTools(ctx);
     // Streaming file routes (workbench S6 patch): reactive inject — no hard
     // activation dependency, so compositions without a webserver simply never
     // serve the byte plane. Same registration pattern the typert gateway uses
@@ -602,6 +603,7 @@ export default class SshOpsService extends TypertRemoteService {
       const settingsRecord = this.settingsTable.get(SETTINGS_ROW_ID) ?? {};
       const loaded = loadSettingsRecord(settingsRecord);
       this.agentAutoConnect = loaded.agentAutoConnect;
+      this.featureSettings = settingsRecord.features;
       this.execPolicy = loaded.execPolicy;
       this.execPolicyAllow = loaded.execPolicyAllow;
       this.execPolicyExact = loaded.execPolicyExact;
@@ -633,6 +635,7 @@ export default class SshOpsService extends TypertRemoteService {
     this.remoteWorkspaceTable = workspaceDomain.table("workspaces");
     this.remoteWorkspaces = new RemoteWorkspaceStore(this.remoteWorkspaceTable);
     this.ctx.effect(() => () => workspaceDomain.close(), "ssh-ops: remote workspace domain close");
+    this.registerTools(this.ctx);
     // The model must know which of its tools reach which filesystem. Announced
     // only for a bound workspace, so an ordinary local workspace keeps the
     // system prompt it always had (issue #38).
@@ -2095,8 +2098,7 @@ export default class SshOpsService extends TypertRemoteService {
       // ended. Best effort; a settings hiccup must not fail the save.
       try {
         this.defaultUsername = record.username;
-        const settings = this.settingsTable?.get(SETTINGS_ROW_ID) ?? {};
-        await this.settingsTable.put(SETTINGS_ROW_ID, { ...settings, defaultUsername: record.username });
+        await this.patchSettingsRecord((previous) => ({ ...previous, defaultUsername: record.username }));
       } catch {}
       return {
         ok: true,
@@ -2245,12 +2247,36 @@ export default class SshOpsService extends TypertRemoteService {
 
   // ── agent auto-connect (issue #25) + operator-level switches ───────────────
 
+  async patchSettingsRecord(patch) {
+    const table = this.settingsTable;
+    const previous = table.get(SETTINGS_ROW_ID);
+    // Boot normally materializes the row. Use the atomic update API to keep
+    // writes from different settings surfaces from clobbering each other.
+    if (previous !== undefined && typeof table.update === "function") {
+      return table.update(SETTINGS_ROW_ID, patch);
+    }
+    const next = patch(previous ?? {});
+    await table.put(SETTINGS_ROW_ID, next);
+    return next;
+  }
+
   async agentSettingsGet() {
     const policy = this.globalExecPolicy();
+    const toolGroups = this.configuredToolGroups();
+    const registered = this.registeredToolGroups ?? toolGroups;
     return {
       ok: true,
       value: {
         agentAutoConnect: this.agentAutoConnect,
+        features: {
+          ...toolGroups,
+          showDatabase: this.featureSettings?.showDatabase !== false,
+          showTunnels: this.featureSettings?.showTunnels !== false,
+          showSnippets: this.featureSettings?.showSnippets !== false,
+          showLogs: this.featureSettings?.showLogs !== false
+        },
+        toolRestartRequired: Object.keys(toolGroups).some((key) => registered[key] !== toolGroups[key]),
+        dbToolsLocked: this.config?.registerDbAgentTools === false,
         execPolicy: policy.mode,
         // The STORED checklist, not the tier-normalized one: the panel loads
         // its checkboxes from here, and a tier of standard/allowAll must not
@@ -2267,7 +2293,7 @@ export default class SshOpsService extends TypertRemoteService {
   }
 
   async agentSettingsSave(request) {
-    const agentAutoConnect = request.agentAutoConnect === true;
+    const agentAutoConnect = request.agentAutoConnect ?? (this.agentAutoConnect === true);
     // Policy fields are optional so a panel built before this feature still
     // saves the auto-connect switch without touching the policy.
     //
@@ -2288,36 +2314,29 @@ export default class SshOpsService extends TypertRemoteService {
     const defaultUsername = request.defaultUsername === undefined
       ? (this.defaultUsername ?? null)
       : normalizeDefaultUsername(request.defaultUsername);
+    let saved;
     try {
-      const previous = this.settingsTable.get(SETTINGS_ROW_ID) ?? {};
-      await this.settingsTable.put(SETTINGS_ROW_ID, {
+      saved = await this.patchSettingsRecord((previous) => ({
         ...previous,
-        agentAutoConnect,
-        execPolicy: mode,
-        execPolicyAllow: allow,
-        execPolicyExact: exact,
-        defaultUsername: defaultUsername ?? undefined,
+        ...(request.features ? { features: { ...previous.features, ...request.features } } : {}),
+        agentAutoConnect: request.agentAutoConnect ?? previous.agentAutoConnect ?? agentAutoConnect,
+        execPolicy: request.execPolicy === undefined ? (previous.execPolicy ?? mode) : mode,
+        execPolicyAllow: request.execPolicyAllow === undefined ? (previous.execPolicyAllow ?? allow) : allow,
+        execPolicyExact: request.execPolicyExact === undefined ? (previous.execPolicyExact ?? exact) : exact,
+        defaultUsername: request.defaultUsername === undefined ? (previous.defaultUsername ?? defaultUsername ?? undefined) : (defaultUsername ?? undefined),
         updatedAt: new Date().toISOString()
-      });
+      }));
     } catch (error) {
       return { ok: false, error: fail("agent-settings-save-failed", error.message) };
     }
-    this.agentAutoConnect = agentAutoConnect;
-    this.execPolicy = mode;
-    this.execPolicyAllow = allow;
-    this.execPolicyExact = exact;
-    this.defaultUsername = defaultUsername;
-    return {
-      ok: true,
-      value: {
-        agentAutoConnect: this.agentAutoConnect,
-        execPolicy: mode,
-        execPolicyAllow: allow,
-        execPolicyExact: exact,
-        defaultUsername: this.defaultUsername ?? null,
-        categories: ALL_CATEGORY_KEYS.map((key) => ({ key, label: CATEGORY_LABELS[key] }))
-      }
-    };
+    const loaded = loadSettingsRecord(saved);
+    this.agentAutoConnect = loaded.agentAutoConnect;
+    this.featureSettings = saved.features;
+    this.execPolicy = loaded.execPolicy;
+    this.execPolicyAllow = loaded.execPolicyAllow;
+    this.execPolicyExact = loaded.execPolicyExact;
+    this.defaultUsername = loaded.defaultUsername;
+    return this.agentSettingsGet();
   }
 
   // ── execution policy (operator-only; NEVER registered as an agent tool) ────
@@ -2446,12 +2465,11 @@ export default class SshOpsService extends TypertRemoteService {
       return { ok: false, error: fail("language-unsupported", `the plugin supports "zh" and "en", not "${request.language}"`) };
     }
     try {
-      const previous = this.settingsTable.get(SETTINGS_ROW_ID) ?? {};
-      await this.settingsTable.put(SETTINGS_ROW_ID, {
+      await this.patchSettingsRecord((previous) => ({
         ...previous,
         language: requested ?? undefined,
         updatedAt: new Date().toISOString()
-      });
+      }));
     } catch (error) {
       return { ok: false, error: fail("language-save-failed", error.message) };
     }
@@ -5676,16 +5694,26 @@ export default class SshOpsService extends TypertRemoteService {
 
   // ── Agent tools ────────────────────────────────────────────────────────────
 
+  configuredToolGroups() {
+    return {
+      dbTools: this.config?.registerDbAgentTools !== false && this.featureSettings?.dbTools !== false,
+      tunnelTools: this.featureSettings?.tunnelTools !== false,
+      logTools: this.featureSettings?.logTools !== false
+    };
+  }
+
   registerTools(ctx) {
     // Tool bodies live in src/tools/*; each register function binds this
     // service instance via closure (defineTool invokes execute as a bare
     // function, so the tools reach service methods through this argument).
     registerSshSessionTools(ctx, this);
     registerSftpTools(ctx, this);
-    registerTunnelTools(ctx, this);
+    const groups = this.configuredToolGroups();
+    if (groups.tunnelTools) registerTunnelTools(ctx, this);
     registerBatchTools(ctx, this);
-    if (this.config.registerDbAgentTools !== false) registerDbTools(ctx, this);
-    registerSessionLogTools(ctx, this);
+    if (groups.dbTools) registerDbTools(ctx, this);
+    if (groups.logTools) registerSessionLogTools(ctx, this);
+    this.registeredToolGroups = groups;
   }
 
   // ── internals ──────────────────────────────────────────────────────────────

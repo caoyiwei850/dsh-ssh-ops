@@ -6,7 +6,7 @@
 
 > Drive your servers from the DSH main conversation while keeping a real interactive terminal on the right — plus file management, port forwarding, database access, and multi-server batch execution, all in one plugin.
 
-**Version 0.4.11** · MIT License · [GitHub repository](https://github.com/caoyiwei850/dsh-ssh-ops) · [Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases)
+**Version 0.4.12** · MIT License · [GitHub repository](https://github.com/caoyiwei850/dsh-ssh-ops) · [Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases)
 
 ---
 
@@ -69,7 +69,7 @@ The AI in the main conversation gains **40 tools** in total (see the appendix fo
 **GitHub channel (recommended)**:
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.11
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.12
 ```
 
 This installs source and builds automatically during install. Note that pnpm ≥ 10 blocks build scripts of dependencies by default — if the SSH tab does not appear after a restart, go into `node_modules/dsh-ssh-ops/`, run `npm install && npm run build`, and restart (see [INSTALL.md](../INSTALL.md) for details).
@@ -123,7 +123,7 @@ Talk to it in plain language in the main conversation:
 
 The AI sends commands to the currently connected server, and **the commands and their output appear live in the right-side terminal**, with exit code, duration, and working directory reported back. You can take over manually in the terminal at any time.
 
-> ⚠️ **The AI cannot see your saved assets by default**: it cannot enumerate saved servers or connect to them with stored credentials. To let it connect to a saved server by name, turn on **Settings → SSH Resources → AI auto-connect** (every such connection opens a terminal in the right panel, always visible to the operator).
+> ⚠️ **The AI cannot see your saved assets by default**: it cannot enumerate saved servers or connect to them with stored credentials. To let it connect to a saved server by name, turn on **Settings → SSH Resources → AI command execution policy → AI auto-connect** (every such connection opens a terminal in the right panel, always visible to the operator).
 
 ### Step 4: Manage files
 
@@ -247,7 +247,7 @@ The interface automatically follows DSH's own language (Chinese / English), redr
 ① Did you fully quit and restart DSH? ② On the GitHub channel with pnpm ≥ 10, check whether `node_modules/dsh-ssh-ops/lib/` exists (missing = build script blocked; go into the package and run `npm install && npm run build`).
 
 **The AI says it "cannot enumerate saved resources"?**
-Expected. Turn on **Settings → SSH Resources → AI auto-connect** before the AI can connect to saved servers by name.
+Expected. Turn on **Settings → SSH Resources → AI command execution policy → AI auto-connect** before the AI can connect to saved servers by name.
 
 **The AI wanted to delete something and was blocked — but it is safe. What now?**
 Click "Approve" on the in-conversation confirmation yourself — simple deletions then go to the trash (recoverable); or release that category in the execution policy; or run it yourself in the terminal.
@@ -284,4 +284,4 @@ Omitting `connection_id` / `db_connection_id` targets the currently active conne
 
 ---
 
-*This document matches v0.4.11; for the fine detail consult the [README](../README.en.md) and the [CHANGELOG](../CHANGELOG.md).*
+*This document matches v0.4.12; for the fine detail consult the [README](../README.en.md) and the [CHANGELOG](../CHANGELOG.md).*

@@ -6,10 +6,12 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.4.11-blue)
+![version](https://img.shields.io/badge/version-0.4.12-blue)
 [![dsh.so risk](https://www.dsh.so/badge/dsh-ssh-ops.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![dsh.so install · dsh 0.2.2-rc.1](https://cdn.dsh.so/badge/install/dsh-ssh-ops@0.2.2-rc.1.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/?ref=badge-install)
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/caoyiwei850/dsh-ssh-ops)
+
+> **v0.4.12**：重新整理 SSH 资源设置，可独立开关 AI 工具和右侧面板标签。详见 [版本说明](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.4.12)。
 
 > **v0.4.11** 新增上传冲突处理、带参数的快捷命令和上传时终端输入优先，并修复已保存数据库连接的编辑入口。详见 [版本说明](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.4.11)。
 
@@ -41,17 +43,25 @@
 
 ## 示例
 
-主对话直接指挥已连接的服务器，SSH 终端作为官方右侧边栏标签与对话并排显示：
+在右侧 SSH 面板点击「连接服务器」，打开远程终端。
 
-![主对话与官方侧栏中的 SSH 终端](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/official-sidebar-terminal.png)
+![SSH 面板的连接服务器入口](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/official-sidebar-connect.png)
 
-文件页签支持 SFTP 管理，并可用 `cd` 将交互终端切换到选中的远程目录：
+连接后，可在主对话中查询服务器状态，并在旁边查看终端输出。
 
-![官方侧栏中的 SFTP 文件管理与 cd](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/official-sidebar-files-cd.png)
+![主对话查询服务器内存，右侧终端显示输出](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/official-sidebar-terminal.png)
 
-![数据库管理界面](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/db-panel.png)
+在「服务器分组」中搜索、添加或导入导出服务器。
 
-![SSH 资产管理](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/ssh-resources.png)
+![SSH 资源的服务器分组页](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/ssh-resources.png)
+
+在「AI 命令执行策略」中调整命令审批和 AI 自动连接。
+
+![AI 命令执行策略与自动连接](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/ssh-resources-ai-policy.png)
+
+在「功能开关」中分别管理 AI 工具与右侧面板标签。
+
+![AI 工具和右侧 SSH 面板标签的开关](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/ssh-resources-features.png)
 
 ## 能做什么
 
@@ -109,7 +119,7 @@ Agent 命中上述黑名单时不会被静默拒绝：整个工具调用会在�
 ### 从 GitHub 安装
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.11
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.12
 ```
 
 git 渠道装的是源码，安装期由 `prepare` 钩子自动执行 `npm run build` 生成入口 `lib/`，无需手动构建。**注意：pnpm ≥ 10 默认拦截依赖包的构建脚本**——若重启后 SSH 标签未出现，按 [INSTALL.md](INSTALL.md) 第 3 步检查 `node_modules/dsh-ssh-ops/lib/`：缺失说明构建被拦，进入该包目录执行 `npm install && npm run build`（或在该 profile 的 pnpm 配置 `onlyBuiltDependencies` 中放行 `dsh-ssh-ops`）后重启即可。
@@ -124,21 +134,21 @@ dsh web
 
 ### 从发布压缩包安装
 
-从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.4.11) 下载 `dsh-ssh-ops-0.4.11.tgz` 后：
+从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.4.12) 下载 `dsh-ssh-ops-0.4.12.tgz` 后：
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.4.11.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.4.12.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.4.11.zip` 适用于离线审阅或二次开发；解压后在目录中执行 `npm install`（构建自动完成）。
+`dsh-ssh-ops-0.4.12.zip` 适用于离线审阅或二次开发；解压后在目录中执行 `npm install`（构建自动完成）。
 
 ## 使用方式
 
 1. 打开 **设置 → SSH 资源**，新建分组或服务器资源；PEM / `.key` 文件可直接导入。
 2. 保存的资源可直接“连接并打开”，并自动创建右侧 PTY 终端。编辑时秘密字段留空会保持原值；清除凭据需要显式确认。
 3. 顶部 **SSH** 仅控制右侧终端的显示和隐藏；右上角 `+` 可选择已保存资源，或创建不落盘的临时连接。
-4. 在主对话中直接说“查询服务器内存使用情况”或“配置 Nginx SSL 证书”。主 Agent 只能操作当前活动连接，不能读取凭据；默认也不能枚举保存资源或自动用保存凭据连接——在 **设置 → SSH 资源 → AI 自动连接** 打开开关后，Agent 才能按名称连接已保存服务器并切换当前连接（每次连接都会在右侧面板打开终端，操作者始终可见）。
+4. 在主对话中直接说“查询服务器内存使用情况”或“配置 Nginx SSL 证书”。主 Agent 只能操作当前活动连接，不能读取凭据；默认也不能枚举保存资源或自动用保存凭据连接——在 **设置 → SSH 资源 → AI 命令执行策略 → AI 自动连接** 打开开关后，Agent 才能按名称连接已保存服务器并切换当前连接（每次连接都会在右侧面板打开终端，操作者始终可见）。
 5. 需要数据库时，让 Agent 调 `db_connect`（或自己在「数据库」页签新建连接），随后即可在对话中查询/执行。
 6. 插件界面语言**自动跟随 DSH 自身的语言设置**（中文 / English）：切换即时重绘整个插件界面，Agent 可见的工具消息经回写即时并持久跟随；左侧设置菜单的「SSH 资源」标签与图标也随语言动态变化。
 
@@ -164,7 +174,7 @@ dsh web
 - 请在 Harness **停止**时编辑该文件（运行中的实例在加载时可能会改写它），编辑完成后重启 Harness 使更改生效。
 ### Agent 工具
 
-共 41 个 Agent 工具（其中 15 个数据库工具可配置关闭），省略 `connection_id` / `db_connection_id` 时默认作用于当前活动连接，**无需先调 `ssh_list` / `db_list_connections`**。
+默认注册 41 个 Agent 工具。**设置 → SSH 资源 → 功能开关** 可分别关闭数据库、端口转发和会话日志工具，重启 DSH 后生效。省略 `connection_id` / `db_connection_id` 时默认作用于当前活动连接，**无需先调 `ssh_list` / `db_list_connections`**。
 
 #### SSH（7）
 
@@ -254,8 +264,8 @@ npm run pack:release
 
 生成物位于 `release/`：
 
-- `dsh-ssh-ops-0.4.11.tgz`：可直接被 DSH 安装。
-- `dsh-ssh-ops-0.4.11.zip`：完整离线源码包。
+- `dsh-ssh-ops-0.4.12.tgz`：可直接被 DSH 安装。
+- `dsh-ssh-ops-0.4.12.zip`：完整离线源码包。
 
 ## 许可
 

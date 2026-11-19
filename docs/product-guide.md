@@ -6,7 +6,7 @@
 
 > 在 DSH 主对话里指挥服务器干活，右侧始终留着一台真实交互终端——外加文件管理、端口转发、数据库操作与多机批量执行，全部在一个插件里。
 
-**版本 0.4.11** · MIT 协议 · [GitHub 仓库](https://github.com/caoyiwei850/dsh-ssh-ops) · [Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases)
+**版本 0.4.12** · MIT 协议 · [GitHub 仓库](https://github.com/caoyiwei850/dsh-ssh-ops) · [Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases)
 
 ---
 
@@ -69,7 +69,7 @@
 **GitHub 渠道（推荐）**：
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.11
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.12
 ```
 
 装的是源码，安装期自动构建。注意 pnpm ≥ 10 默认拦截依赖构建脚本——若重启后 SSH 标签没出现，进 `node_modules/dsh-ssh-ops/` 手动执行 `npm install && npm run build` 后再重启（详见 [INSTALL.md](../INSTALL.md)）。
@@ -123,7 +123,7 @@ dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.11
 
 AI 会把命令下发到当前连接的服务器，**命令和回显实时出现在右侧终端**，并回报退出码、耗时、当前目录。你随时可以在终端里手动接管。
 
-> ⚠️ **AI 默认摸不到你的家底**：不能枚举已保存的服务器，也不能用保存的凭据自己连别的机器。想让它按名字连接某台已保存服务器，需在 **设置 → SSH 资源 → AI 自动连接** 打开开关（打开后每次连接都会在右侧面板开终端，操作者始终可见）。
+> ⚠️ **AI 默认摸不到你的家底**：不能枚举已保存的服务器，也不能用保存的凭据自己连别的机器。想让它按名字连接某台已保存服务器，需在 **设置 → SSH 资源 → AI 命令执行策略 → AI 自动连接** 打开开关（打开后每次连接都会在右侧面板开终端，操作者始终可见）。
 
 ### 第 4 步：管文件
 
@@ -247,7 +247,7 @@ AI 会把命令下发到当前连接的服务器，**命令和回显实时出现
 ① 完整退出重启 DSH 了吗；② GitHub 渠道 + pnpm ≥ 10 的环境检查 `node_modules/dsh-ssh-ops/lib/` 是否存在（缺失 = 构建被拦，进包目录 `npm install && npm run build`）。
 
 **AI 说「无法枚举已保存资源」？**
-预期行为。打开 **设置 → SSH 资源 → AI 自动连接** 后，AI 才能按名称连接已保存服务器。
+预期行为。打开 **设置 → SSH 资源 → AI 命令执行策略 → AI 自动连接** 后，AI 才能按名称连接已保存服务器。
 
 **AI 想删东西被拦了，我确认安全，怎么办？**
 在会话内的确认请求上人工点「批准」——简单删除此时进回收站（可恢复）；或到执行策略里按类目放行；或你自己在终端执行。
@@ -284,4 +284,4 @@ AI 会把命令下发到当前连接的服务器，**命令和回显实时出现
 
 ---
 
-*文档对应版本 v0.4.11，功能细节以 [README](../README.md) 与 [CHANGELOG](../CHANGELOG.md) 为准。*
+*文档对应版本 v0.4.12，功能细节以 [README](../README.md) 与 [CHANGELOG](../CHANGELOG.md) 为准。*

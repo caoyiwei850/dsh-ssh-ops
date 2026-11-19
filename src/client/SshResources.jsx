@@ -4,7 +4,7 @@
  * DSH's credentials.set/unset API and are never put in React state after save.
  */
 import * as React from "react";
-import { sshUiRequestSurface, sshUiSetConnections, sshUiSetError, sshUiSetProjectTarget } from "./store.js";
+import { sshUiRequestSurface, sshUiSetConnections, sshUiSetError, sshUiSetFeatures, sshUiSetProjectTarget } from "./store.js";
 import { requestPaneOpen } from "./pane-selection.js";
 import { privateKeyProblem } from "./pemkey.js";
 import { t } from "../i18n/core.js";
@@ -600,8 +600,9 @@ export function SshResources({ api, credentials, pluginManager, openPluginManage
   const [resourceQuery, setResourceQuery] = useState("");
   const [connectedProfiles, setConnectedProfiles] = useState(null);
   const [creatingGroup, setCreatingGroup] = useState(false);
-  // Which setup panel the segmented switcher shows: "groups" | "credentials".
   const [setupTab, setSetupTab] = useState("groups");
+  const [featureSettings, setFeatureSettings] = useState(null);
+  const [featureSaving, setFeatureSaving] = useState(false);
   const [knownHosts, setKnownHosts] = useState([]);
   const [forgetBusy, setForgetBusy] = useState(null);
   const [copiedHostKey, setCopiedHostKey] = useState(null);
@@ -667,6 +668,10 @@ export function SshResources({ api, credentials, pluginManager, openPluginManage
       try {
         const settings = await api.agentSettingsGet();
         if (alive) {
+          if (settings.features) {
+            setFeatureSettings(settings);
+            sshUiSetFeatures(settings.features);
+          }
           setAgentAutoConnect(settings.agentAutoConnect === true);
           setExecPolicy(settings.execPolicy ?? "standard");
           setExecPolicyAllow(settings.execPolicyAllow ?? []);
@@ -715,6 +720,20 @@ export function SshResources({ api, credentials, pluginManager, openPluginManage
       setAgentAutoConnect(!next);
     } finally {
       setAgentSaving(false);
+    }
+  };
+
+  const saveFeature = async (key, value) => {
+    setFeatureSaving(true);
+    try {
+      const saved = await api.saveFeatureSettings({ [key]: value });
+      setFeatureSettings(saved);
+      sshUiSetFeatures(saved.features);
+      setError(null);
+    } catch (error) {
+      setError(error?.message ?? String(error));
+    } finally {
+      setFeatureSaving(false);
     }
   };
 
@@ -879,6 +898,16 @@ export function SshResources({ api, credentials, pluginManager, openPluginManage
     }
   };
 
+  const removeSharedCredential = async (item) => {
+    if (!window.confirm(t(`删除共享凭据“${item.name}”？仍被服务器或跳板机引用时不会删除。`))) return;
+    try {
+      await api.credentialDelete(item.credentialId);
+      await refresh({ showLoading: false });
+    } catch (cause) {
+      setError(cause?.message ?? String(cause));
+    }
+  };
+
   const groupedProfiles = new Map(groups.map((group) => [group.groupId, []]));
   const ungrouped = [];
   const query = resourceQuery.trim().toLowerCase();
@@ -936,40 +965,83 @@ export function SshResources({ api, credentials, pluginManager, openPluginManage
         <div style={styles.titleRow}>
           <h2 style={styles.heading}>{t("SSH 资源")}</h2>
           <span className="dsh-ssh-ops-version" title={t("当前安装的插件版本")}>v{PLUGIN_VERSION}</span>
-          <div style={styles.titleLinks}>
-            <a className="dsh-ssh-ops-ubtn outline" href={GITHUB_URL} target="_blank" rel="noreferrer" title={GITHUB_URL}>
-              <span className="dsh-ssh-ops-ubtn-icon"><GitHubMarkIcon /></span>GitHub
-            </a>
-            <button type="button" className="dsh-ssh-ops-ubtn outline" onClick={openUpdateDialog}>
-              <span className="dsh-ssh-ops-ubtn-icon"><RefreshIcon /></span>{t("更新指引")}
-            </button>
-          </div>
         </div>
-        <div style={styles.headerActions}>
-          <label className="dsh-ssh-ops-agent-toggle" style={styles.agentToggle}>
-            <input type="checkbox" checked={agentAutoConnect === true} disabled={agentAutoConnect === null || agentSaving} onChange={toggleAgentAutoConnect} style={styles.agentToggleBox} />
-            <span>{t("AI 自动连接")}</span>
-            <span role="tooltip" className="dsh-ssh-ops-agent-toggle-tip">{t("开启后，对话中的 AI 可按名称自行连接这里保存的服务器并切换当前连接（ssh_connect_profile）；每次连接都会在右侧面板打开终端，操作者始终可见。关闭时 AI 只能请你手动连接。默认关闭。")}</span>
-          </label>
-          <button type="button" style={styles.primary} onClick={() => setEditor({ mode: "new" })}>{t("新增服务器")}</button>
+        <div style={styles.titleLinks}>
+          <a className="dsh-ssh-ops-ubtn outline" href={GITHUB_URL} target="_blank" rel="noreferrer" title={GITHUB_URL}>
+            <span className="dsh-ssh-ops-ubtn-icon"><GitHubMarkIcon /></span>GitHub
+          </a>
+          <button type="button" className="dsh-ssh-ops-ubtn outline" onClick={openUpdateDialog}>
+            <span className="dsh-ssh-ops-ubtn-icon"><RefreshIcon /></span>{t("更新指引")}
+          </button>
         </div>
       </div>
-      <div className="dsh-ssh-ops-segmented" style={styles.segmented} role="tablist" aria-label={t("服务器分组、共享凭据与执行策略")}>
-        <span className="dsh-ssh-ops-segmented-thumb" aria-hidden="true" style={{ ...styles.segmentThumb, transform: `translateX(calc(${["groups", "credentials", "policy"].indexOf(setupTab)} * (100% + 3px)))` }} />
+      <div className="dsh-ssh-ops-segmented" style={styles.segmented} role="tablist" aria-label={t("SSH 资源设置")}>
+        <span className="dsh-ssh-ops-segmented-thumb" aria-hidden="true" style={{ ...styles.segmentThumb, transform: `translateX(calc(${["groups", "credentials", "policy", "features"].indexOf(setupTab)} * (100% + 3px)))` }} />
         <button type="button" role="tab" aria-selected={setupTab === "groups"} onClick={() => setSetupTab("groups")} className="dsh-ssh-ops-segment" style={setupTab === "groups" ? styles.segmentActive : styles.segment}>{t("服务器分组")}</button>
         <button type="button" role="tab" aria-selected={setupTab === "credentials"} onClick={() => setSetupTab("credentials")} className="dsh-ssh-ops-segment" style={setupTab === "credentials" ? styles.segmentActive : styles.segment}>{t("共享 SSH 凭据")}</button>
         <button type="button" role="tab" aria-selected={setupTab === "policy"} onClick={() => setSetupTab("policy")} className="dsh-ssh-ops-segment" style={setupTab === "policy" ? styles.segmentActive : styles.segment}>{t("AI 命令执行策略")}</button>
+        <button type="button" role="tab" aria-selected={setupTab === "features"} onClick={() => setSetupTab("features")} className="dsh-ssh-ops-segment" style={setupTab === "features" ? styles.segmentActive : styles.segment}>{t("功能开关")}</button>
       </div>
-      {setupTab === "groups" && <section style={styles.groupPanel}>
-        <div style={styles.groupCreate}><input value={newGroupName} onChange={(event) => setNewGroupName(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") createGroup(); }} placeholder={t("例如：生产环境")} style={{ ...styles.input, flex: 1, minWidth: 0, maxWidth: 340 }} /><button type="button" disabled={creatingGroup || !newGroupName.trim()} onClick={createGroup} style={styles.secondary}>{creatingGroup ? t("创建中…") : t("创建")}</button><button type="button" onClick={() => setBackupMode("export")} style={styles.secondary}>{t("导出")}</button><button type="button" onClick={() => setBackupMode("choose")} style={styles.secondary}>{t("导入")}</button></div>
-        {groups.length > 0 && <div style={styles.groupChips}>{groups.map((group) => <span key={group.groupId} style={styles.groupChip}>{t(`${group.name}（${group.profileCount}）`)}<button type="button" onClick={() => deleteGroup(group)} title={t(`删除分组 ${group.name}`)} style={styles.chipDelete}>×</button></span>)}</div>}
-      </section>}
-      {setupTab === "credentials" && <section style={styles.groupPanel}><button type="button" onClick={() => setCredentialEditor({})} style={styles.secondary}>{t("新增共享凭据")}</button>{sharedCredentials.length > 0 && <div style={styles.credentialList}>{sharedCredentials.map((item) => <div key={item.credentialId} style={styles.credentialRow}><span title={item.name} style={styles.credentialLabel}>{item.name} · {item.authKind === "key" ? t("私钥") : t("密码")}{item.secondaryConfigured ? " + " + (item.authKind === "key" ? t("密码") : t("私钥")) : ""} · {item.credentialConfigured ? t("已保存") : t("未配置")}</span><span style={styles.credentialActions}><button type="button" onClick={() => setCredentialEditor(item)} title={t(`编辑共享凭据 ${item.name}`)} aria-label={t(`编辑共享凭据 ${item.name}`)} style={styles.iconButton}>✎</button><button type="button" onClick={async () => { if (!window.confirm(t(`删除共享凭据“${item.name}”？仍被服务器或跳板机引用时不会删除。`))) return; try { await api.credentialDelete(item.credentialId); await refresh({ showLoading: false }); } catch (cause) { setError(cause?.message ?? String(cause)); } }} title={t(`删除共享凭据 ${item.name}`)} aria-label={t(`删除共享凭据 ${item.name}`)} style={{ ...styles.iconButton, color: "#f07171" }}>×</button></span></div>)}</div>}</section>}
-      {setupTab === "policy" && <section style={{ ...styles.groupPanel, ...styles.policyPanel }}>
-          <div style={styles.policyHead}>
-            <div style={styles.groupTitle}>{t("AI 命令执行策略")}</div>
-            <div style={styles.policyHint}>{t("控制 AI（agent）发起的破坏性命令拦截强度。你在右侧终端亲手敲的命令不受影响。")}</div>
+      {error && <div style={styles.error} role="alert">{error}</div>}
+      {setupTab === "features" && (featureSettings?.features ? <div style={styles.featureGrid}>
+        <section style={styles.groupPanel}>
+          <h3 style={styles.sectionTitle}>{t("对话中的 AI 工具")}</h3>
+          <p style={styles.sectionHint} role="status">{featureSettings.toolRestartRequired ? t("工具设置已保存，重启 DSH 后生效。") : t("修改 AI 工具开关后需重启 DSH。")}</p>
+          <div style={styles.settingRows}>
+            {[
+              ["dbTools", t("数据库工具")],
+              ["tunnelTools", t("端口转发工具")],
+              ["logTools", t("会话日志工具")]
+            ].map(([key, label]) => <label key={key} style={styles.settingRow}>
+              <span>{label}{key === "dbTools" && featureSettings.dbToolsLocked && <small style={styles.settingDetail}>{t("数据库工具已由 DSH_SSH_OPS_REGISTER_DB_TOOLS 环境变量关闭。")}</small>}</span>
+              <input type="checkbox" style={styles.settingCheck} checked={featureSettings.features[key] !== false} disabled={featureSaving || (key === "dbTools" && featureSettings.dbToolsLocked)} onChange={(event) => saveFeature(key, event.target.checked)} />
+            </label>)}
           </div>
+        </section>
+        <section style={styles.groupPanel}>
+          <h3 style={styles.sectionTitle}>{t("右侧 SSH 面板标签")}</h3>
+          <p style={styles.sectionHint}>{t("勾选要显示的标签，保存后立即生效。")}</p>
+          <div style={styles.settingRows}>
+            {[
+              ["showDatabase", t("数据库")],
+              ["showTunnels", t("转发")],
+              ["showSnippets", t("快捷命令")],
+              ["showLogs", t("日志")]
+            ].map(([key, label]) => <label key={key} style={styles.settingRow}>
+              <span>{label}</span>
+              <input type="checkbox" style={styles.settingCheck} checked={featureSettings.features[key] !== false} disabled={featureSaving} onChange={(event) => saveFeature(key, event.target.checked)} />
+            </label>)}
+          </div>
+        </section>
+      </div> : <div style={styles.empty}>{t("暂时无法读取功能开关，请确认宿主插件已重新加载。")}</div>)}
+      {setupTab === "credentials" && <section style={styles.groupPanel}>
+        <div style={styles.sectionBar}>
+          <h3 style={styles.sectionTitle}>{t("共享 SSH 凭据")}</h3>
+          <button type="button" onClick={() => setCredentialEditor({})} style={styles.primary}>{t("新增共享凭据")}</button>
+        </div>
+        {loading ? <div style={styles.empty}>{t("加载 SSH 资源中…")}</div> : sharedCredentials.length === 0 ? (
+          <div style={styles.empty}>{t("还没有共享凭据。")}</div>
+        ) : <div style={styles.settingRows}>
+          {sharedCredentials.map((item) => <div key={item.credentialId} style={styles.settingRow}>
+            <div>
+              <div style={styles.credentialName}>{item.name}</div>
+              <small style={styles.settingDetail}>
+                {item.authKind === "key" ? t("私钥") : t("密码")}
+                {item.secondaryConfigured ? " + " + (item.authKind === "key" ? t("密码") : t("私钥")) : ""}
+                {" · "}{item.credentialConfigured ? t("已保存") : t("未配置")}
+              </small>
+            </div>
+            <div style={styles.credentialActions}>
+              <button type="button" onClick={() => setCredentialEditor(item)} title={t(`编辑共享凭据 ${item.name}`)} aria-label={t(`编辑共享凭据 ${item.name}`)} style={styles.iconButton}><ActionIcon kind="edit" /></button>
+              <button type="button" onClick={() => removeSharedCredential(item)} title={t(`删除共享凭据 ${item.name}`)} aria-label={t(`删除共享凭据 ${item.name}`)} style={{ ...styles.iconButton, ...styles.iconDanger }}><ActionIcon kind="delete" /></button>
+            </div>
+          </div>)}
+        </div>}
+      </section>}
+      {setupTab === "policy" && <div style={styles.sectionStack}>
+        <section style={styles.groupPanel}>
+          <h3 style={styles.sectionTitle}>{t("AI 命令执行策略")}</h3>
+          <p style={styles.sectionHint}>{t("控制 AI（agent）发起的破坏性命令拦截强度。你在右侧终端亲手敲的命令不受影响。")}</p>
           <div style={styles.policySegments} role="radiogroup" aria-label={t("AI 命令执行策略")}>
             {["standard", "custom", "allowAll"].map((tier) => (
               <button
@@ -995,22 +1067,24 @@ export function SshResources({ api, credentials, pluginManager, openPluginManage
             ))}
           </div>
           {execPolicy === "custom" && (
-            <div style={styles.policyChecklist}>
-              {policyCategories.map((category) => (
-                <label key={category.key} style={styles.policyCheckItem}>
-                  <input
-                    type="checkbox"
-                    checked={execPolicyAllow.includes(category.key)}
-                    disabled={policySaving || execPolicy === null}
-                    onChange={() => togglePolicyCategory(category.key)}
-                    style={styles.policyCheckBox}
-                  />
-                  <span>{t(category.label)}</span>
-                </label>
-              ))}
+            <div style={styles.sectionStack}>
+              <div style={styles.policyChecklist}>
+                {policyCategories.map((category) => (
+                  <label key={category.key} style={styles.policyCheckItem}>
+                    <input
+                      type="checkbox"
+                      checked={execPolicyAllow.includes(category.key)}
+                      disabled={policySaving || execPolicy === null}
+                      onChange={() => togglePolicyCategory(category.key)}
+                      style={styles.policyCheckBox}
+                    />
+                    <span>{t(category.label)}</span>
+                  </label>
+                ))}
+              </div>
               <Field label={t("精确放行命令")} hint={t("每行一条完整命令，最多 32 条。命令和参数须完全匹配。规则作用于所有采用「自定义放行」的连接。")}>
                 <textarea value={ruleDraft} rows={4} spellCheck={false} disabled={policySaving} onChange={(event) => setRuleDraft(event.target.value)} style={{ ...styles.input, fontFamily: "monospace" }} />
-                <button type="button" disabled={policySaving || ruleDraft === exactRules.join("\n")} onClick={saveExactRules} style={styles.secondary}>{t("保存精确规则")}</button>
+                <button type="button" disabled={policySaving || ruleDraft === exactRules.join("\n")} onClick={saveExactRules} style={{ ...styles.secondary, alignSelf: "flex-start" }}>{t("保存精确规则")}</button>
               </Field>
             </div>
           )}
@@ -1019,53 +1093,84 @@ export function SshResources({ api, credentials, pluginManager, openPluginManage
               {t("全部放行后，AI 删除文件不进回收站、可直接格式化磁盘或重启关机。仅建议用于测试或可丢弃的环境。")}
             </div>
           )}
-      </section>}
-      {error && <div style={styles.error} role="alert">{error}</div>}
-      {profiles.length > 0 && <input type="search" value={resourceQuery} onChange={(event) => setResourceQuery(event.target.value)}
-        aria-label={t("搜索服务器")} placeholder={t("按名称、地址或分组搜索服务器")} style={{ ...styles.input, width: "100%", marginBottom: 12 }} />}
-      {!loading && query && visibleProfiles === 0 && <div style={styles.empty}>{t("没有匹配的服务器。")}</div>}
-      {loading ? <div style={styles.empty}>{t("加载 SSH 资源中…")}</div> : profiles.length === 0 ? <div style={styles.empty}>{t("还没有保存的服务器。新增后可一键连接并打开右侧终端。")}</div> : <div style={styles.groupedList}>{groups.map((group) => {
-        const key = `group:${group.groupId}`;
-        const collapsed = !query && !expandedGroups.has(key);
-        const items = groupedProfiles.get(group.groupId) ?? [];
-        if (query && !items.length) return null;
-        return <section key={group.groupId}>
-          <button type="button" onClick={() => toggleGroup(key)} aria-expanded={!collapsed} style={styles.groupHeadingButton}>
-            <span style={styles.groupHeading}>{collapsed ? "▸" : "▾"} {group.name} <span style={styles.groupCount}>{t(`（${items.length}）`)}</span></span>
-          </button>
-          {!collapsed && (renderProfiles(items) || <div style={styles.groupEmpty}>{t("这个分组还没有服务器。")}</div>)}
-        </section>;
-      })}{ungrouped.length > 0 && (() => {
-        const key = "ungrouped";
-        const collapsed = !query && !expandedGroups.has(key);
-        return <section>
-          <button type="button" onClick={() => toggleGroup(key)} aria-expanded={!collapsed} style={styles.groupHeadingButton}>
-            <span style={styles.groupHeading}>{t(`${collapsed ? "▸" : "▾"} 未分组`)}<span style={styles.groupCount}>{t(`（${ungrouped.length}）`)}</span></span>
-          </button>
-          {!collapsed && renderProfiles(ungrouped)}
-        </section>;
-      })()}</div>}
-      {unmatchedKnownHosts.length > 0 && (
-        <section style={styles.groupPanel}>
-          <div style={styles.groupTitle}>{t("已信任主机（未保存为资源）")}</div>
-          <div style={styles.list}>{unmatchedKnownHosts.map((h) => {
-            const key = `${h.host}:${h.port}`;
-            return (
-              <div key={key} style={styles.card}>
-                <div style={styles.cardMain}>
-                  <div style={styles.cardTitle}>{h.host}:{h.port}</div>
-                  <div style={styles.meta}>{t(`${h.algorithm || "ssh-host-key"} · 首次信任 ${new Date(h.firstSeenAt).toLocaleString()}`)}</div>
-                </div>
-                <div style={styles.cardActions}>
-                  <button type="button" onClick={() => setHostKeyPopup(h)} title={t("查看/复制/忘记主机指纹")} aria-label={t(`查看 ${h.host}:${h.port} 的主机指纹`)} style={styles.iconButton}><ShieldIcon trusted /></button>
-                  <button type="button" disabled={forgetBusy === key} onClick={() => forgetHost(h.host, h.port, t(`删除 ${h.host}:${h.port} 的信任记录？此主机未保存为资源，删除后将从「已信任主机」列表移除；下次连接将重新信任其当前指纹。`))} title={t("删除这条信任记录（仅清理临时使用过的主机）")} aria-label={t(`删除 ${h.host}:${h.port} 的信任记录`)} style={{ ...styles.iconButton, ...styles.iconDanger }}><ActionIcon kind="delete" /></button>
-                  <button type="button" onClick={() => setEditor({ mode: "new", profile: { profileId: undefined, name: h.host, host: h.host, port: h.port, username: "root", authKind: "password", hostKeyMode: "accept-new" } })} title={t("把该服务器保存为 SSH 资源（可改用户名与认证方式）")} style={styles.secondary}>{t("保存为资源")}</button>
-                </div>
-              </div>
-            );
-          })}</div>
         </section>
-      )}
+        <section style={styles.groupPanel}>
+          <label style={{ ...styles.settingRow, padding: 0 }}>
+            <span>
+              <strong style={styles.sectionTitle}>{t("AI 自动连接")}</strong>
+              <small style={styles.settingDetail}>{t("允许 AI 按名称连接已保存的服务器，并在右侧打开终端。")}</small>
+            </span>
+            <input type="checkbox" checked={agentAutoConnect === true} disabled={agentAutoConnect === null || agentSaving} onChange={toggleAgentAutoConnect} style={styles.settingCheck} />
+          </label>
+        </section>
+      </div>}
+      {setupTab === "groups" && <div style={styles.sectionStack}>
+        <section style={styles.groupPanel}>
+          <div style={styles.sectionBar}>
+            <h3 style={styles.sectionTitle}>{t("已保存的服务器")}</h3>
+            <div style={styles.toolbarActions}>
+              <button type="button" onClick={() => setBackupMode("choose")} style={styles.secondary}>{t("导入")}</button>
+              <button type="button" onClick={() => setBackupMode("export")} style={styles.secondary}>{t("导出")}</button>
+              <button type="button" style={styles.primary} onClick={() => setEditor({ mode: "new" })}>{t("新增服务器")}</button>
+            </div>
+          </div>
+          {profiles.length > 0 && <input type="search" value={resourceQuery} onChange={(event) => setResourceQuery(event.target.value)}
+            aria-label={t("搜索服务器")} placeholder={t("按名称、地址或分组搜索服务器")} style={styles.input} />}
+          <details style={styles.groupManager}>
+            <summary style={styles.groupManagerHeading}>{t("管理分组")}</summary>
+            <form style={styles.groupCreate} onSubmit={(event) => { event.preventDefault(); if (!creatingGroup) void createGroup(); }}>
+              <input value={newGroupName} onChange={(event) => setNewGroupName(event.target.value)} aria-label={t("分组名称")} placeholder={t("例如：生产环境")} style={{ ...styles.input, flex: "1 1 160px", width: "auto", minWidth: 0, maxWidth: 340 }} />
+              <button type="submit" disabled={creatingGroup || !newGroupName.trim()} style={styles.secondary}>{creatingGroup ? t("创建中…") : t("创建")}</button>
+            </form>
+            {groups.length > 0 && <div style={styles.groupChips}>{groups.map((group) => <span key={group.groupId} style={styles.groupChip}>
+              {t(`${group.name}（${group.profileCount}）`)}
+              <button type="button" onClick={() => deleteGroup(group)} title={t(`删除分组 ${group.name}`)} aria-label={t(`删除分组 ${group.name}`)} style={styles.chipDelete}>×</button>
+            </span>)}</div>}
+          </details>
+          {loading ? <div style={styles.empty}>{t("加载 SSH 资源中…")}</div> : profiles.length === 0 ? <div style={styles.empty}>{t("还没有保存的服务器。新增后可一键连接并打开右侧终端。")}</div> : query && visibleProfiles === 0 ? <div style={styles.empty}>{t("没有匹配的服务器。")}</div> : <div style={styles.groupedList}>{groups.map((group) => {
+            const key = `group:${group.groupId}`;
+            const collapsed = !query && !expandedGroups.has(key);
+            const items = groupedProfiles.get(group.groupId) ?? [];
+            if (query && !items.length) return null;
+            return <section key={group.groupId} style={styles.groupSection}>
+              <button type="button" onClick={() => toggleGroup(key)} aria-expanded={!collapsed} className="dsh-ssh-ops-group-heading" style={styles.groupHeadingButton}>
+                <span style={styles.groupHeading}>{collapsed ? "▸" : "▾"} {group.name} <span style={styles.groupCount}>{t(`（${items.length}）`)}</span></span>
+              </button>
+              {!collapsed && (renderProfiles(items) || <div style={styles.groupEmpty}>{t("这个分组还没有服务器。")}</div>)}
+            </section>;
+          })}{ungrouped.length > 0 && (() => {
+            const key = "ungrouped";
+            const collapsed = !query && !expandedGroups.has(key);
+            return <section style={styles.groupSection}>
+              <button type="button" onClick={() => toggleGroup(key)} aria-expanded={!collapsed} className="dsh-ssh-ops-group-heading" style={styles.groupHeadingButton}>
+                <span style={styles.groupHeading}>{t(`${collapsed ? "▸" : "▾"} 未分组`)}<span style={styles.groupCount}>{t(`（${ungrouped.length}）`)}</span></span>
+              </button>
+              {!collapsed && renderProfiles(ungrouped)}
+            </section>;
+          })()}</div>}
+        </section>
+        {unmatchedKnownHosts.length > 0 && (
+          <section style={styles.groupPanel}>
+            <div style={styles.groupTitle}>{t("已信任主机（未保存为资源）")}</div>
+            <div style={styles.list}>{unmatchedKnownHosts.map((h) => {
+              const key = `${h.host}:${h.port}`;
+              return (
+                <div key={key} style={styles.card}>
+                  <div style={styles.cardMain}>
+                    <div style={styles.cardTitle}>{h.host}:{h.port}</div>
+                    <div style={styles.meta}>{t(`${h.algorithm || "ssh-host-key"} · 首次信任 ${new Date(h.firstSeenAt).toLocaleString()}`)}</div>
+                  </div>
+                  <div style={styles.cardActions}>
+                    <button type="button" onClick={() => setHostKeyPopup(h)} title={t("查看/复制/忘记主机指纹")} aria-label={t(`查看 ${h.host}:${h.port} 的主机指纹`)} style={styles.iconButton}><ShieldIcon trusted /></button>
+                    <button type="button" disabled={forgetBusy === key} onClick={() => forgetHost(h.host, h.port, t(`删除 ${h.host}:${h.port} 的信任记录？此主机未保存为资源，删除后将从「已信任主机」列表移除；下次连接将重新信任其当前指纹。`))} title={t("删除这条信任记录（仅清理临时使用过的主机）")} aria-label={t(`删除 ${h.host}:${h.port} 的信任记录`)} style={{ ...styles.iconButton, ...styles.iconDanger }}><ActionIcon kind="delete" /></button>
+                    <button type="button" onClick={() => setEditor({ mode: "new", profile: { profileId: undefined, name: h.host, host: h.host, port: h.port, username: "root", authKind: "password", hostKeyMode: "accept-new" } })} title={t("把该服务器保存为 SSH 资源（可改用户名与认证方式）")} style={styles.secondary}>{t("保存为资源")}</button>
+                  </div>
+                </div>
+              );
+            })}</div>
+          </section>
+        )}
+      </div>}
 
       {updateOpen && (
         <UpdateGuidance kind={installKind} openManager={openPluginManager} onClose={() => { updateSequence.current++; setUpdateOpen(false); }} />
@@ -1107,26 +1212,51 @@ const styles = {
   // Do not fall back to a hard-coded dark label here: this client bundle is
   // rendered inside that surface and may not receive DSH's alias variables.
   page: { padding: "20px 2px", color: "inherit", maxWidth: 900 },
-  pageHeader: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 18, marginBottom: 18 },
+  pageHeader: { display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 16 },
   heading: { margin: 0, fontSize: 18 }, description: { margin: "6px 0 0", fontSize: 13, color: "inherit", opacity: 0.76, lineHeight: 1.5 },
-  list: { display: "grid", gap: 10 }, card: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, padding: 14, border: "1px solid var(--dsw-alias-border-l2, #d8dce3)", borderRadius: 10 },
-  cardMain: { minWidth: 0 }, cardTitle: { fontWeight: 650, fontSize: 14, display: "flex", gap: 8, alignItems: "center" }, address: { marginTop: 4, fontSize: 13, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }, meta: { marginTop: 5, fontSize: 12, color: "inherit", opacity: 0.76 },
+  list: { display: "grid", gap: 8 }, card: { display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: "8px 12px", padding: 10, border: "1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.28))", borderRadius: 8 },
+  cardMain: { minWidth: 0, overflowWrap: "anywhere" }, cardTitle: { fontWeight: 650, fontSize: 14, display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }, address: { marginTop: 4, fontSize: 12, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }, meta: { marginTop: 5, fontSize: 12, color: "inherit", opacity: 0.76 },
   connected: { fontSize: 11, color: "#32c56c", background: "rgba(50,197,108,.16)", padding: "2px 6px", borderRadius: 99 }, cardActions: { display: "flex", flexWrap: "nowrap", flexShrink: 0, justifyContent: "flex-end", gap: 7 },
   // Keep the label paired with DSH's primary fill.  In the default dark theme
   // the fill is light, so a hard-coded white label becomes invisible.
   primary: { border: 0, borderRadius: 7, padding: "7px 11px", background: "var(--dsw-alias-button-primary-fill, #2d6cdf)", color: "var(--dsw-alias-label-primary-foreground, #fff)", cursor: "pointer", fontSize: 13, whiteSpace: "nowrap" }, secondary: { border: "1px solid rgba(127,127,127,.55)", borderRadius: 7, padding: "6px 10px", background: "transparent", color: "inherit", cursor: "pointer", fontSize: 13, whiteSpace: "nowrap" }, iconButton: { border: "1px solid rgba(127,127,127,.48)", borderRadius: 8, width: 30, height: 30, padding: 0, display: "inline-flex", alignItems: "center", justifyContent: "center", background: "rgba(127,127,127,.05)", color: "inherit", cursor: "pointer", lineHeight: 1 }, iconPrimary: { borderColor: "rgba(55,115,230,.45)", background: "rgba(55,115,230,.12)", color: "#3b75d9" }, iconDanger: { borderColor: "rgba(240,113,113,.38)", background: "rgba(240,113,113,.08)", color: "#e06060" }, actionTextButton: { border: "1px solid rgba(127,127,127,.48)", borderRadius: 7, padding: "5px 8px", background: "rgba(127,127,127,.05)", color: "inherit", cursor: "pointer", fontSize: 12, whiteSpace: "nowrap" }, actionTextPrimary: { borderColor: "rgba(55,115,230,.45)", background: "rgba(55,115,230,.12)", color: "#3b75d9" }, danger: { border: 0, borderRadius: 7, padding: "6px 8px", background: "transparent", color: "#f07171", cursor: "pointer", fontSize: 13 },
-  empty: { padding: 28, border: "1px dashed rgba(127,127,127,.55)", borderRadius: 10, color: "inherit", opacity: 0.76, textAlign: "center" },
-  groupPanel: { border: "1px solid rgba(127,127,127,.55)", borderRadius: 10, padding: 12, marginBottom: 16, minWidth: 0 }, segmented: { position: "relative", display: "flex", gap: 3, padding: 3, borderRadius: 8, background: "rgba(127,127,127,.14)", border: "1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.22))", marginBottom: 12 },
+  empty: { padding: 16, border: "1px dashed var(--dsw-alias-border-l2, rgba(127,127,127,.35))", borderRadius: 8, fontSize: 13, color: "var(--dsw-alias-label-secondary, inherit)", textAlign: "center" },
+  groupPanel: { display: "grid", alignContent: "start", gap: 10, border: "1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.35))", borderRadius: 10, padding: 14, minWidth: 0 },
+  sectionStack: { display: "grid", gap: 12 },
+  sectionBar: { display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 8 },
+  sectionTitle: { margin: 0, fontSize: 14, fontWeight: 650, lineHeight: "20px" },
+  sectionHint: { margin: 0, fontSize: 12, lineHeight: 1.5, color: "var(--dsw-alias-label-secondary, inherit)" },
+  toolbarActions: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6 },
+  featureGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", alignItems: "stretch", gap: 12 },
+  settingRows: { display: "grid", gap: 0 },
+  settingRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, minHeight: 30, padding: "7px 0", borderTop: "1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.2))", fontSize: 13, overflowWrap: "anywhere" },
+  settingCheck: { accentColor: "var(--dsw-alias-button-primary-fill, #2d6cdf)", width: 15, height: 15, margin: 0, flexShrink: 0, cursor: "pointer" },
+  settingDetail: { display: "block", marginTop: 2, fontSize: 12, lineHeight: 1.45, color: "var(--dsw-alias-label-secondary, inherit)" },
+  credentialName: { fontWeight: 600, lineHeight: 1.45 },
+  segmented: { position: "relative", display: "flex", gap: 3, padding: 3, borderRadius: 8, background: "rgba(127,127,127,.14)", border: "1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.22))", marginBottom: 14 },
   // The track is neutral translucent grey, not a bg-layer token: this surface
   // resolves --dsw-alias-bg-layer-3 to white, which made the unselected segment
   // indistinguishable from the selected pill (2026-10-07).
   // The pill is one absolutely-positioned thumb that slides between segments so
   // switching animates instead of hopping; its width matches one segment and
   // the label buttons paint above it (zIndex 1), keeping hit-testing on them.
-  segmentThumb: { position: "absolute", top: 3, bottom: 3, left: 3, boxSizing: "border-box", width: "calc(33.333% - 4px)", borderRadius: 6, border: "1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.3))", background: "var(--dsw-alias-button-elevated-fill, #fff)", boxShadow: "0 1px 2px rgba(0,0,0,.18)", transition: "transform .18s cubic-bezier(.4,0,.2,1)", pointerEvents: "none" },
-  segment: { position: "relative", zIndex: 1, flex: "1 1 0", minWidth: 0, border: "1px solid transparent", borderRadius: 6, padding: "6px 10px", background: "transparent", color: "var(--dsw-alias-label-secondary, inherit)", cursor: "pointer", font: "inherit", fontSize: 13, lineHeight: "20px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
-  segmentActive: { position: "relative", zIndex: 1, flex: "1 1 0", minWidth: 0, border: "1px solid transparent", borderRadius: 6, padding: "6px 10px", background: "transparent", color: "var(--dsw-alias-label-primary, inherit)", cursor: "default", font: "inherit", fontSize: 13, lineHeight: "20px", fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
-  groupTitle: { fontSize: 13, fontWeight: 650, marginBottom: 8 }, groupCreate: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }, groupChips: { display: "flex", gap: 7, flexWrap: "wrap", marginTop: 10 }, groupChip: { display: "inline-flex", alignItems: "center", gap: 5, padding: "4px 7px", borderRadius: 99, background: "rgba(127,127,127,.16)", fontSize: 12 }, chipDelete: { border: 0, background: "transparent", color: "#f07171", cursor: "pointer", padding: 0, fontSize: 15, lineHeight: 1 }, credentialList: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 6, maxHeight: 168, overflowY: "auto", marginTop: 8, paddingRight: 2 }, credentialRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 5, minWidth: 0 }, credentialActions: { display: "flex", alignItems: "center", gap: 2 }, credentialLabel: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12 }, groupedList: { display: "grid", gap: 18 }, groupHeadingButton: { border: 0, padding: 0, margin: "0 0 8px", background: "transparent", color: "inherit", cursor: "pointer", textAlign: "left" }, groupHeading: { fontSize: 14, fontWeight: 650 }, groupCount: { fontWeight: 400, opacity: 0.72 }, groupEmpty: { padding: 12, color: "inherit", opacity: 0.76, border: "1px dashed rgba(127,127,127,.55)", borderRadius: 8, fontSize: 12 },
+  segmentThumb: { position: "absolute", top: 3, bottom: 3, left: 3, boxSizing: "border-box", width: "calc(25% - 3.75px)", borderRadius: 6, border: "1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.3))", background: "var(--dsw-alias-button-elevated-fill, #fff)", boxShadow: "0 1px 2px rgba(0,0,0,.18)", transition: "transform .18s cubic-bezier(.4,0,.2,1)", pointerEvents: "none" },
+  segment: { position: "relative", zIndex: 1, flex: "1 1 0", minWidth: 0, border: "1px solid transparent", borderRadius: 6, padding: "5px 4px", background: "transparent", color: "var(--dsw-alias-label-secondary, inherit)", cursor: "pointer", fontFamily: "inherit", fontSize: 13, lineHeight: "18px", overflowWrap: "anywhere" },
+  segmentActive: { position: "relative", zIndex: 1, flex: "1 1 0", minWidth: 0, border: "1px solid transparent", borderRadius: 6, padding: "5px 4px", background: "transparent", color: "var(--dsw-alias-label-primary, inherit)", cursor: "default", fontFamily: "inherit", fontSize: 13, lineHeight: "18px", fontWeight: 600, overflowWrap: "anywhere" },
+  groupTitle: { fontSize: 13, fontWeight: 650 },
+  groupManager: { padding: "5px 0", fontSize: 13 },
+  groupManagerHeading: { cursor: "pointer", width: "fit-content", fontWeight: 550 },
+  groupCreate: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginTop: 8 },
+  groupChips: { display: "flex", gap: 7, flexWrap: "wrap", marginTop: 8 },
+  groupChip: { display: "inline-flex", alignItems: "center", gap: 5, padding: "4px 7px", borderRadius: 99, background: "rgba(127,127,127,.12)", fontSize: 12 },
+  chipDelete: { border: 0, background: "transparent", color: "#e06060", cursor: "pointer", padding: "0 2px", fontSize: 15, lineHeight: 1 },
+  credentialActions: { display: "flex", gap: 5, flexShrink: 0 },
+  groupedList: { display: "grid", gap: 5 },
+  groupSection: { minWidth: 0, borderTop: "1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.2))" },
+  groupHeadingButton: { display: "block", width: "100%", border: 0, borderRadius: 6, padding: "8px 4px", background: "transparent", color: "inherit", cursor: "pointer", textAlign: "left", overflowWrap: "anywhere" },
+  groupHeading: { fontSize: 13, fontWeight: 650 },
+  groupCount: { fontWeight: 400, opacity: 0.72 },
+  groupEmpty: { padding: 8, color: "var(--dsw-alias-label-secondary, inherit)", fontSize: 12 },
   snippetForm: { display: "grid", gridTemplateColumns: "minmax(100px,.8fr) minmax(180px,2fr) minmax(110px,.7fr) auto", gap: 8, marginTop: 10, alignItems: "center" }, snippetList: { display: "grid", gap: 7, marginTop: 10 }, snippetItem: { display: "flex", justifyContent: "space-between", gap: 12, padding: "8px 10px", border: "1px solid rgba(127,127,127,.4)", borderRadius: 7, fontSize: 12 }, snippetScope: { marginLeft: 7, opacity: .7 }, snippetCommand: { marginTop: 4, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", opacity: .82, overflowWrap: "anywhere" }, fingerprint: { marginTop: 8, maxWidth: 560, overflowWrap: "anywhere", fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", fontSize: 12, lineHeight: 1.45, opacity: 0.86 }, backdrop: { position: "fixed", inset: 0, zIndex: 2000, background: "rgba(0,0,0,.42)", display: "flex", alignItems: "center", justifyContent: "center" }, dialog: { width: 440, maxWidth: "calc(100vw - 32px)", maxHeight: "calc(100vh - 32px)", overflow: "auto", background: "var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-overlay, #fff))", color: "var(--dsw-alias-label-primary, inherit)", borderRadius: 12, padding: 18, boxShadow: "0 20px 60px rgba(0,0,0,.28)", display: "flex", flexDirection: "column", gap: 11 }, dialogTitle: { fontSize: 16, fontWeight: 650 },
   field: { display: "flex", flexDirection: "column", gap: 5, fontSize: 13 }, hint: { color: "var(--dsw-alias-label-secondary, inherit)", fontWeight: 400 },
   formGrid: { display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 10 }, advNotice: { padding: "10px 12px", borderRadius: 8, border: "1px dashed rgba(127,127,127,.5)", fontSize: 12, lineHeight: 1.6, color: "var(--dsw-alias-label-secondary, inherit)" },
@@ -1146,14 +1276,10 @@ const styles = {
   updateHeading: { margin: "0 0 6px", fontSize: 14, lineHeight: "20px", fontWeight: 600 },
   updateCommand: { display: "flex", alignItems: "flex-start", gap: 8, border: "1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.35))", borderRadius: 7, padding: 10, background: "var(--dsw-alias-bg-layer-3, var(--dsw-alias-bg-layer-1, #101418))" },
   updateCode: { minWidth: 0, flex: 1, fontFamily: "ui-monospace, SFMono-Regular, Consolas, monospace", fontSize: 12, lineHeight: "18px", whiteSpace: "pre-wrap", overflowWrap: "anywhere" },
-  agentToggle: { display: "inline-flex", alignItems: "center", gap: 7, fontSize: 13, whiteSpace: "nowrap", marginTop: 4, cursor: "pointer", color: "inherit" }, agentToggleBox: { accentColor: "#2ea44f", width: 15, height: 15, margin: 0, cursor: "pointer" }, headerActions: { display: "flex", alignItems: "flex-start", gap: 14, flexShrink: 0 }, input: { width: "100%", boxSizing: "border-box", border: "1px solid var(--dsw-alias-border-l4, rgba(127,127,127,.55))", borderRadius: 7, padding: "7px 8px", background: "var(--dsw-alias-bg-layer-1, #101418)", color: "var(--dsw-alias-label-primary, inherit)", fontSize: 13 }, credentialColumns: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10 }, jumpRow: { display: "grid", gridTemplateColumns: "1fr auto", gap: 5, alignItems: "center", marginBottom: 6 }, check: { display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#f07171" }, actions: { display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 }, error: { padding: "8px 10px", borderRadius: 7, background: "rgba(240,113,113,.15)", color: "#ff8a8a", fontSize: 13 },
-  // execution-policy section: width-capped and compact so it reads as a
-  // settings row, not a full-bleed panel.
-  policyPanel: { maxWidth: 620, padding: "10px 12px", marginBottom: 16 },
-  policyHead: { display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 8 },
-  policyHint: { fontSize: 12, color: "var(--dsw-alias-label-tertiary, #8b93a1)", flex: "1 1 260px", minWidth: 0 }, policySegments: { display: "inline-flex", gap: 3, padding: 3, borderRadius: 8, background: "rgba(127,127,127,.14)", border: "1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.22))", marginBottom: 8 }, policySegment: { border: 0, borderRadius: 6, padding: "5px 14px", fontSize: 12, cursor: "pointer", background: "transparent", color: "inherit" }, policySegmentActive: { background: "var(--dsw-alias-bg-layer-3, #232a33)", color: "var(--dsw-alias-label-primary, inherit)", fontWeight: 600, boxShadow: "0 0 0 1px var(--dsw-alias-border-l3, rgba(127,127,127,.4))" }, policySegmentAllowAll: { color: "#d64541" }, policySegmentAllowAllActive: { color: "#f07171" }, policyChecklist: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 6, marginTop: 2 }, policyCheckItem: { display: "inline-flex", alignItems: "center", gap: 7, fontSize: 12, cursor: "pointer", color: "inherit" }, policyCheckBox: { accentColor: "#b7791f", width: 14, height: 14, margin: 0, cursor: "pointer" }
+  input: { width: "100%", boxSizing: "border-box", border: "1px solid var(--dsw-alias-border-l4, rgba(127,127,127,.55))", borderRadius: 7, padding: "7px 8px", background: "var(--dsw-alias-bg-layer-1, #101418)", color: "var(--dsw-alias-label-primary, inherit)", fontSize: 13 }, credentialColumns: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10 }, jumpRow: { display: "grid", gridTemplateColumns: "1fr auto", gap: 5, alignItems: "center", marginBottom: 6 }, check: { display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#f07171" }, actions: { display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 }, error: { padding: "8px 10px", borderRadius: 7, background: "rgba(240,113,113,.15)", color: "#ff8a8a", fontSize: 13 },
+  policyHint: { fontSize: 12, color: "var(--dsw-alias-label-tertiary, #8b93a1)", flex: "1 1 260px", minWidth: 0 }, policySegments: { display: "inline-flex", justifySelf: "start", flexWrap: "wrap", gap: 3, padding: 3, borderRadius: 8, background: "rgba(127,127,127,.14)", border: "1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.22))", marginBottom: 8 }, policySegment: { border: 0, borderRadius: 6, padding: "5px 14px", fontSize: 12, cursor: "pointer", background: "transparent", color: "inherit" }, policySegmentActive: { background: "var(--dsw-alias-bg-layer-3, #232a33)", color: "var(--dsw-alias-label-primary, inherit)", fontWeight: 600, boxShadow: "0 0 0 1px var(--dsw-alias-border-l3, rgba(127,127,127,.4))" }, policySegmentAllowAll: { color: "#d64541" }, policySegmentAllowAllActive: { color: "#f07171" }, policyChecklist: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 180px), 1fr))", gap: 6, marginTop: 2 }, policyCheckItem: { display: "inline-flex", alignItems: "center", gap: 7, fontSize: 12, cursor: "pointer", color: "inherit" }, policyCheckBox: { accentColor: "#b7791f", width: 14, height: 14, margin: 0, cursor: "pointer" }
 };
 
 function ResourceFormTheme() {
-  return <style>{`.dsh-ssh-ops-resource-modal input::placeholder, .dsh-ssh-ops-resource-modal textarea::placeholder { color: var(--dsw-alias-label-tertiary, #8b93a1); opacity: 1; } .dsh-ssh-ops-resource-modal input:focus-visible, .dsh-ssh-ops-resource-modal select:focus-visible, .dsh-ssh-ops-resource-modal textarea:focus-visible { outline: 2px solid var(--dsw-alias-button-primary-fill, #2d6cdf); outline-offset: 1px; border-color: var(--dsw-alias-button-primary-fill, #2d6cdf); } .dsh-ssh-ops-segment { transition: color .18s ease; } .dsh-ssh-ops-segment:hover:not([aria-selected="true"]) { background: var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,.12)); } .dsh-ssh-ops-segment:focus-visible { outline: 2px solid var(--dsw-alias-button-primary-fill, #2d6cdf); outline-offset: 1px; } @media (prefers-reduced-motion: reduce) { .dsh-ssh-ops-segmented-thumb, .dsh-ssh-ops-segment { transition: none; } } .dsh-ssh-ops-agent-toggle { position: relative; } .dsh-ssh-ops-version { margin-left: 2px; color: var(--dsw-alias-label-tertiary, #a0a0a0); font-family: inherit; font-size: 12px; font-weight: 500; line-height: 18px; letter-spacing: 0; white-space: nowrap; vertical-align: baseline; } .dsh-ssh-ops-ubtn { box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; gap: 4px; border: none; border-radius: var(--dsw-radius-sm, 6px); cursor: pointer; font-size: 12px; line-height: 18px; height: 28px; padding: 0 10px; color: var(--dsw-alias-label-primary, inherit); background: transparent; text-decoration: none; font-family: inherit; } .dsh-ssh-ops-ubtn:disabled { cursor: not-allowed; opacity: .4; } .dsh-ssh-ops-ubtn.outline { border: .5px solid var(--dsw-alias-border-l3, rgba(127,127,127,.55)); background: transparent; } .dsh-ssh-ops-ubtn.outline:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); } .dsh-ssh-ops-ubtn.primary { background: var(--dsw-alias-button-primary-fill, #2d6cdf); color: var(--dsw-alias-label-primary-foreground, #fff); } .dsh-ssh-ops-ubtn.primary:hover:not(:disabled) { background: var(--dsw-alias-button-primary-hover, #255cba); } .dsh-ssh-ops-ubtn .dsh-ssh-ops-ubtn-icon { display: inline-flex; width: 16px; height: 16px; align-items: center; justify-content: center; } .dsh-ssh-ops-ubtn .dsh-ssh-ops-ubtn-icon svg { display: block; width: 16px; height: 16px; } .dsh-ssh-ops-agent-toggle-tip { position: absolute; top: calc(100% + 8px); right: 0; z-index: 60; width: 340px; max-width: 72vw; padding: 10px 12px; border-radius: 8px; border: 1px solid rgba(0,0,0,.25); background: #2b2f36; color: #fff; font-size: 12px; line-height: 1.6; text-align: left; white-space: normal; box-shadow: 0 8px 24px rgba(0,0,0,.24); opacity: 0; visibility: hidden; transform: translateY(-2px); pointer-events: none; transition: opacity .12s ease .15s, transform .12s ease .15s, visibility 0s linear .27s; } .dsh-ssh-ops-agent-toggle:hover .dsh-ssh-ops-agent-toggle-tip, .dsh-ssh-ops-agent-toggle:focus-within .dsh-ssh-ops-agent-toggle-tip { opacity: 1; visibility: visible; transform: translateY(0); transition-delay: .15s, .15s, 0s; }`}</style>;
+  return <style>{`.dsh-ssh-ops-resource-modal input::placeholder, .dsh-ssh-ops-resource-modal textarea::placeholder { color: var(--dsw-alias-label-tertiary, #8b93a1); opacity: 1; } .dsh-ssh-ops-resource-modal input:focus-visible, .dsh-ssh-ops-resource-modal select:focus-visible, .dsh-ssh-ops-resource-modal textarea:focus-visible { outline: 2px solid var(--dsw-alias-button-primary-fill, #2d6cdf); outline-offset: 1px; border-color: var(--dsw-alias-button-primary-fill, #2d6cdf); } .dsh-ssh-ops-segment { transition: color .18s ease; } .dsh-ssh-ops-segment:hover:not([aria-selected="true"]) { background: var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,.12)); } .dsh-ssh-ops-segment:focus-visible { outline: 2px solid var(--dsw-alias-button-primary-fill, #2d6cdf); outline-offset: 1px; } @media (prefers-reduced-motion: reduce) { .dsh-ssh-ops-segmented-thumb, .dsh-ssh-ops-segment { transition: none; } } .dsh-ssh-ops-version { margin-left: 2px; color: var(--dsw-alias-label-tertiary, #a0a0a0); font-family: inherit; font-size: 12px; font-weight: 500; line-height: 18px; letter-spacing: 0; white-space: nowrap; vertical-align: baseline; } .dsh-ssh-ops-ubtn { box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; gap: 4px; border: none; border-radius: var(--dsw-radius-sm, 6px); cursor: pointer; font-size: 12px; line-height: 18px; height: 28px; padding: 0 10px; color: var(--dsw-alias-label-primary, inherit); background: transparent; text-decoration: none; font-family: inherit; } .dsh-ssh-ops-ubtn:disabled { cursor: not-allowed; opacity: .4; } .dsh-ssh-ops-ubtn.outline { border: .5px solid var(--dsw-alias-border-l3, rgba(127,127,127,.55)); background: transparent; } .dsh-ssh-ops-ubtn.outline:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); } .dsh-ssh-ops-ubtn.primary { background: var(--dsw-alias-button-primary-fill, #2d6cdf); color: var(--dsw-alias-label-primary-foreground, #fff); } .dsh-ssh-ops-ubtn.primary:hover:not(:disabled) { background: var(--dsw-alias-button-primary-hover, #255cba); } .dsh-ssh-ops-ubtn .dsh-ssh-ops-ubtn-icon { display: inline-flex; width: 16px; height: 16px; align-items: center; justify-content: center; } .dsh-ssh-ops-ubtn .dsh-ssh-ops-ubtn-icon svg { display: block; width: 16px; height: 16px; } .dsh-ssh-ops-group-heading:hover { background: rgba(127,127,127,.10) !important; }`}</style>;
 }

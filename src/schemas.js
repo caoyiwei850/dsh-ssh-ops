@@ -157,8 +157,20 @@ export const execPolicyModeSchema = z.enum(["standard", "custom", "allowAll"]);
 export const execPolicyAllowSchema = z.array(z.string()).max(32);
 
 export const agentSettingsGetRequestSchema = z.object({});
+export const featureSettingsSchema = z.object({
+  dbTools: z.boolean().optional(),
+  tunnelTools: z.boolean().optional(),
+  logTools: z.boolean().optional(),
+  showDatabase: z.boolean().optional(),
+  showTunnels: z.boolean().optional(),
+  showSnippets: z.boolean().optional(),
+  showLogs: z.boolean().optional()
+});
 export const agentSettingsResultSchema = resultSchema(z.object({
   agentAutoConnect: z.boolean(),
+  features: featureSettingsSchema.optional(),
+  toolRestartRequired: z.boolean().optional(),
+  dbToolsLocked: z.boolean().optional(),
   execPolicy: execPolicyModeSchema.optional(),
   execPolicyAllow: execPolicyAllowSchema.optional(),
   execPolicyExact: z.array(z.string().min(1).max(512)).max(32).optional(),
@@ -168,7 +180,8 @@ export const agentSettingsResultSchema = resultSchema(z.object({
   categories: z.array(z.object({ key: z.string(), label: z.string() })).optional()
 }));
 export const agentSettingsSaveRequestSchema = z.object({
-  agentAutoConnect: z.boolean(),
+  agentAutoConnect: z.boolean().optional(),
+  features: featureSettingsSchema.optional(),
   execPolicy: execPolicyModeSchema.optional(),
   execPolicyAllow: execPolicyAllowSchema.optional(),
   execPolicyExact: z.array(z.string().min(1).max(512)).max(32).optional(),
