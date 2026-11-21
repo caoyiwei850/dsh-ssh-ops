@@ -27,11 +27,48 @@ import { t } from "../i18n/core.js";
  */
 export const DB_TOOL_TIMEOUT_MS = 1_860_000;
 
-export function registerDbTools(ctx, service) {
+export function registerDbTools(ctx, service, { onDemand = false } = {}) {
+  // Older hosts lack step-time admission. Keep their database tools available.
+  const conditional = onDemand && typeof ctx.tools.resolve === "function"
+    && typeof ctx.tools.executable === "function" && typeof ctx.tools.get === "function"
+    && typeof ctx.on === "function";
+  const activated = new WeakSet();
+  const deferredNames = new Set();
+  const admittedSteps = new WeakMap();
+  const when = (step) => {
+    const cached = admittedSteps.get(step);
+    if (cached !== undefined) return cached;
+    const { agent } = step;
+    // A restricted agent may be allowed to query an existing connection
+    // without permission to list connections. The host still applies its
+    // tool filter before evaluating this condition.
+    const admitted = activated.has(agent)
+      || agent.session?.requestHeader?.()?.tools?.some(({ name }) => deferredNames.has(name)) === true
+      || ctx.tools.get("db_list_connections", agent) === undefined;
+    admittedSteps.set(step, admitted);
+    return admitted;
+  };
+
+  if (conditional) {
+    ctx.on("tools/result", ({ agent, name }, result) => {
+      if (agent && !result.isError && (name === "db_connect" || name === "db_list_connections")) {
+        activated.add(agent);
+      }
+    });
+  }
+
+  const registerOperation = (options) => {
+    const definition = defineTool(options);
+    if (!conditional) return ctx.tools.register(definition);
+    deferredNames.add(definition.name);
+    return ctx.tools.register(definition, { when });
+  };
+
   ctx.tools.register(defineTool({
     name: "db_connect",
     timeoutMs: DB_TOOL_TIMEOUT_MS,
-    description: "Connect to a database (MySQL, PostgreSQL, openGauss, SQLite, ClickHouse, Redis, or MongoDB) so the agent can query or run commands in later db_query/db_execute/db_run calls. When an SSH server is connected, a loopback host (127.0.0.1/localhost) is automatically tunneled through the current server (via_ssh=auto), so 'connect to the database on the server' works without an internal connection id; pass via_ssh='no' to force a local connection, or ssh_connection_id to pick a specific server. For cloud-managed databases requiring TLS, set ssl to 'verify' (public-CA certs) or 'preferred' (self-signed certs). Returns a db_connection_id.",
+    description: "Connect to a database and return its ID for later database tools. See via_ssh for loopback routing and ssl for TLS."
+      + (conditional ? " On success, database operations become available next step." : ""),
     parameters: {
       type: { type: "string", enum: ["mysql", "postgresql", "opengauss", "sqlite", "clickhouse", "redis", "mongodb"], required: true, description: "Database type." },
       host: { type: "string", description: "Database host (required for every type except sqlite). When reached via SSH, this is the address as seen from the SSH server (127.0.0.1 if the DB runs on that server)." },
@@ -39,10 +76,10 @@ export function registerDbTools(ctx, service) {
       database: { type: "string", description: "Database/schema name (MySQL/PostgreSQL/openGauss/ClickHouse, optional), the SQLite file path (required for sqlite), or numeric DB index (Redis)." },
       username: { type: "string", description: "Database username (not needed for Redis)." },
       password: { type: "string", description: "Database password." },
-      ssl: { type: "string", enum: ["disabled", "preferred", "verify"], description: "TLS mode: 'disabled' (default) plain TCP; 'preferred' encrypt without cert verification (self-signed cloud DBs); 'verify' encrypt and verify CA (public-CA cloud DBs)." },
-      ssh_connection_id: { type: "string", description: "Optional. An existing SSH connection id to tunnel through, reaching databases on private networks. Takes precedence over via_ssh." },
-      via_ssh: { type: "string", enum: ["auto", "yes", "no"], description: "Tunnel routing when ssh_connection_id is omitted: 'auto' (default) tunnels loopback hosts (127.0.0.1/localhost) through the current SSH server; 'yes' always tunnels through the current server; 'no' always connects directly." },
-      query_timeout_ms: { type: "integer", description: "Optional per-connection statement deadline in milliseconds, set once at connect time for slow databases and large exports: 0 disables the per-statement ceiling (this tool-call budget still applies), 1000..1800000 raises it above the 35s default. Omit for the default." },
+      ssl: { type: "string", enum: ["disabled", "preferred", "verify"], description: "'disabled' (default): plain TCP. 'preferred': TLS without certificate verification. 'verify': TLS with CA verification." },
+      ssh_connection_id: { type: "string", description: "Tunnel via this SSH ID. Overrides via_ssh." },
+      via_ssh: { type: "string", enum: ["auto", "yes", "no"], description: "Without an SSH ID: 'auto' (default) tunnels localhost/127.0.0.1 via the active server if connected; 'yes' requires that tunnel; 'no' connects directly." },
+      query_timeout_ms: { type: "integer", description: "Statement deadline in ms: default 35000, range 1000–1800000. 0 disables it, subject to the tool-call limit." },
       name: { type: "string", description: "Optional display name." }
     },
     output: {
@@ -80,7 +117,8 @@ export function registerDbTools(ctx, service) {
   ctx.tools.register(defineTool({
     name: "db_list_connections",
     timeoutMs: DB_TOOL_TIMEOUT_MS,
-    description: "List currently open database connections and their endpoint/account metadata. Use it only when the user asks which databases are connected.",
+    description: "List open database connections with IDs, endpoints and accounts."
+      + (conditional ? " Call this before using an existing connection, even with a known ID, to enable query, write, export and transaction tools next step." : ""),
     parameters: {},
     output: {
       schema: {
@@ -126,14 +164,14 @@ export function registerDbTools(ctx, service) {
     }
   }));
 
-  ctx.tools.register(defineTool({
+  registerOperation({
     name: "db_query",
     timeoutMs: DB_TOOL_TIMEOUT_MS,
-    description: "Run a read-only SQL query on a connected MySQL or PostgreSQL database and return columns and rows. Read-only is LEXICALLY ENFORCED: only SELECT/SHOW/DESCRIBE/EXPLAIN/WITH(read-only) statements pass; write verbs, SELECT INTO, FOR UPDATE locking reads and data-modifying CTEs are rejected (use db_execute for writes, db_tx_* for verified change workflows). For Redis or MongoDB, use db_run instead. Results stream and are capped at 200 rows; queries time out after 30s.",
+    description: "Run read-only SQL on MySQL/PostgreSQL. Allows SELECT, SHOW, DESCRIBE, EXPLAIN and read-only WITH. Rejects writes, SELECT INTO, locking reads and modifying CTEs. Streams up to 200 rows. Use db_execute or db_tx_* for writes, db_run for Redis/MongoDB.",
     parameters: {
       db_connection_id: { type: "string", required: true, description: "A db_connection_id from db_connect." },
       sql: { type: "string", required: true, description: "SELECT statement. MySQL uses ? placeholders, PostgreSQL uses $1 placeholders." },
-      params: { type: "array", description: "Optional parameter values for placeholders." }
+      params: { type: "array", description: "Placeholder values." }
     },
     output: {
       schema: {
@@ -158,12 +196,12 @@ export function registerDbTools(ctx, service) {
       if (!result.ok) throw new Error(`db_query failed: ${result.error.message}`);
       return result.value;
     }
-  }));
+  });
 
-  ctx.tools.register(defineTool({
+  registerOperation({
     name: "db_execute",
     timeoutMs: DB_TOOL_TIMEOUT_MS,
-    description: "Run a write SQL statement (INSERT/UPDATE/DELETE/CREATE/ALTER) on a connected MySQL or PostgreSQL database. Destructive statements (DROP/TRUNCATE/SHUTDOWN, detected by leading statement verb so keywords inside string literals or comments are not false-positives) are NOT executed and must never be retried or worked around: DROP TABLE is instead backed up and quarantined by rename (result reports quarantined/renamedTo), while DROP DATABASE/TRUNCATE/SHUTDOWN are blocked after an automatic backup of the affected tables. Only the operator, via the database panel, can finalize any real deletion. For Redis or MongoDB, use db_run instead.",
+    description: "Write SQL on MySQL/PostgreSQL. DROP TABLE backs up and quarantines by rename. DROP DATABASE, TRUNCATE and SHUTDOWN are blocked after backup. Never retry or bypass those protections. Only the operator can finalize deletion in the database panel. Use db_run for Redis/MongoDB.",
     parameters: {
       db_connection_id: { type: "string", required: true },
       sql: { type: "string", required: true, description: "Write statement. MySQL uses ? placeholders, PostgreSQL uses $1 placeholders." },
@@ -232,12 +270,12 @@ export function registerDbTools(ctx, service) {
       }
       return result.value;
     }
-  }));
+  });
 
-  ctx.tools.register(defineTool({
+  registerOperation({
     name: "db_list_tables",
     timeoutMs: DB_TOOL_TIMEOUT_MS,
-    description: "List tables in the current schema of a connected MySQL or PostgreSQL database. For MongoDB, use db_run with operation 'countDocuments' on a collection instead.",
+    description: "List tables in the current MySQL/PostgreSQL schema. For MongoDB collection counts use db_run with countDocuments.",
     parameters: {
       db_connection_id: { type: "string", required: true }
     },
@@ -252,12 +290,12 @@ export function registerDbTools(ctx, service) {
       if (!result.ok) throw new Error(`db_list_tables failed: ${result.error.message}`);
       return result.value;
     }
-  }));
+  });
 
-  ctx.tools.register(defineTool({
+  registerOperation({
     name: "db_describe_table",
     timeoutMs: DB_TOOL_TIMEOUT_MS,
-    description: "Full structural introspection of a table in a connected MySQL or PostgreSQL database: columns (name, type, nullable, default), indexes, foreign keys, row-count/data-size estimates from planner statistics, and the MySQL SHOW CREATE TABLE DDL.",
+    description: "Describe a MySQL/PostgreSQL table: columns, indexes, foreign keys, estimated rows/size and MySQL CREATE TABLE DDL.",
     parameters: {
       db_connection_id: { type: "string", required: true },
       table: { type: "string", required: true, description: "Table name." }
@@ -341,12 +379,12 @@ export function registerDbTools(ctx, service) {
       if (!result.ok) throw new Error(`db_describe_table failed: ${result.error.message}`);
       return result.value;
     }
-  }));
+  });
 
-  ctx.tools.register(defineTool({
+  registerOperation({
     name: "db_preview",
     timeoutMs: DB_TOOL_TIMEOUT_MS,
-    description: "Sample rows of a table (SELECT * with LIMIT/OFFSET) on a connected MySQL or PostgreSQL database without hand-writing SQL. Returns columns, rows, and a row-count estimate from planner statistics (no full-table COUNT). The table identifier is validated against injection; limit/offset are bound as parameters.",
+    description: "Sample MySQL/PostgreSQL table rows with pagination. Returns columns, rows and a planner row-count estimate.",
     parameters: {
       db_connection_id: { type: "string", required: true },
       table: { type: "string", required: true, description: "Table name, optionally schema-qualified (e.g. public.users)." },
@@ -382,16 +420,16 @@ export function registerDbTools(ctx, service) {
       if (!result.ok) throw new Error(`db_preview failed: ${result.error.message}`);
       return result.value;
     }
-  }));
+  });
 
-  ctx.tools.register(defineTool({
+  registerOperation({
     name: "db_explain",
     timeoutMs: DB_TOOL_TIMEOUT_MS,
-    description: "Get the execution plan of a SELECT/WITH query (MySQL EXPLAIN FORMAT=JSON / PostgreSQL EXPLAIN (FORMAT JSON)) on a connected database, e.g. to check index usage before optimizing. The statement must pass the same lexically read-only gate as db_query.",
+    description: "Get a MySQL/PostgreSQL JSON execution plan for SELECT/WITH. Applies the db_query read-only gate.",
     parameters: {
       db_connection_id: { type: "string", required: true },
       sql: { type: "string", required: true, description: "SELECT or WITH ... SELECT statement to explain." },
-      params: { type: "array", description: "Optional parameter values for placeholders." }
+      params: { type: "array", description: "Placeholder values." }
     },
     output: {
       schema: { type: "object", additionalProperties: false, properties: { plan: { type: "json", required: true } } },
@@ -404,12 +442,12 @@ export function registerDbTools(ctx, service) {
       if (!result.ok) throw new Error(`db_explain failed: ${result.error.message}`);
       return result.value;
     }
-  }));
+  });
 
-  ctx.tools.register(defineTool({
+  registerOperation({
     name: "db_export",
     timeoutMs: DB_TOOL_TIMEOUT_MS,
-    description: "Export the rows of a read-only query (SELECT/WITH, same lexical gate as db_query) as CSV or JSON. When the database is reached through an SSH connection the file is written onto that server (default /tmp/dsh-export-*.{csv,json}) and can be pulled with the SFTP tools; a directly-connected database returns the content inline (small results only). Use for dumping a table or query result, e.g. to hand a CSV to someone or to archive data.",
+    description: "Export read-only SELECT/WITH rows to CSV or JSON. Over SSH, writes a remote file retrievable by SFTP. Direct connections return small results inline.",
     parameters: {
       db_connection_id: { type: "string", required: true },
       sql: { type: "string", required: true, description: "SELECT or WITH ... SELECT statement whose rows are exported." },
@@ -418,7 +456,7 @@ export function registerDbTools(ctx, service) {
       header: { type: "boolean", description: "Include a header row in CSV output; defaults to true." },
       path: { type: "string", description: "Remote path to write to when the connection runs through SSH; defaults to /tmp/dsh-export-<connection>-<timestamp>.<ext>." },
       max_rows: { type: "integer", description: "Row cap for the export; defaults to 50000, maximum 200000." },
-      params: { type: "array", description: "Optional parameter values for placeholders." }
+      params: { type: "array", description: "Placeholder values." }
     },
     output: {
       schema: {
@@ -450,12 +488,12 @@ export function registerDbTools(ctx, service) {
       if (!result.ok) throw new Error(`db_export failed: ${result.error.message}`);
       return result.value;
     }
-  }));
+  });
 
-  ctx.tools.register(defineTool({
+  registerOperation({
     name: "db_tx_begin",
     timeoutMs: DB_TOOL_TIMEOUT_MS,
-    description: "Begin an interactive transaction on a dedicated connection (MySQL/PostgreSQL) for verified change workflows: db_tx_begin → db_tx_execute (the write) → db_tx_execute (SELECT to verify) → db_tx_commit or db_tx_rollback. Idle transactions are rolled back automatically after 5 minutes.",
+    description: "Start a dedicated MySQL/PostgreSQL transaction. Write and verify with db_tx_execute, then commit or roll back. Rolls back after 5 minutes idle.",
     parameters: {
       db_connection_id: { type: "string", required: true }
     },
@@ -470,16 +508,16 @@ export function registerDbTools(ctx, service) {
       if (!result.ok) throw new Error(`db_tx_begin failed: ${result.error.message}`);
       return result.value;
     }
-  }));
+  });
 
-  ctx.tools.register(defineTool({
+  registerOperation({
     name: "db_tx_execute",
     timeoutMs: DB_TOOL_TIMEOUT_MS,
-    description: "Run one statement inside a transaction opened with db_tx_begin. Use SELECT there to verify the effect of your write before committing. Destructive verbs (DROP/TRUNCATE/SHUTDOWN) remain blocked.",
+    description: "Run one statement in an open transaction. Verify changes with SELECT before committing. Blocks DROP, TRUNCATE and SHUTDOWN.",
     parameters: {
       tx_id: { type: "string", required: true },
       sql: { type: "string", required: true },
-      params: { type: "array", description: "Optional parameter values for placeholders." }
+      params: { type: "array", description: "Placeholder values." }
     },
     output: {
       schema: {
@@ -510,12 +548,12 @@ export function registerDbTools(ctx, service) {
       if (!result.ok) throw new Error(`db_tx_execute failed: ${result.error.message}`);
       return result.value;
     }
-  }));
+  });
 
-  ctx.tools.register(defineTool({
+  registerOperation({
     name: "db_tx_commit",
     timeoutMs: DB_TOOL_TIMEOUT_MS,
-    description: "Commit a transaction opened with db_tx_begin. Call this only after db_tx_execute verification looked right.",
+    description: "Commit an open transaction only after verifying changes with db_tx_execute.",
     parameters: { tx_id: { type: "string", required: true } },
     output: {
       schema: { type: "object", additionalProperties: false, properties: { txId: { type: "string", required: true }, finished: { type: "boolean", required: true }, committed: { type: "boolean", required: true } } },
@@ -526,12 +564,12 @@ export function registerDbTools(ctx, service) {
       if (!result.ok) throw new Error(`db_tx_commit failed: ${result.error.message}`);
       return result.value;
     }
-  }));
+  });
 
-  ctx.tools.register(defineTool({
+  registerOperation({
     name: "db_tx_rollback",
     timeoutMs: DB_TOOL_TIMEOUT_MS,
-    description: "Roll back a transaction opened with db_tx_begin, undoing every statement executed in it.",
+    description: "Roll back an open transaction and undo its changes.",
     parameters: { tx_id: { type: "string", required: true } },
     output: {
       schema: { type: "object", additionalProperties: false, properties: { txId: { type: "string", required: true }, finished: { type: "boolean", required: true }, rolledBack: { type: "boolean", required: true } } },
@@ -542,12 +580,12 @@ export function registerDbTools(ctx, service) {
       if (!result.ok) throw new Error(`db_tx_rollback failed: ${result.error.message}`);
       return result.value;
     }
-  }));
+  });
 
-  ctx.tools.register(defineTool({
+  registerOperation({
     name: "db_run",
     timeoutMs: DB_TOOL_TIMEOUT_MS,
-    description: "Run a command on a connected Redis or MongoDB database. Redis: pass {command, args} (e.g. command='GET', args=['mykey'], or command='KEYS', args=['*']). MongoDB: pass {collection, operation} where operation is 'find'|'findOne'|'insertOne'|'updateOne'|'deleteOne'|'countDocuments', plus filter/document/update as needed. For MySQL/PostgreSQL, use db_query or db_execute instead.",
+    description: "Run Redis commands ({command,args}) or MongoDB collection operations ({collection,operation,filter,document,update,options}). For SQL use db_query or db_execute.",
     parameters: {
       db_connection_id: { type: "string", required: true },
       command: { type: "string", description: "Redis command name (e.g. GET, SET, KEYS, HGETALL)." },
@@ -576,12 +614,12 @@ export function registerDbTools(ctx, service) {
       if (!result.ok) throw new Error(`db_run failed: ${result.error.message}`);
       return result.value;
     }
-  }));
+  });
 
-  ctx.tools.register(defineTool({
+  registerOperation({
     name: "db_disconnect",
     timeoutMs: DB_TOOL_TIMEOUT_MS,
-    description: "Close a database connection opened with db_connect. Use it when the user is done querying a database.",
+    description: "Close an open database connection when finished.",
     parameters: {
       db_connection_id: { type: "string", required: true }
     },
@@ -594,5 +632,5 @@ export function registerDbTools(ctx, service) {
       if (!result.ok) throw new Error(`db_disconnect failed: ${result.error.message}`);
       return result.value;
     }
-  }));
+  });
 }

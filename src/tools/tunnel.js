@@ -6,9 +6,9 @@ import { defineTool } from "@deepseek-ai/dsh-tools";
 export function registerTunnelTools(ctx, service) {
   ctx.tools.register(defineTool({
     name: "tunnel_start",
-    description: "Start a port forward through a connected server. kind='local' (default): the DSH host listens on bind_addr:bind_port and forwards to remote_host:remote_port on the server — use to reach services only the server can see. kind='remote': the server listens on remote_host:remote_port and forwards back to target_host:target_port on this machine. kind='dynamic': a SOCKS5 proxy on bind_addr:bind_port (the ssh -D equivalent) — clients pick the destination per connection and every one of them is reached from the server. Returns a tunnel_id for tunnel_stop.",
+    description: "Start SSH forwarding and return a tunnel_id. Local (default): bind_addr:bind_port on DSH to remote_host:remote_port from the server. Remote: server listens on remote_host:remote_port and forwards to target_host:target_port on DSH. Dynamic: local SOCKS5 on bind_addr:bind_port, with destinations reached from the server.",
     parameters: {
-      connection_id: { type: "string", description: "Connection id from ssh_connect; omit to use the current server." },
+      connection_id: { type: "string", description: "SSH ID from ssh_connect. Default: active connection." },
       kind: { type: "string", enum: ["local", "remote", "dynamic"], description: "Forward direction: 'local' (default), 'remote', or 'dynamic' (SOCKS5 proxy)." },
       bind_addr: { type: "string", description: "Local bind address (local kind), defaults to 127.0.0.1." },
       bind_port: { type: "integer", description: "Local bind port (local kind); 0 picks a free port." },
@@ -60,9 +60,9 @@ export function registerTunnelTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "tunnel_list",
-    description: "List active port forwards on a connected server. Omit connection_id for the current server.",
+    description: "List active forwards on the active or specified SSH connection.",
     parameters: {
-      connection_id: { type: "string", description: "Connection id from ssh_connect; omit to use the current server." }
+      connection_id: { type: "string", description: "SSH ID from ssh_connect. Default: active connection." }
     },
     output: {
       schema: {
@@ -96,9 +96,9 @@ export function registerTunnelTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "tunnel_stop",
-    description: "Stop an active port forward by tunnel_id (see tunnel_list / tunnel_start).",
+    description: "Stop a forward by tunnel_id from tunnel_list or tunnel_start.",
     parameters: {
-      connection_id: { type: "string", description: "Connection id from ssh_connect; omit to use the current server." },
+      connection_id: { type: "string", description: "SSH ID from ssh_connect. Default: active connection." },
       tunnel_id: { type: "string", required: true, description: "The tunnel id returned by tunnel_start." }
     },
     output: {

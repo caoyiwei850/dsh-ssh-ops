@@ -99,7 +99,7 @@ export function registerSshSessionTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "ssh_terminal_sessions",
-    description: "List open SSH terminal sessions so you can identify a terminal the user operated manually. Returns metadata and history cursors only; never returns terminal output, saved resources, or credentials.",
+    description: "List user-operated SSH terminals, with metadata and history cursors only.",
     parameters: {},
     output: {
       schema: { type: "object", additionalProperties: false, properties: { sessions: { type: "array", required: true, items: { type: "object", additionalProperties: true } } } },
@@ -126,7 +126,7 @@ export function registerSshSessionTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "ssh_list",
-    description: t("List currently open SSH connections and identify the active server. This reports only live connection metadata (name, host, port, username and active state); it never returns credentials. When the operator enabled 「允许 AI 自动连接已保存服务器」 in the SSH settings, the result also lists the operator's saved SSH resources (name, host, username, whether already connected) — connect one with ssh_connect_profile. Use this tool when the user asks which server is connected or which saved servers exist; for normal server work, ssh_exec/ssh_read/ssh_write already target the active connection automatically."),
+    description: "List open SSH connections and the active server, without credentials. If AI auto-connect is enabled, also list saved servers for ssh_connect_profile. Skip this when targeting the active server.",
     parameters: {},
     output: {
       schema: {
@@ -192,7 +192,7 @@ export function registerSshSessionTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "ssh_connect",
-    description: "Connect to a remote server over SSH, open it in the right-side terminal, and make it the current connection for later SSH tools. Subsequent ssh_exec, ssh_read, ssh_write, and ssh_disconnect calls automatically use this connection unless a connection_id is explicitly supplied.",
+    description: "Open an SSH connection in the right-side terminal and make it the default target for later SSH tools.",
     parameters: {
       host: { type: "string", required: true, description: "Remote hostname or IP address." },
       port: { type: "integer", description: "SSH port, defaults to 22." },
@@ -252,7 +252,7 @@ export function registerSshSessionTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "ssh_connect_profile",
-    description: t("Connect to one of the operator's saved SSH resources (设置 → SSH 资源) by name and make it the active connection: later ssh_exec/ssh_read/ssh_write without connection_id target it, and its terminal opens in the right-side panel so the operator can see which machine you are on. Only works when the operator enabled 「允许 AI 自动连接已保存服务器」; with the switch off the call fails — then ask the operator to connect the server, and NEVER fall back to ssh_connect with credentials you gathered from conversation. Reuses an already-open connection for the same resource instead of connecting twice."),
+    description: "Open a saved server by name and make it active in the right-side terminal. Reuses an open connection. Requires AI auto-connect. If disabled, ask the operator to connect. Never fall back to ssh_connect with credentials from chat.",
     parameters: {
       resource: { type: "string", required: true, description: "The saved resource's name as shown by ssh_list (e.g. 'dev', 'prod'), or its profile id. A unique partial name is accepted; unknown or ambiguous names fail with the list of available resources." }
     },
@@ -286,9 +286,9 @@ export function registerSshSessionTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "ssh_exec",
-    description: "Run a normal SSH command on the server currently open in the right-side SSH terminal and return its output. This runs one non-interactive command and returns when it finishes. Tasks that need terminal interaction — switching users (sudo -i / su), entering a container (docker exec -it), or connecting onward to another machine (ssh) — do not fit here; run those with ssh_write in the interactive terminal instead. Omit connection_id when the user means the current server; do not call ssh_list first. On Linux with one identifiable idle POSIX terminal shell, the dedicated exec channel starts in that shell's verified current directory. A busy, ambiguous, or inaccessible terminal directory rejects the command instead of guessing; when no terminal shell is detectable, the normal login directory is used and cwd is null. SSH configuration, package changes, service reloads, and config edits are allowed and remain subject to DSH permissions. Explicitly destructive or irreversible commands suspend this call until the operator answers the host's confirmation prompt in the conversation: approving runs the command once, rejecting denies it — never retry or route around a rejection. The command and output are also shown in the terminal panel.",
+    description: "Run one non-interactive SSH command. Omit connection_id for the active server, without ssh_list. Use ssh_write for interactive shells, containers or onward SSH. On Linux, starts in the verified CWD of one idle terminal shell, or login CWD if no shell is detected. Busy, ambiguous or inaccessible CWD fails. DSH permissions apply. Destructive commands require operator approval to run once. Never retry or bypass rejection. The terminal also shows the command and output.",
     parameters: {
-      connection_id: { type: "string", description: "Optional. Omit to target the current right-side SSH connection." },
+      connection_id: { type: "string", description: "SSH ID. Default: active connection." },
       command: { type: "string", required: true, description: "The shell command to execute." },
       timeout_ms: { type: "integer", description: "Timeout in milliseconds, defaults to 30000." }
     },
@@ -360,10 +360,10 @@ export function registerSshSessionTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "ssh_read",
-    description: "Read output from the current right-side SSH terminal. Omit connection_id for the current server; do not call ssh_list first. By default only output that arrived since your previous ssh_read on this connection is returned — results you already received are not repeated, so read again after ssh_write without re-paying for old output. Pass mode \"tail\" for the full recent terminal capture instead (e.g. output that predates your first read, or something that scrolled past). Also useful when the user typed something in the panel.",
+    description: "Read active SSH terminal output, including manual input results. No ssh_list needed. Use after ssh_write for new output, or mode=tail for the full recent capture.",
     parameters: {
-      connection_id: { type: "string", description: "Optional. Omit to target the current right-side SSH connection." },
-      mode: { type: "string", enum: ["new", "tail"], description: "'new' (default) returns only output that arrived since the previous ssh_read on this connection; 'tail' returns the whole recent terminal capture. Use 'tail' sparingly — it repeats output you likely already have." }
+      connection_id: { type: "string", description: "SSH ID. Default: active connection." },
+      mode: { type: "string", enum: ["new", "tail"], description: "'new' (default): since the previous read. 'tail': full recent capture, may repeat output." }
     },
     output: {
       schema: {
@@ -398,11 +398,11 @@ export function registerSshSessionTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "ssh_write",
-    description: "Send input into a right-side SSH terminal and, by default, press Enter afterwards so the input is submitted like a human typing Enter (a carriage return \\r is appended unless the input already ends with a newline). Omit connection_id to target the current/active terminal; provide connection_id to target a specific server's terminal. If the target connection has no open terminal, one is opened automatically so the input is never silently dropped. Normal operations are permitted through DSH permissions; explicitly destructive or irreversible commands are stopped before agent execution. Ctrl-C remains available to cancel an in-progress command.",
+    description: "Send input to the active or specified SSH terminal, opening it if needed. Use Ctrl-C to interrupt. DSH permissions apply and agent-issued destructive or irreversible commands are blocked.",
     parameters: {
-      connection_id: { type: "string", description: "Optional. Omit to target the current/active terminal; specify to target that server's terminal (e.g. from ssh_connect/ssh_list)." },
+      connection_id: { type: "string", description: "SSH ID from ssh_connect or ssh_list. Default: active terminal." },
       input: { type: "string", required: true, description: "The input to send, e.g. 'y' to answer a prompt, or 'ls -la' to run a command." },
-      press_enter: { type: "boolean", description: "Whether to append a carriage return (Enter) after the input so the command or prompt answer is submitted. Defaults to true; set false to send raw input without submitting." }
+      press_enter: { type: "boolean", description: "Default true: append Enter unless input ends with a newline. False: send raw input." }
     },
     output: {
       schema: {
@@ -435,9 +435,9 @@ export function registerSshSessionTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "ssh_disconnect",
-    description: "Close the current SSH connection and any open shell sessions on it. Omit connection_id for the current right-side SSH server.",
+    description: "Close the active or specified SSH connection and its terminal sessions.",
     parameters: {
-      connection_id: { type: "string", description: "Optional. Omit to target the current right-side SSH connection." }
+      connection_id: { type: "string", description: "SSH ID. Default: active connection." }
     },
     output: {
       schema: {

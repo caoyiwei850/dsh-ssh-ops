@@ -105,11 +105,8 @@ export async function apply(ctx) {
 
     const hostT = ctx.locale.bind(NS);
 
-    // Follow the host's language before any surface paints. An explicit
-    // combobox choice sticks; otherwise (follow mode) the plugin adopts
-    // whatever DSH Settings → Language shows now and on every later change the
-    // locale face reports, writing it back so the host half (agent-visible
-    // messages) speaks the same language after the next restart.
+    // Follow DSH Settings → Language unless an operator pinned the plugin
+    // language. Persist actual changes for agent-visible messages.
     own(syncLanguageWithHost(api, ctx));
 
     // The Sidebar's service faces may be provided after this bundle is
@@ -388,36 +385,35 @@ function SshTabButtonHost({ press, isActive, title, activeTitle, ariaLabel, watc
 function syncLanguageWithHost(api, ctx) {
   let disposed = false;
   let unsubscribe = null;
+  let pending = false;
+  let syncedHostLanguage;
   const applyFollow = async () => {
-    if (disposed) return;
-    let stored = null;
+    if (disposed || pending) return;
+    let host = readHostLanguage(ctx.locale);
+    if (host === syncedHostLanguage) return;
+    pending = true;
     try {
-      // The stored settings decide whether the plugin follows the host at
-      // all: autoApplySystemLanguage=false pins the stored language (a
-      // third-party system locale such as "ru" would otherwise be coerced to
-      // "zh" and written back on every load). Read them first so the pin is
-      // respected even before the host locale is consulted.
-      stored = await api.languageGet();
+      // Older hosts can still follow the locale in the panel. Only write
+      // after reading settings so a failed read can't overwrite a pin.
+      const stored = await api.languageGet().catch(() => null);
       if (disposed) return;
+      host = readHostLanguage(ctx.locale);
+      const pinned = stored?.autoApplySystemLanguage === false;
+      const language = pinned ? stored.language : (host ?? stored?.language);
+      if (language != null) setLanguage(language);
+      if (!stored) return;
+      if (!pinned && host !== null && host !== stored.language) {
+        await api.languageSave(host);
+      }
+      syncedHostLanguage = host;
     } catch {
-      // Older host without the languageGet RPC: treat as auto mode with no
-      // stored pin and fall through to the synchronous host-locale read.
+      // Leave a failed save eligible for retry on the next notification.
+    } finally {
+      pending = false;
+      // Unchanged notifications were coalesced, including echoes from our
+      // own save. A real switch during that save still needs to be applied.
+      if (!disposed && readHostLanguage(ctx.locale) !== host) void applyFollow();
     }
-    if (stored?.autoApplySystemLanguage === false) {
-      if (stored.language !== null) setLanguage(stored.language);
-      return;
-    }
-    const host = readHostLanguage(ctx.locale);
-    if (host !== null) {
-      setLanguage(host);
-      // Write back so the host half (agent-visible messages) follows the
-      // same language immediately and after the next restart.
-      api.languageSave(host).catch(() => {});
-      return;
-    }
-    // `stored` is null when the languageGet RPC is unavailable, so the pin
-    // check must be nullish: `!== null` alone dereferences null here.
-    if (stored?.language != null) setLanguage(stored.language);
   };
   void applyFollow();
   // Best-effort live follow: the documented face exposes subscribe; older

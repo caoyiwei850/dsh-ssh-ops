@@ -531,6 +531,7 @@ export default class SshOpsService extends TypertRemoteService {
       maxCaptureBytes: MAX_CAPTURE_BYTES,
       streamHeartbeatMs: STREAM_HEARTBEAT_MS,
       registerDbAgentTools: parseDbToolRegistration(),
+      dbToolsOnDemand: !/^(0|false)$/i.test(process.env.DSH_SSH_OPS_DB_TOOLS_ON_DEMAND ?? ""),
       maxDbRows: parseDbRows(),
       // Session recording is on by default; the directory defaults to
       // ~/.dsh/ssh-ops-logs and is resolved lazily on first use.
@@ -5711,7 +5712,7 @@ export default class SshOpsService extends TypertRemoteService {
     const groups = this.configuredToolGroups();
     if (groups.tunnelTools) registerTunnelTools(ctx, this);
     registerBatchTools(ctx, this);
-    if (groups.dbTools) registerDbTools(ctx, this);
+    if (groups.dbTools) registerDbTools(ctx, this, { onDemand: this.config?.dbToolsOnDemand });
     if (groups.logTools) registerSessionLogTools(ctx, this);
     this.registeredToolGroups = groups;
   }

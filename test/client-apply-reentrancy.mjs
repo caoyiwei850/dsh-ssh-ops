@@ -16,6 +16,7 @@
  * and is deliberately not used here).
  */
 import assert from "node:assert/strict";
+import { setImmediate } from "node:timers/promises";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -118,6 +119,77 @@ try {
   }
 
   const dictionaryCount = (locale) => locale.dicts.get("ssh-ops")?.size ?? 0;
+
+  // The client entry must coalesce startup notifications and settle even if
+  // persisting a language causes the host to publish its locale again (#58).
+  {
+    const locale = makeLocaleFace();
+    const remote = makeRemoteFace();
+    let active = "zh";
+    let stored = "zh";
+    let pinned = false;
+    let listener;
+    let reads = 0;
+    let saveInFlight;
+    const writes = [];
+    locale.getSnapshot = () => ({ active });
+    locale.subscribe = (callback) => {
+      listener = callback;
+      return () => { listener = undefined; };
+    };
+    const response = (value) => ({ ok: true, value: { ok: true, value } });
+    remote.namespaces = new Map([["sshOps", { service: {
+      async languageGet() {
+        reads++;
+        return response({ language: stored, autoApplySystemLanguage: !pinned });
+      },
+      async languageSave({ language }) {
+        writes.push(language);
+        if (saveInFlight) await saveInFlight;
+        stored = language;
+        // Cap the simulated feedback so the unfixed event loop can drain.
+        if (writes.length < 12) listener?.();
+        return response({ language });
+      }
+    } }]]);
+    const teardown = await entry.apply(makeCtx({ locale, remote, slots: makeSlotsFace(() => false) }));
+    try {
+      for (let i = 0; i < 8; i++) listener();
+      await setImmediate();
+      assert.deepEqual({ reads, writes }, { reads: 1, writes: [] }, "startup events must share one read and skip saving an equal language");
+
+      active = "en";
+      for (let i = 0; i < 8; i++) listener();
+      await setImmediate();
+      listener();
+      await setImmediate();
+      assert.deepEqual({ reads, writes }, { reads: 2, writes: ["en"] }, "a locale change writes once despite the echoed event");
+
+      let releaseSave;
+      saveInFlight = new Promise((resolve) => { releaseSave = resolve; });
+      active = "zh";
+      listener();
+      await setImmediate();
+      assert.deepEqual(writes, ["en", "zh"], "switching back to a previously saved language still persists");
+      active = "en";
+      listener();
+      await setImmediate();
+      assert.deepEqual(writes, ["en", "zh"], "writes must not overlap during a rapid switch");
+      saveInFlight = undefined;
+      releaseSave();
+      await setImmediate();
+      assert.deepEqual(writes, ["en", "zh", "en"], "the latest language is persisted after the in-flight write");
+
+      pinned = true;
+      active = "zh";
+      listener();
+      await setImmediate();
+      assert.deepEqual(writes, ["en", "zh", "en"], "a stored language pin suppresses follow-mode writes");
+    } finally {
+      await teardown();
+    }
+    assert.equal(listener, undefined, "unloading removes the locale subscription");
+  }
 
   // ── Scenario A: a transient mid-apply failure must not poison the retry ──
   {

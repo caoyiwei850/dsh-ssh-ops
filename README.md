@@ -6,10 +6,12 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.4.12-blue)
+![version](https://img.shields.io/badge/version-0.4.13-blue)
 [![dsh.so risk](https://www.dsh.so/badge/dsh-ssh-ops.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![dsh.so install · dsh 0.2.2-rc.1](https://cdn.dsh.so/badge/install/dsh-ssh-ops@0.2.2-rc.1.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/?ref=badge-install)
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/caoyiwei850/dsh-ssh-ops)
+
+> **v0.4.13** 修复语言同步重复请求，并在支持的 DSH 宿主上默认按需提供数据库工具。详见 [版本说明](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.4.13)。
 
 > **v0.4.12**：重新整理 SSH 资源设置，可独立开关 AI 工具和右侧面板标签。详见 [版本说明](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.4.12)。
 
@@ -119,7 +121,7 @@ Agent 命中上述黑名单时不会被静默拒绝：整个工具调用会在�
 ### 从 GitHub 安装
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.12
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.13
 ```
 
 git 渠道装的是源码，安装期由 `prepare` 钩子自动执行 `npm run build` 生成入口 `lib/`，无需手动构建。**注意：pnpm ≥ 10 默认拦截依赖包的构建脚本**——若重启后 SSH 标签未出现，按 [INSTALL.md](INSTALL.md) 第 3 步检查 `node_modules/dsh-ssh-ops/lib/`：缺失说明构建被拦，进入该包目录执行 `npm install && npm run build`（或在该 profile 的 pnpm 配置 `onlyBuiltDependencies` 中放行 `dsh-ssh-ops`）后重启即可。
@@ -134,14 +136,14 @@ dsh web
 
 ### 从发布压缩包安装
 
-从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.4.12) 下载 `dsh-ssh-ops-0.4.12.tgz` 后：
+从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.4.13) 下载 `dsh-ssh-ops-0.4.13.tgz` 后：
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.4.12.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.4.13.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.4.12.zip` 适用于离线审阅或二次开发；解压后在目录中执行 `npm install`（构建自动完成）。
+`dsh-ssh-ops-0.4.13.zip` 适用于离线审阅或二次开发；解压后在目录中执行 `npm install`（构建自动完成）。
 
 ## 使用方式
 
@@ -152,7 +154,7 @@ dsh web
 5. 需要数据库时，让 Agent 调 `db_connect`（或自己在「数据库」页签新建连接），随后即可在对话中查询/执行。
 6. 插件界面语言**自动跟随 DSH 自身的语言设置**（中文 / English）：切换即时重绘整个插件界面，Agent 可见的工具消息经回写即时并持久跟随；左侧设置菜单的「SSH 资源」标签与图标也随语言动态变化。
 
-**固定界面语言。** 可以通过插件设置文件（`~/.dsh/storages/ssh_ops_settings.json`）关闭自动跟随行为。该功能适用于系统使用插件未内置的第三方语言（如俄语）的场景——若不固定，此类语言会被强制回退为默认中文，且插件会在每次加载时把该值回写进配置文件。改为固定使用指定语言即可：
+**固定界面语言。** DSH 使用插件未内置的语言（如俄语）时，插件默认使用中文。可以在插件设置文件（`~/.dsh/storages/ssh_ops_settings.json`）中固定使用指定语言：
 
 ```json
 {
@@ -169,12 +171,12 @@ dsh web
 }
 ```
 
-- `autoApplySystemLanguage`：`true`（默认值；字段缺失时与 `true` 相同）表示跟随 DSH 自身语言并在每次加载时回写，行为与之前完全一致。`false` 表示固定使用存储的 `language` 值：既不跟随宿主语言，也不回写，文件保持你手动编辑的状态。升级后首次加载时，插件会把默认值 `true` 写入配置文件，以便看到该开关。
+- `autoApplySystemLanguage` 为 `true`（默认值）时跟随 DSH 语言，有变化才保存。`false` 时使用文件中的 `language`。
 - `language`：`"zh"` 或 `"en"`，当 `autoApplySystemLanguage` 为 `false` 时作为固定语言使用；自动跟随开启时忽略该字段。
 - 请在 Harness **停止**时编辑该文件（运行中的实例在加载时可能会改写它），编辑完成后重启 Harness 使更改生效。
 ### Agent 工具
 
-默认注册 41 个 Agent 工具。**设置 → SSH 资源 → 功能开关** 可分别关闭数据库、端口转发和会话日志工具，重启 DSH 后生效。省略 `connection_id` / `db_connection_id` 时默认作用于当前活动连接，**无需先调 `ssh_list` / `db_list_connections`**。
+默认注册 41 个 Agent 工具。**设置 → SSH 资源 → 功能开关** 可分别关闭数据库、端口转发和会话日志工具，重启 DSH 后生效。操作当前 SSH 终端时可以省略 `connection_id`。支持按需加载的 DSH 会在 `db_connect` 或 `db_list_connections` 成功后提供数据库操作工具，查询时使用返回的 `db_connection_id`。
 
 #### SSH（7）
 
@@ -264,8 +266,8 @@ npm run pack:release
 
 生成物位于 `release/`：
 
-- `dsh-ssh-ops-0.4.12.tgz`：可直接被 DSH 安装。
-- `dsh-ssh-ops-0.4.12.zip`：完整离线源码包。
+- `dsh-ssh-ops-0.4.13.tgz`：可直接被 DSH 安装。
+- `dsh-ssh-ops-0.4.13.zip`：完整离线源码包。
 
 ## 许可
 

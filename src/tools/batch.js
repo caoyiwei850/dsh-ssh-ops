@@ -12,7 +12,7 @@ import { t } from "../i18n/core.js";
 export function registerBatchTools(ctx, service) {
   ctx.tools.register(defineTool({
     name: "ssh_batch",
-    description: "Run one command on MULTIPLE servers chosen from the SAVED server resources (not the currently connected one). The operator picks the target servers in the right-side SSH panel and confirms — this tool only creates the batch task and returns immediately; it does NOT execute. Dangerous commands are blocked from agent execution and shown for operator confirmation. Use when the user asks to run the same command on several/multiple servers.",
+    description: "Prepare one command for multiple saved servers. The operator selects targets and confirms in the right-side SSH panel. The tool returns the task without running it. Dangerous commands require operator confirmation.",
     parameters: {
       command: { type: "string", required: true, description: "The shell command to run on each selected server." },
       timeout_ms: { type: "integer", description: "Per-server timeout in milliseconds, defaults to 30000." }

@@ -177,6 +177,55 @@ console.log("db-ops SSH tunnel lifecycle: dependent listeners close with SSH: pa
 
 console.log("db-ops connection list: account discriminator passed");
 
+// Database tool admission is scoped to the Agent that used an entry tool.
+{
+  const entries = new Map();
+  const listeners = new Map();
+  const tools = {
+    register: (tool, options) => entries.set(tool.name, options),
+    get: (name, agent) => agent.allowedTools?.has(name) === false ? undefined : entries.has(name) ? { name } : undefined,
+    resolve() {},
+    executable() {}
+  };
+  const ctx = { tools, on: (name, listener) => listeners.set(name, listener) };
+  registerDbTools(ctx, {});
+  assert.equal(entries.size, 15);
+  assert.ok([...entries.values()].every((options) => options === undefined));
+  assert.equal(listeners.size, 0);
+  entries.clear();
+
+  registerDbTools({ ...ctx, tools: { register: tools.register } }, {}, { onDemand: true });
+  assert.equal(entries.size, 15);
+  assert.ok([...entries.values()].every((options) => options === undefined));
+  assert.equal(listeners.size, 0);
+  entries.clear();
+
+  registerDbTools(ctx, {}, { onDemand: true });
+  const visible = (agent) => {
+    const step = { agent };
+    return [...entries.keys()].filter((name) => tools.get(name, agent) && (entries.get(name)?.when(step) ?? true));
+  };
+  const fresh = ["db_connect", "db_list_connections"];
+  const agent = {};
+  const otherAgent = {};
+  const result = listeners.get("tools/result");
+  assert.deepEqual(visible(agent), fresh);
+  result({ agent, name: "db_connect" }, { isError: true });
+  result({ agent, name: "ssh_exec" }, { isError: false });
+  assert.deepEqual(visible(agent), fresh);
+  result({ agent, name: "db_list_connections" }, { isError: false });
+  assert.deepEqual(visible(agent), [...entries.keys()]);
+  assert.deepEqual(visible(otherAgent), fresh);
+  result({ agent: otherAgent, name: "db_connect" }, { isError: false });
+  assert.deepEqual(visible(otherAgent), [...entries.keys()]);
+
+  const resumed = { session: { requestHeader: () => ({ tools: [{ name: "db_query" }] }) } };
+  assert.deepEqual(visible(resumed), [...entries.keys()]);
+  assert.deepEqual(visible({ allowedTools: new Set(["db_query"]) }), ["db_query"], "a restricted agent can use its granted query tool without an activation entry");
+  assert.deepEqual(visible({ allowedTools: new Set(["db_connect", "db_query"]) }), ["db_connect", "db_query"], "a restricted agent can query an existing connection without opening a new one");
+  assert.deepEqual(visible({ allowedTools: new Set(["db_list_connections", "db_query"]) }), ["db_list_connections"], "a restricted agent with a visible list entry can still activate on demand");
+}
+
 // ── every compound db tool output shape passes the DSH agent-output validator ──
 // #23: a strict output schema (additionalProperties: false) silently rejects the
 // whole tool result the moment the service returns an undeclared field. The

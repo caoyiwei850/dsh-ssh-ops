@@ -23,7 +23,7 @@ async function modelLogView(service, sessionId) {
 export function registerSessionLogTools(ctx, service) {
   ctx.tools.register(defineTool({
     name: "ssh_session_log_list",
-    description: "List recorded SSH terminal sessions (metadata only: host, user, start/end, size, truncation). Use a session_id with ssh_session_log_search to find what happened in it; the log content itself is never returned here.",
+    description: "List recorded SSH sessions with IDs, host, user, times, size and truncation metadata.",
     parameters: { limit: { type: "integer", description: "How many of the newest sessions to return; defaults to 20." } },
     output: {
       schema: {
@@ -54,7 +54,7 @@ export function registerSessionLogTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "ssh_session_log_search",
-    description: "Search one recorded SSH session log (case-insensitive substring) and return matching lines with offsets in the sanitized log view. Content is redacted before it reaches you. Use the offsets with ssh_session_log_read to see surrounding output.",
+    description: "Search a redacted SSH session log by case-insensitive substring. Pass returned offsets to ssh_session_log_read for context.",
     parameters: {
       session_id: { type: "string", required: true, description: "A session id from ssh_session_log_list." },
       query: { type: "string", required: true, description: "Text to look for (case-insensitive)." },
@@ -95,7 +95,7 @@ export function registerSessionLogTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "ssh_session_log_read",
-    description: "Read a bounded range of one recorded SSH session log, starting at a byte offset in the sanitized log view. Content is redacted before it reaches you. Read at most a few tens of KB per call and continue with the returned nextOffset.",
+    description: "Read a bounded range of a redacted SSH session log. Continue at nextOffset.",
     parameters: {
       session_id: { type: "string", required: true },
       offset: { type: "integer", description: "Byte offset to start at; defaults to 0 (or use an offset from a search hit)." },

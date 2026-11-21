@@ -11,6 +11,8 @@ import { t } from "../i18n/core.js";
 import { posixLoginShell } from "../exec-cwd.js";
 import { askOperatorApproval } from "./ssh-session.js";
 
+const SSH_TARGET_DESCRIPTION = "SSH ID. In a bound workspace, use its server. Otherwise defaults to the active connection.";
+
 export function registerSftpTools(ctx, service) {
   /**
    * Resolve one SFTP request for the calling session (issue #38). When the
@@ -60,10 +62,10 @@ export function registerSftpTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "sftp_list",
-    description: "List the entries of a remote directory over SFTP on a connected server (the one open in the right-side SSH terminal unless connection_id is given). In a remote workspace a relative path resolves under the bound remote root. Returns file/directory entries with sizes and mtimes.",
+    description: "List remote directory entries with sizes and modification times.",
     parameters: {
-      connection_id: { type: "string", description: "Connection id from ssh_connect; omit to use the current server (or the remote workspace's bound server)." },
-      path: { type: "string", required: true, description: "Remote directory path, e.g. /etc or /var/log. Relative values resolve under the remote workspace root." }
+      connection_id: { type: "string", description: SSH_TARGET_DESCRIPTION },
+      path: { type: "string", required: true, description: "Directory path. Relative to the current remote workspace directory." }
     },
     output: {
       schema: {
@@ -96,10 +98,10 @@ export function registerSftpTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "sftp_read",
-    description: "Read a remote file over SFTP. The data field is base64-encoded file content; decode it to text when inspecting text files. Useful for config files, logs, or small artifacts on a connected server. Omit connection_id for the current server.",
+    description: "Read a remote file. The data field is base64; decode it to inspect text.",
     parameters: {
-      connection_id: { type: "string", description: "Connection id from ssh_connect; omit to use the current server." },
-      path: { type: "string", required: true, description: "Remote file path. A relative path resolves under the remote workspace root." },
+      connection_id: { type: "string", description: SSH_TARGET_DESCRIPTION },
+      path: { type: "string", required: true, description: "File path. Relative to the current remote workspace directory." },
       max_bytes: { type: "integer", description: "Maximum bytes to read, defaults to 4 MiB." }
     },
     output: {
@@ -129,10 +131,10 @@ export function registerSftpTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "sftp_write",
-    description: "Write text content to a remote file over SFTP (creates or overwrites). Omit connection_id for the current server.",
+    description: "Create or overwrite a remote file with text.",
     parameters: {
-      connection_id: { type: "string", description: "Connection id from ssh_connect; omit to use the current server." },
-      path: { type: "string", required: true, description: "Remote file path to write. A relative path resolves under the remote workspace root." },
+      connection_id: { type: "string", description: SSH_TARGET_DESCRIPTION },
+      path: { type: "string", required: true, description: "Destination file path. Relative to the current remote workspace directory." },
       content: { type: "string", required: true, description: "File content to write." }
     },
     output: {
@@ -158,10 +160,10 @@ export function registerSftpTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "sftp_mkdir",
-    description: "Create a remote directory over SFTP. Omit connection_id for the current server.",
+    description: "Create a remote directory.",
     parameters: {
-      connection_id: { type: "string", description: "Connection id from ssh_connect; omit to use the current server." },
-      path: { type: "string", required: true, description: "Remote directory path to create. A relative path resolves under the remote workspace root." }
+      connection_id: { type: "string", description: SSH_TARGET_DESCRIPTION },
+      path: { type: "string", required: true, description: "New directory path. Relative to the current remote workspace directory." }
     },
     output: {
       schema: { type: "object", additionalProperties: false, properties: { path: { type: "string", required: true } } },
@@ -177,10 +179,10 @@ export function registerSftpTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "sftp_delete",
-    description: "Delete a remote file or directory over SFTP. Omit connection_id for the current server. Deletion suspends this call until the operator answers the host's confirmation prompt in the conversation: approving performs a reversible move to the server trash when the path is a simple literal (a real deletion otherwise), rejecting deletes nothing — never retry or route around a rejection.",
+    description: "Delete a remote file or directory after operator approval. A simple literal path moves to server trash; otherwise deletion is permanent. Rejection leaves files intact. Never retry or bypass rejection.",
     parameters: {
-      connection_id: { type: "string", description: "Connection id from ssh_connect; omit to use the current server." },
-      path: { type: "string", required: true, description: "Remote path to delete. A relative path resolves under the remote workspace root." }
+      connection_id: { type: "string", description: SSH_TARGET_DESCRIPTION },
+      path: { type: "string", required: true, description: "Path to delete. Relative to the current remote workspace directory." }
     },
     output: {
       schema: { type: "object", additionalProperties: false, properties: { path: { type: "string", required: true }, isDirectory: { type: "boolean" }, trashPath: { type: "string" }, blocked: { type: "boolean" }, reason: { type: "string" }, command: { type: "string" } } },
@@ -226,11 +228,11 @@ export function registerSftpTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "sftp_rename",
-    description: "Rename or move a remote file/directory over SFTP. Omit connection_id for the current server.",
+    description: "Rename or move a remote file or directory.",
     parameters: {
-      connection_id: { type: "string", description: "Connection id from ssh_connect; omit to use the current server." },
-      from: { type: "string", required: true, description: "Current remote path. A relative path resolves under the remote workspace root." },
-      to: { type: "string", required: true, description: "New remote path. A relative path resolves under the remote workspace root." }
+      connection_id: { type: "string", description: SSH_TARGET_DESCRIPTION },
+      from: { type: "string", required: true, description: "Source path. Relative to the current remote workspace directory." },
+      to: { type: "string", required: true, description: "Destination path. Relative to the current remote workspace directory." }
     },
     output: {
       schema: { type: "object", additionalProperties: false, properties: { from: { type: "string", required: true }, to: { type: "string", required: true } } },
@@ -247,11 +249,11 @@ export function registerSftpTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "sftp_upload_file",
-    description: "Upload one local file over the active SSH connection using bounded pipelined SFTP. A failed or cancelled task may be resumed after reconnecting to the same server using its task id; the source and remote prefix are verified. The destination is replaced only after completion.",
+    description: "Upload one local file. Resume a failed or cancelled upload by task ID on the same server. Verifies source and remote prefix before resuming. Replaces the destination only on completion.",
     parameters: {
-      connection_id: { type: "string", description: "SSH connection id; omit for the active connection." },
+      connection_id: { type: "string", description: SSH_TARGET_DESCRIPTION },
       local_path: { type: "string", required: true, description: "Local source file path." },
-      remote_path: { type: "string", required: true, description: "Remote destination file path." },
+      remote_path: { type: "string", required: true, description: "Remote destination file, relative to the current workspace directory when bound." },
       resume_id: { type: "string", description: "ID of a failed or cancelled upload to resume on the same server." }
     },
     output: {
@@ -271,11 +273,11 @@ export function registerSftpTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "sftp_upload_dir",
-    description: "Upload a local directory tree to a remote server over SFTP, creating the remote directory structure. Small files transfer in parallel (bounded), large files one at a time for full link throughput. Per-file failures are reported, not fatal. Omit connection_id for the current server.",
+    description: "Upload a directory tree, creating remote directories. Small files transfer in parallel, large files serially. Reports individual failures and continues.",
     parameters: {
-      connection_id: { type: "string", description: "Connection id from ssh_connect; omit to use the current server." },
+      connection_id: { type: "string", description: SSH_TARGET_DESCRIPTION },
       local_path: { type: "string", required: true, description: "Local directory to upload." },
-      remote_path: { type: "string", required: true, description: "Remote destination directory (created when missing)." }
+      remote_path: { type: "string", required: true, description: "Remote destination directory, created if missing. Relative to the current workspace directory when bound." }
     },
     output: {
       schema: {
@@ -313,10 +315,10 @@ export function registerSftpTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "sftp_download_dir",
-    description: "Download a remote directory tree over SFTP to a local directory, recreating the structure. Small files transfer in parallel (bounded), large files one at a time. Per-file failures are reported, not fatal. Omit connection_id for the current server.",
+    description: "Download a directory tree, creating local directories. Small files transfer in parallel, large files serially. Reports individual failures and continues.",
     parameters: {
-      connection_id: { type: "string", description: "Connection id from ssh_connect; omit to use the current server." },
-      remote_path: { type: "string", required: true, description: "Remote directory to download." },
+      connection_id: { type: "string", description: SSH_TARGET_DESCRIPTION },
+      remote_path: { type: "string", required: true, description: "Remote source directory. Relative to the current workspace directory when bound." },
       local_path: { type: "string", required: true, description: "Local destination directory (created when missing)." }
     },
     output: {

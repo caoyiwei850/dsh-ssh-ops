@@ -6,10 +6,12 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.4.12-blue)
+![version](https://img.shields.io/badge/version-0.4.13-blue)
 [![dsh.so risk](https://www.dsh.so/badge/dsh-ssh-ops.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/)
 [![dsh.so install · dsh 0.2.2-rc.1](https://cdn.dsh.so/badge/install/dsh-ssh-ops@0.2.2-rc.1.svg)](https://www.dsh.so/artifact/dsh-ssh-ops/?ref=badge-install)
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/caoyiwei850/dsh-ssh-ops)
+
+> **v0.4.13** fixes repeated language sync requests and enables on-demand database tools by default on supported DSH hosts. See the [release notes](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.4.13).
 
 > **v0.4.12** reorganizes SSH Resources and adds independent AI tool and sidebar tab switches. See the [release notes](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.4.12).
 
@@ -114,7 +116,7 @@ Local `link:`, Git, and archive installations do not display the host's registry
 ### From GitHub
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.12
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.4.13
 ```
 
 The git channel installs source; the `prepare` hook runs `npm run build` during install to produce the `lib/` entry files, so no manual build is needed. **Note: pnpm ≥ 10 blocks dependency build scripts by default** — if the SSH tab does not appear after restart, check `node_modules/dsh-ssh-ops/lib/` as described in [INSTALL.md](INSTALL.md) step 3: if it is missing, the build was blocked; run `npm install && npm run build` inside that package directory (or allowlist `dsh-ssh-ops` in the profile's pnpm `onlyBuiltDependencies`) and restart.
@@ -129,14 +131,14 @@ Open any session, click the top **SSH** tab, and use the right-side panel to con
 
 ### From a release archive
 
-Download `dsh-ssh-ops-0.4.12.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.4.12), then:
+Download `dsh-ssh-ops-0.4.13.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.4.13), then:
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.4.12.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.4.13.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.4.12.zip` is for offline review or further development; extract it and run `npm install` in the directory (the build runs automatically).
+`dsh-ssh-ops-0.4.13.zip` is for offline review or further development; extract it and run `npm install` in the directory (the build runs automatically).
 
 ## Usage
 
@@ -147,7 +149,7 @@ dsh web
 5. For databases, have the agent call `db_connect` (or create a connection yourself in the Database tab), then query/execute from the conversation.
 6. The plugin UI language **automatically follows DSH's own language setting** (中文 / English): switching repaints the whole plugin UI immediately, agent-visible tool messages follow via write-back both live and after restart, and the settings-nav label and glyph for this plugin follow along.
 
-**Pinning the interface language.** The follow behaviour can be switched off through the plugin settings file (`~/.dsh/storages/ssh_ops_settings.json`). This is meant for setups where DSH runs a third-party locale the plugin does not ship (e.g. Russian) — without a pin, such a locale is coerced to the default Chinese and the plugin would keep writing that back. Pin it to a fixed language instead:
+**Pinning the interface language.** The plugin defaults to Chinese when DSH uses a locale the plugin does not provide, such as Russian. Set the plugin language in `~/.dsh/storages/ssh_ops_settings.json`:
 
 ```json
 {
@@ -164,12 +166,12 @@ dsh web
 }
 ```
 
-- `autoApplySystemLanguage` — `true` (the default; absent means the same) follows DSH's own language and writes it back on every load, exactly as before. `false` pins the plugin to the stored `language` value: the host language is neither followed nor written back, so the file stays as you edited it. On the first load after upgrading, the default `true` is materialized into the file so the knob is visible.
+- `autoApplySystemLanguage` set to `true` (the default) follows DSH and saves the language when it changes. Set it to `false` to use the stored `language`.
 - `language` — `"zh"` or `"en"`, the pinned language used while `autoApplySystemLanguage` is `false`; ignored while auto-follow is on.
 - Edit the file while the harness is **stopped** (a running instance may rewrite it on load) and restart the harness afterwards to apply the change.
 ### Agent tools
 
-The plugin registers 41 agent tools by default. You can disable the database, port forwarding, and session log tool groups separately under **Settings → SSH Resources → Features**. Restart DSH to apply changes. Omitting `connection_id` / `db_connection_id` targets the active connection. There is no need to call `ssh_list` / `db_list_connections` first.
+The plugin registers 41 agent tools by default. You can disable the database, port forwarding, and session log tool groups separately under **Settings → SSH Resources → Features**. Restart DSH to apply changes. Omit `connection_id` to use the active SSH terminal. DSH hosts that support on-demand loading offer database operations after a successful `db_connect` or `db_list_connections` call. Use the returned `db_connection_id` to query the database.
 
 #### SSH (7)
 
@@ -259,8 +261,8 @@ Pushing a `vX.Y.Z` tag that matches `package.json.version` runs tests, builds th
 
 Artifacts are written to `release/`:
 
-- `dsh-ssh-ops-0.4.12.tgz`: installable directly by DSH.
-- `dsh-ssh-ops-0.4.12.zip`: full offline source archive.
+- `dsh-ssh-ops-0.4.13.tgz`: installable directly by DSH.
+- `dsh-ssh-ops-0.4.13.zip`: full offline source archive.
 
 ## License
 
