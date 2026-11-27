@@ -18,19 +18,48 @@ export function registerTunnelTools(ctx, service) {
       target_port: { type: "integer", description: "Local target port for remote kind (required when kind='remote')." }
     },
     output: {
+      // The three kinds return different shapes: local/remote always carry the
+      // remote endpoint they forward to, while dynamic carries none — a SOCKS5
+      // proxy has no fixed destination, the client picks one per CONNECT.
       schema: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          tunnelId: { type: "string", required: true },
-          kind: { type: "string", required: true },
-          bindAddr: { type: "string", required: true },
-          bindPort: { type: "number", required: true },
-          remoteHost: { type: "string", required: true },
-          remotePort: { type: "number", required: true },
-          targetHost: { type: "string" },
-          targetPort: { type: "number" }
-        }
+        oneOf: [
+          {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              tunnelId: { type: "string", required: true },
+              kind: { type: "string", const: "dynamic", required: true },
+              bindAddr: { type: "string", required: true },
+              bindPort: { type: "number", required: true }
+            }
+          },
+          {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              tunnelId: { type: "string", required: true },
+              kind: { type: "string", const: "local", required: true },
+              bindAddr: { type: "string", required: true },
+              bindPort: { type: "number", required: true },
+              remoteHost: { type: "string", required: true },
+              remotePort: { type: "number", required: true }
+            }
+          },
+          {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              tunnelId: { type: "string", required: true },
+              kind: { type: "string", const: "remote", required: true },
+              bindAddr: { type: "string", required: true },
+              bindPort: { type: "number", required: true },
+              remoteHost: { type: "string", required: true },
+              remotePort: { type: "number", required: true },
+              targetHost: { type: "string", required: true },
+              targetPort: { type: "number", required: true }
+            }
+          }
+        ]
       },
       render(args, value) {
         const text = value.kind === "dynamic"
@@ -78,13 +107,25 @@ export function registerTunnelTools(ctx, service) {
             remotePort: { type: "number" },
             targetHost: { type: "string" },
             targetPort: { type: "number" },
+            // Dynamic records report their live client count.
+            connections: { type: "number" },
             active: { type: "boolean", required: true }
           } } }
         }
       },
       render(args, value) {
         if (!value.tunnels.length) return [{ type: "text", text: "(no active tunnels)" }];
-        return [{ type: "text", text: value.tunnels.map((t) => `${t.kind}: ${t.bindAddr}:${t.bindPort} -> ${t.remoteHost}:${t.remotePort} (${t.tunnelId})`).join("\n") }];
+        return [{ type: "text", text: value.tunnels.map((t) => {
+          // A dynamic tunnel has no remote endpoint to point at, so print the
+          // listener and its live connection count.
+          if (t.kind === "dynamic") {
+            const active = typeof t.connections === "number" && t.connections > 0
+              ? `, ${t.connections} active connection${t.connections === 1 ? "" : "s"}`
+              : "";
+            return `dynamic(SOCKS5): ${t.bindAddr}:${t.bindPort}${active} (${t.tunnelId})`;
+          }
+          return `${t.kind}: ${t.bindAddr}:${t.bindPort} -> ${t.remoteHost}:${t.remotePort} (${t.tunnelId})`;
+        }).join("\n") }];
       }
     },
     async execute(args) {
