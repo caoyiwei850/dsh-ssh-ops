@@ -5481,10 +5481,11 @@ export default class SshOpsService extends TypertRemoteService {
         kind: t.kind,
         bindAddr: t.bindAddr,
         bindPort: t.bindPort,
-        remoteHost: t.remoteHost,
-        remotePort: t.remotePort,
         active: t.active
       };
+      // Only local/remote tunnel has remote endpoint
+      if (t.remoteHost !== undefined) entry.remoteHost = t.remoteHost;
+      if (t.remotePort !== undefined) entry.remotePort = t.remotePort;
       if (t.targetHost !== undefined) entry.targetHost = t.targetHost;
       if (t.targetPort !== undefined) entry.targetPort = t.targetPort;
       if (t.connections !== undefined) entry.connections = t.connections;
